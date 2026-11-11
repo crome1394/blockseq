@@ -168,6 +168,10 @@ impl Registry {
         let import = Self::kind(&dir) == "logseq";
         let conn = db::open(&dir.join(DB_FILE)).with_context(|| format!("opening workbook {id}"))?;
         db::refresh_task_refs(&conn, task_words)?;
+        let pruned = db::prune_orphans(&conn)?.len();
+        if pruned > 0 {
+            tracing::info!("workbook {id}: removed {pruned} empty, unlinked pages");
+        }
         let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn) });
         if import {
             let report = import_logseq(&wb, task_words)?;

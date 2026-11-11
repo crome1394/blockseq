@@ -83,7 +83,10 @@ favorite    INT (0/1)
   the same list. Starring a page that doesn't exist yet creates its row.
 - **Linking creates pages.** When a save links or tags a name that has no
   page, an empty page row (version 0) is created, so it shows in All pages and
-  search. Empty pages get no Markdown file, and the journals view skips
+  search. `db::prune_orphans` removes such pages again once they have no
+  blocks and nothing links to them (not journals, not favourites). It runs
+  after every save, block update and delete, and when a workbook opens; the
+  server sends a `deleted` event for each page it removes. Empty pages get no Markdown file, and the journals view skips
   journal pages with no blocks.
 - **`journal_day`** is set when a page name parses as a journal date. The
   journals view sorts by it.

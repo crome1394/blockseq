@@ -52,6 +52,18 @@ fn client_id(headers: &HeaderMap) -> String {
     headers.get("x-client-id").and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
 }
 
+/// Removes pages left empty and unlinked by a change, and tells open tabs.
+fn prune(s: &AppState, wb: &Workbook, client: &str) {
+    let removed = match db::prune_orphans(&wb.db.lock().unwrap()) {
+        Ok(r) => r,
+        Err(e) => return tracing::warn!("pruning empty pages: {e:#}"),
+    };
+    for page in removed {
+        wb.remove_mirror(&page);
+        s.notify(wb, json!({ "type": "deleted", "name": page.name, "client": client }));
+    }
+}
+
 /// The workbook a request is for, from `?wb=` (opened on first use).
 pub struct Wb(pub Arc<Workbook>);
 
@@ -123,6 +135,7 @@ pub async fn put_page(
             s.notify(&wb, json!({
                 "type": "page", "name": page.name, "version": page.version, "client": client_id(&headers)
             }));
+            prune(&s, &wb, &client_id(&headers));
             Ok(Json(json!({ "page": page })).into_response())
         }
         SaveOutcome::Conflict(page, blocks) => Ok((
@@ -145,6 +158,7 @@ pub async fn delete_page(
     };
     wb.remove_mirror(&page);
     s.notify(&wb, json!({ "type": "deleted", "name": page.name, "client": client_id(&headers) }));
+    prune(&s, &wb, &client_id(&headers));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -251,6 +265,7 @@ pub async fn put_block(
     s.notify(&wb, json!({
         "type": "page", "name": page.name, "version": page.version, "client": client_id(&headers)
     }));
+    prune(&s, &wb, &client_id(&headers));
     Ok(Json(json!({ "page": page })).into_response())
 }
 

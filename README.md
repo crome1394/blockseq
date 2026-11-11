@@ -284,7 +284,9 @@ Press again to undo it.
 
 **Tags:** typing `#` suggests existing tags as you type, with *New tag …* first.
 Enter puts the chosen tag at the end of the line (shown on the right);
-**Ctrl+Enter** keeps it where you typed it.
+**Ctrl+Enter** keeps it where you typed it. A tag or link page that is empty
+and no longer used anywhere is removed automatically (journals and starred
+pages are always kept).
 
 **Help:** press **?** (when you're not typing in a block; Esc stops editing) for
 the list of shortcuts. Change them in *Settings → Keyboard*. *Copy image*

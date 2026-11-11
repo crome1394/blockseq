@@ -174,6 +174,24 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Deletes pages that only existed because something linked or tagged them:
+/// no blocks, nothing links to them any more, not a journal, not starred.
+/// Runs after saves and when a workbook opens, so removing the "#" from a
+/// tag removes the empty tag page too. Returns the deleted pages.
+pub fn prune_orphans(conn: &Connection) -> Result<Vec<PageMeta>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PAGE_COLS} FROM pages p
+         WHERE p.journal_day IS NULL AND p.favorite = 0
+           AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.page_id = p.id)
+           AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.target_lower = p.name_lower)"
+    ))?;
+    let orphans = stmt.query_map([], page_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for p in &orphans {
+        conn.execute("DELETE FROM pages WHERE id = ?1", [&p.id])?;
+    }
+    Ok(orphans)
+}
+
 /// Page that every task links to.
 pub const TASK_PAGE: &str = "task";
 
@@ -660,6 +678,23 @@ mod tests {
             parent_id: parent.map(String::from),
             content: content.into(),
             collapsed: false,
+        }
+    }
+
+    #[test]
+    fn unlinked_empty_pages_are_pruned() {
+        let mut c = mem();
+        save_page(&mut c, "Notes", 0, &[block("a", None, "Order #US330423987 for [[Kept]]")], &[]).unwrap();
+        set_favorite(&c, "Starred", true).unwrap();
+        ensure_page(&c, "Nov 11th, 2026", now_ms()).unwrap();
+        assert!(get_page(&c, "US330423987").unwrap().is_some());
+        assert!(prune_orphans(&c).unwrap().is_empty());
+        // The "#" is removed: the tag page is empty and unlinked, so it goes.
+        save_page(&mut c, "Notes", 1, &[block("a", None, "Order US330423987 for [[Kept]]")], &[]).unwrap();
+        let gone: Vec<String> = prune_orphans(&c).unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(gone, ["US330423987"]);
+        for kept in ["Kept", "Starred", "Notes", "Nov 11th, 2026"] {
+            assert!(get_page(&c, kept).unwrap().is_some(), "{kept}");
         }
     }
 
