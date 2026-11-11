@@ -81,6 +81,37 @@ pub struct PageSummary {
     pub favorite: bool,
     /// Tags used in the page's blocks, sorted by name.
     pub tags: Vec<String>,
+    /// Words in the page's blocks (property lines and encrypted text left out).
+    pub words: i64,
+}
+
+/// Counts words in block text: tokens with at least one letter or digit,
+/// skipping `key:: value` property lines (ids, colours, encrypted text).
+pub fn word_count(content: &str) -> i64 {
+    content
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.split_once(":: ").is_some_and(|(k, _)| !k.is_empty() && !k.contains(' '))
+        })
+        .flat_map(|l| l.split_whitespace())
+        .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
+        .count() as i64
+}
+
+/// Pages with #Encrypted blocks whose children are still stored as plain
+/// text (tagged before a password existed, or while locked).
+pub fn encryption_pending(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT p.name FROM refs r
+         JOIN blocks b ON b.id = r.block_id
+         JOIN pages p ON p.id = b.page_id
+         WHERE r.target_lower = 'encrypted'
+           AND b.content NOT LIKE '%encrypted:: v1:%'
+           AND EXISTS (SELECT 1 FROM blocks c WHERE c.parent_id = b.id)",
+    )?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 #[derive(Debug, Serialize)]
@@ -607,6 +638,15 @@ pub fn list_pages(conn: &Connection) -> Result<Vec<PageSummary>> {
             tags.entry(page).or_default().push(tag);
         }
     }
+    let mut words: HashMap<String, i64> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT page_id, content FROM blocks")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (page, content) = row?;
+            *words.entry(page).or_default() += word_count(&content);
+        }
+    }
     let mut stmt = conn.prepare(
         "SELECT p.id, p.name, p.journal_day, p.created_at, p.updated_at,
                 (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id), p.favorite
@@ -615,6 +655,7 @@ pub fn list_pages(conn: &Connection) -> Result<Vec<PageSummary>> {
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(0)?;
         Ok(PageSummary {
+            words: words.get(&id).copied().unwrap_or(0),
             tags: tags.remove(&id).unwrap_or_default(),
             name: r.get(1)?,
             journal_day: r.get(2)?,
@@ -772,6 +813,13 @@ mod tests {
             content: content.into(),
             collapsed: false,
         }
+    }
+
+    #[test]
+    fn words_are_counted() {
+        assert_eq!(word_count("Hello there, world! - 42"), 4);
+        assert_eq!(word_count("Title #tag\nencrypted:: v1:abc:def\nid:: 123"), 2);
+        assert_eq!(word_count("```bash\nsudo pacman -S wayvnc\n```"), 5);
     }
 
     #[test]

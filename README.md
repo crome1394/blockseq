@@ -311,8 +311,11 @@ own text stays readable as a label; the server, the database, the Markdown files
 and backups only hold scrambled text. Locked blocks show "🔒 Encrypted. Click to
 unlock"; one password unlocks every encrypted block in every workbook, and they
 lock again after 15 idle minutes (change it in *Settings → Security*), when the
-tab closes, or with the 🔓 Lock button. Copying an encrypted block copies it
-encrypted.
+tab closes, or with the 🔓 Lock button. The 🔒/🔓 button at the top right
+(next to ?) locks or unlocks them from anywhere. Copying an encrypted block
+copies it encrypted. Blocks tagged before a password existed (or while locked)
+are still plain text, and say so; they are encrypted as soon as you set the
+password or unlock, including on pages you don't have open.
 
 - **Set the password** in *Settings → Security*. You are shown a **recovery key**
   once: save it in a password manager or print it. Without the password *or* the
@@ -367,8 +370,8 @@ file from the server. The calendar opens or creates any day.
 **Favorites:** click ☆ next to a page title to star it. Starred pages are listed
 in the sidebar. They are stored on the server, so every computer shows the same list.
 
-**All pages** is a table of favorite star, page name, tags, created and updated
-time. Click a star to (un)favorite, or a column heading to sort. The filter
+**All pages** is a table of favorite star, page name, tags, word count, created
+and updated time (encrypted text isn't counted). Click a star to (un)favorite, or a column heading to sort. The filter
 box matches names and tags, and the buttons next to it show Pages (no
 journals), Journals, Starred or All. Each browser remembers the last choice.
 

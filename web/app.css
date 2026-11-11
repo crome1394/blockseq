@@ -1500,3 +1500,8 @@ html.wide .embed-wrap { width: 860px; }
 .link-button { align-self: flex-start; border: none; background: none; color: var(--accent); padding: 0; font-size: 13px; }
 .link-button:hover { text-decoration: underline; }
 .security-actions { justify-content: flex-start; flex-wrap: wrap; margin: 8px 0; }
+
+.page-table .col-words { text-align: right; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+.page-table th.col-words { text-align: right; }
+#lock-toggle { font-size: 15px; filter: grayscale(0.4); }
+#lock-toggle.open { filter: none; background: color-mix(in srgb, var(--busy) 18%, transparent); }

@@ -271,6 +271,7 @@ export class PageEditor {
   // Decrypts every locked encrypted block on the page (when unlocked).
   async openSecrets() {
     if (!isUnlocked()) return;
+    if (this.needsSealing()) this.sealNow();
     let changed = false;
     for (const r of this.secretRoots()) {
       if (!r.props.encrypted || r.unsealed) continue;
@@ -331,11 +332,25 @@ export class PageEditor {
     }
   }
 
+  // #Encrypted blocks whose children are still plain text (tagged before a
+  // password existed, or while locked).
+  needsSealing() {
+    return this.secretRoots().some((r) => ENCRYPTED_TAG.test(r.content) && !r.props.encrypted && r.children.length);
+  }
+
+  // Encrypt such blocks now (needs the key). Resolves once saved.
+  async sealNow() {
+    if (!isUnlocked() || !this.needsSealing()) return;
+    this.dirty = true;
+    this.changeSeq++;
+    await this.save();
+  }
+
   // Called while locking: save (encrypting with the key one last time).
   async beforeLock() {
     if (this.editing && this.secretRoots().some((r) => isInside(this.editing, r))) this.stopEdit();
     if (this.codeEdit && this.secretRoots().some((r) => isInside(this.codeEdit.node, r))) this.closeCodeEditor();
-    if (this.dirty || this.secretRoots().some((r) => ENCRYPTED_TAG.test(r.content) && r.unsealed && !r.props.encrypted)) {
+    if (this.dirty || this.needsSealing()) {
       this.dirty = true;
       await this.save();
     }
@@ -567,7 +582,9 @@ export class PageEditor {
     const btn = el('button', 'secret-unlock');
     btn.type = 'button';
     if (!node.props.encrypted) {
-      btn.textContent = '⚠ Not encrypted yet: unlock (or set a password in Settings → Security) to encrypt this block';
+      btn.textContent = isUnlocked()
+        ? '⚠ Encrypting…'
+        : '⚠ Not encrypted yet: these blocks are still stored as plain text. Click to unlock and encrypt them now.';
       btn.classList.add('warn');
     } else if (!cryptoAvailable()) {
       btn.textContent = '🔒 Encrypted. Open Blockseq over HTTPS to unlock it.';

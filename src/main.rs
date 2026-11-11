@@ -190,6 +190,7 @@ async fn main() -> Result<()> {
         .route("/workbooks", get(api::list_workbooks).post(api::create_workbook))
         .route("/config", get(api::get_config).put(api::put_config))
         .route("/encryption", get(api::get_encryption).put(api::put_encryption))
+        .route("/encryption/pending", get(api::encryption_pending))
         .route("/events", get(api::events));
 
     let app = Router::new()

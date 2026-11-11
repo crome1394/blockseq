@@ -306,6 +306,11 @@ pub async fn put_block(
 }
 
 /// Every block with a task status (the client filters open / finished).
+/// Pages whose #Encrypted blocks still need encrypting (done by the browser).
+pub async fn encryption_pending(Wb(wb): Wb) -> ApiResult {
+    Ok(Json(db::encryption_pending(&wb.db.lock().unwrap())?).into_response())
+}
+
 pub async fn tasks(Wb(wb): Wb) -> ApiResult {
     Ok(Json(db::tasks(&wb.db.lock().unwrap())?).into_response())
 }

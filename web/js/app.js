@@ -15,6 +15,8 @@ import { ACTIONS, keyFor, comboOf, prettyKey } from './keys.js';
 import { openPane, closePane, isPaneShowing, paneKind } from './pane.js';
 import { openFilePane } from './pdfview.js';
 import { downloadImage } from './images.js';
+import { isUnlocked as cryptoIsUnlocked, lock as cryptoLock } from './crypto.js';
+import { unlockDialog } from './secure-ui.js';
 
 const main = document.getElementById('main');
 
@@ -339,7 +341,7 @@ async function allPagesView(seq) {
   controls.append(filter, showGroup, newBtn);
   const wrap = el('div', 'table-wrap');
   const table = el('table', 'page-table');
-  const COLS = [['favorite', '★'], ['name', 'Page name'], ['tags', 'Tags'], ['created_at', 'Created at'], ['updated_at', 'Updated at']];
+  const COLS = [['favorite', '★'], ['name', 'Page name'], ['tags', 'Tags'], ['words', 'Words'], ['created_at', 'Created at'], ['updated_at', 'Updated at']];
   let sortKey = 'updated_at';
   let sortDir = -1;
   const thead = el('thead');
@@ -411,7 +413,8 @@ async function allPagesView(seq) {
       created.title = fullTime(p.created_at);
       const updated = el('td', 'col-updated_at', formatTime(p.updated_at));
       updated.title = fullTime(p.updated_at);
-      tr.append(starCell, name, tags, created, updated);
+      const words = el('td', 'col-words', (p.words || 0).toLocaleString());
+      tr.append(starCell, name, tags, words, created, updated);
       tr.addEventListener('click', (e) => { if (!e.target.closest('a')) location.hash = pageHref(p.name); });
       return tr;
     }));
@@ -934,9 +937,43 @@ document.addEventListener('mousedown', (e) => {
 });
 
 // #Encrypted blocks: open them on unlock; save and hide them on lock.
-document.addEventListener('blockseq:unlocked', () => { for (const ed of editors) ed.openSecrets(); });
+document.addEventListener('blockseq:unlocked', () => {
+  for (const ed of editors) ed.openSecrets();
+  encryptPending();
+  updateLockButton();
+});
+
+// Encrypts #Encrypted blocks that are still plain text on pages that aren't
+// open (tagged before the password existed). Runs in the background.
+async function encryptPending() {
+  let names;
+  try { names = await api.encryptionPending(); } catch { return; }
+  let done = 0;
+  for (const name of names) {
+    if ([...editors].some((ed) => !ed.disposed && ed.lower === name.toLowerCase())) continue; // open: done above
+    try {
+      const data = await api.page(name);
+      const ed = new PageEditor(document.createElement('div'), data);
+      await ed.sealNow();
+      ed.dispose();
+      done++;
+    } catch { /* try again next unlock */ }
+  }
+  if (done) toast(`Encrypted blocks on ${done} more page${done === 1 ? '' : 's'}`);
+}
 document.addEventListener('blockseq:locking', (e) => { for (const ed of editors) e.detail.wait.push(ed.beforeLock()); });
-document.addEventListener('blockseq:locked', () => { for (const ed of editors) ed.afterLock(); toast('Encrypted blocks locked'); });
+document.addEventListener('blockseq:locked', () => { for (const ed of editors) ed.afterLock(); updateLockButton(); toast('Encrypted blocks locked'); });
+
+// Lock / unlock button in the top bar.
+const lockToggle = document.getElementById('lock-toggle');
+function updateLockButton() {
+  const open = cryptoIsUnlocked();
+  lockToggle.textContent = open ? '🔓' : '🔒';
+  lockToggle.title = open ? 'Lock encrypted blocks' : 'Unlock encrypted blocks';
+  lockToggle.classList.toggle('open', open);
+}
+lockToggle.addEventListener('click', () => (cryptoIsUnlocked() ? cryptoLock() : unlockDialog()));
+updateLockButton();
 
 // Image sizes ({:size "half"}) depend on the picture's real size, known once loaded.
 const SIZE_FACTORS = { original: 1, half: 0.5, quarter: 0.25 };

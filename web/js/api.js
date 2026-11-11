@@ -61,6 +61,7 @@ export const api = {
   },
   putBlock: (id, content) => request('PUT', `/api/block?id=${enc(id)}`, { content }),
   tasks: () => getJson('/api/tasks'),
+  encryptionPending: () => getJson('/api/encryption/pending'),
   assets: () => getJson('/api/assets'),
   deleteAsset: (name) => request('DELETE', `/api/assets?name=${enc(name)}`),
   workbooks: () => getJson('/api/workbooks', { global: true }),

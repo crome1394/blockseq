@@ -220,6 +220,7 @@ CRDTs (conflict-free merge structures):
   | `GET/POST /api/workbooks` | `list_workbooks` / `create_workbook` | not workbook-scoped |
   | `GET/PUT /api/config` | `get_config` / `put_config` | task statuses; event `config` |
   | `GET/PUT /api/encryption` | `get_encryption` / `put_encryption` | wrapped key for #Encrypted blocks; PUT needs the current check |
+  | `GET /api/encryption/pending` | `encryption_pending` | pages with #Encrypted blocks whose children are still plain; the browser encrypts them after unlock |
   | `POST /api/page/favorite?name=&on=` | `set_favorite` | star / unstar, event `favorite` |
   | `POST /api/page/rename?name=&to=` | `rename_page` | rename or merge; rewrites links/tags everywhere (`md::rename_refs`, code left alone) |
   | `GET /api/pages` | `list_pages` | name, journal day, created, updated, block count, favorite, tags |
