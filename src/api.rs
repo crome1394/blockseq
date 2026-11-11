@@ -555,14 +555,60 @@ pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> Ap
 }
 
 pub async fn get_config(State(s): Shared) -> ApiResult {
-    Ok(Json(s.config.read().unwrap().clone()).into_response())
+    let statuses = s.config.read().unwrap().statuses.clone();
+    Ok(Json(json!({ "statuses": statuses })).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct StatusesBody {
+    statuses: Vec<crate::config::Status>,
+}
+
+/// The wrapped key for #Encrypted blocks (useless without the password).
+pub async fn get_encryption(State(s): Shared) -> ApiResult {
+    // Read from disk: the terminal reset command may have changed it.
+    let cfg = Config::load(&s.root.join("config.json"));
+    Ok(Json(json!({ "encryption": cfg.encryption })).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct EncryptionBody {
+    encryption: crate::config::Encryption,
+    /// The current key check; required when a password already exists, so
+    /// only someone who can unlock the key may change the password.
+    check: Option<String>,
+}
+
+pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) -> ApiResult {
+    let path = s.root.join("config.json");
+    let mut cfg = Config::load(&path);
+    if let Some(existing) = &cfg.encryption {
+        let given = body.check.unwrap_or_default();
+        let same = given.len() == existing.check.len()
+            && given.bytes().zip(existing.check.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
+        if !same || body.encryption.check != existing.check {
+            return Err(ApiError(StatusCode::FORBIDDEN, "unlock with the current password first".into()));
+        }
+    }
+    let e = &body.encryption;
+    if e.version != 1 || e.iterations < 100_000 || e.rk_iterations < 10_000 {
+        return Err(bad("unsupported encryption settings"));
+    }
+    cfg.encryption = Some(body.encryption);
+    cfg.save(&path)?;
+    s.notify_all(json!({ "type": "encryption" }));
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Saves the shared settings (task statuses) and recomputes which blocks are
 /// tasks in every open workbook.
-pub async fn put_config(State(s): Shared, Json(cfg): Json<Config>) -> ApiResult {
+pub async fn put_config(State(s): Shared, Json(body): Json<StatusesBody>) -> ApiResult {
+    // Change only the statuses; keep everything else in the file as it is.
+    let path = s.root.join("config.json");
+    let mut cfg = Config::load(&path);
+    cfg.statuses = body.statuses;
     cfg.validate().map_err(|e| bad(format!("{e:#}")))?;
-    cfg.save(&s.root.join("config.json"))?;
+    cfg.save(&path)?;
     let words = cfg.task_words();
     *s.config.write().unwrap() = cfg;
     let state = s.clone();

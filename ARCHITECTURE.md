@@ -219,6 +219,7 @@ CRDTs (conflict-free merge structures):
   | `GET /api/tasks` | `tasks` | every block linked to `task` |
   | `GET/POST /api/workbooks` | `list_workbooks` / `create_workbook` | not workbook-scoped |
   | `GET/PUT /api/config` | `get_config` / `put_config` | task statuses; event `config` |
+  | `GET/PUT /api/encryption` | `get_encryption` / `put_encryption` | wrapped key for #Encrypted blocks; PUT needs the current check |
   | `POST /api/page/favorite?name=&on=` | `set_favorite` | star / unstar, event `favorite` |
   | `POST /api/page/rename?name=&to=` | `rename_page` | rename or merge; rewrites links/tags everywhere (`md::rename_refs`, code left alone) |
   | `GET /api/pages` | `list_pages` | name, journal day, created, updated, block count, favorite, tags |
@@ -265,6 +266,21 @@ CRDTs (conflict-free merge structures):
   file chip; `[x](../assets/f)` (how non-media uploads are written) is always a
   chip. `{{video URL}}` becomes a youtube-nocookie / Vimeo iframe or a
   `<video>`. Pasting a lone YouTube/Vimeo URL writes the macro.
+- **Encrypted blocks** (`crypto.js`, `secure-ui.js`, `PageEditor`
+  `sealSecrets`/`openSecrets`). A random 256-bit AES-GCM key encrypts every
+  block; `config.json` holds only that key wrapped twice (password via
+  PBKDF2-SHA256 600k rounds, recovery key via PBKDF2 100k) plus a SHA-256 check.
+  For a block tagged `#Encrypted`, its children are serialised as an outline
+  (with ids) and encrypted into the hidden `encrypted:: v1:<iv>:<ciphertext>`
+  property; `flatten({forSave})` leaves the children out, so plaintext never
+  reaches the server. `node.unsealed` marks children decrypted in memory.
+  Locking saves first (`beforeLock`, still with the key), then drops the
+  children and undo history (`afterLock`). Copies of open encrypted blocks
+  carry the ciphertext, not the children. `PUT /api/encryption` only accepts a
+  new wrapping from a client that sends the current check. The terminal
+  command (`src/crypto.rs`, `blockseq reset-encryption-password`) unwraps the
+  key with the recovery key and re-wraps it with a new password; its formats
+  must match `crypto.js`.
 - **Block selection** (`PageEditor.sel = {anchor, focus}`) is a range of
   visible blocks; `selectedRoots()` drops blocks whose parent is also
   selected, so children always travel with their parent. One editor holds a

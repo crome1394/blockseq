@@ -9,6 +9,7 @@ const DEFAULTS = {
   threading: true, // highlight the path from the edited block up to its parents
   threadAlways: false, // show lines from every block to its parent all the time
   linksNewTab: true, // open web links in a new browser tab
+  lockMinutes: 15, // lock encrypted blocks after this many idle minutes (0 = never)
   liveCode: true, // syntax colours while editing code blocks
   codeWrap: false, // wrap long lines in code blocks instead of scrolling sideways
   codeFold: true, // long code blocks start folded
@@ -83,6 +84,9 @@ export const CATEGORIES = [
     ['favorites', 'Favorites in the sidebar', 'Show starred pages in the sidebar. Star a page with ☆ next to its title.'],
   ] },
   { id: 'tasks', label: 'Tasks', custom: true },
+  { id: 'security', label: 'Security', options: [
+    ['lockMinutes', 'Lock encrypted blocks after (minutes idle)', 'Unlocked #Encrypted blocks lock again after this long without activity. 0 means only when you close the tab.', { number: true, min: 0, max: 1440 }],
+  ] },
   { id: 'keyboard', label: 'Keyboard', custom: true },
 ];
 

@@ -8,6 +8,7 @@ import { ACTIONS, defaultKey, comboOf, prettyKey } from './keys.js';
 import { getStatuses, setStatuses, STATUS_COLORS, statusStyle } from './tasks.js';
 import { api } from './api.js';
 import { toast } from './ui.js';
+import { securityPanel } from './secure-ui.js';
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -124,6 +125,11 @@ export function settingsForm(initial) {
       const list = el('div', 'settings');
       cat.options.forEach((o) => list.append(settingRow(o, store)));
       panel.append(list);
+      if (id === 'security') {
+        const live = el('div');
+        panel.insertBefore(live, list);
+        securityPanel().then((p) => live.replaceChildren(p));
+      }
     }
     panel.append(el('p', 'muted small', id === 'tasks'
       ? 'Task statuses are shared by all your devices.'
@@ -155,6 +161,12 @@ export function settingsForm(initial) {
       } else if (cat.id === 'keyboard') {
         const actions = ACTIONS.filter(([id, label, , group]) => hit(label, group, prettyKey(keyOf(id)), 'keyboard shortcut key'));
         if (actions.length) add(keyEditor(actions, true));
+      }
+      if (cat.id === 'security' && hit('encrypt', 'encrypted', 'password', 'recovery', 'lock', 'security')) {
+        const open = el('button', '', 'Encryption password and locking…');
+        open.type = 'button';
+        open.addEventListener('click', () => show('security'));
+        add(open);
       } else if (cat.id === 'tasks' && hit('task', 'status', 'statuses', 'colour', 'color', 'todo', 'done', ...statusDraft.map((s) => `${s.word} ${s.label}`))) {
         const open = el('button', '', 'Edit task statuses…');
         open.type = 'button';

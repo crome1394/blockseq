@@ -56,6 +56,17 @@ cargo build --release              # release build embeds web/ in the binary
 - Validate every name that becomes a path (`workbooks::valid_id`,
   `assets::valid_name`). No path traversal.
 
+**Encrypted blocks**
+- Plaintext of `#Encrypted` children must never be sent to the server, written
+  to `localStorage`, or put on the clipboard. Keep `flatten({ forSave: true })`,
+  `sealSecrets` and the `subtreeMarkdown` rule intact, and test that the
+  server's copy contains no plaintext after any change to saving or copying.
+- Do not weaken the key derivation (PBKDF2-SHA256, 600k rounds for passwords)
+  or change the formats without a version bump; `web/js/crypto.js` and
+  `src/crypto.rs` must stay byte-compatible.
+- Use WebCrypto and the RustCrypto crates (`aes-gcm`, `pbkdf2`, `sha2`) only;
+  never hand-roll cryptography.
+
 **Logseq compatibility**
 - Block text stays Logseq-flavoured Markdown. Things Blockseq manages
   (numbered lists, colours, headings, image alignment/size, PDF view,

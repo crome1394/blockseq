@@ -20,9 +20,34 @@ pub struct Status {
     pub done: bool,
 }
 
+/// The key for #Encrypted blocks. The real key is random and never stored;
+/// only copies of it encrypted ("wrapped") with your password and with your
+/// recovery key are kept. All binary values are standard base64.
+/// See crypto.rs (server) and web/js/crypto.js (browser): both must agree.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Encryption {
+    pub version: u32,
+    /// PBKDF2-SHA256 salt and rounds for the password.
+    pub salt: String,
+    pub iterations: u32,
+    /// The key, AES-256-GCM encrypted with the password-derived key.
+    pub pw_iv: String,
+    pub pw_data: String,
+    /// The same key, encrypted with the recovery-key-derived key.
+    pub rk_salt: String,
+    pub rk_iterations: u32,
+    pub rk_iv: String,
+    pub rk_data: String,
+    /// SHA-256 of the key (with a prefix): proves a client holds the key
+    /// before it may change the password.
+    pub check: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     pub statuses: Vec<Status>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<Encryption>,
 }
 
 impl Default for Config {
@@ -34,6 +59,7 @@ impl Default for Config {
             done,
         };
         Config {
+            encryption: None,
             statuses: vec![
                 s("BACKLOG", "Backlog", "gray", false),
                 s("TODO", "Todo", "blue", false),

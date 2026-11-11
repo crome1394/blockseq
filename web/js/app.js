@@ -526,7 +526,8 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     if (ev.type === 'resync') return resyncAll();
-    if (ev.type === 'workbooks') return;
+    if (ev.type === 'workbooks' || ev.type === 'encryption') return;
+    if (!ev.name) return; // everything below is about one page
     if (ev.type === 'config') return reloadStatuses();
     if (ev.wb && ev.wb !== workbook()) return; // another workbook
     refreshCalendar(); // our own saves can add a journal dot too
@@ -571,7 +572,7 @@ let pendingKey = null; // first key of a two-key sequence ("g" of "g j")
 let pendingTimer = null;
 
 document.addEventListener('keydown', (e) => {
-  if (e.defaultPrevented || e.isComposing) return;
+  if (e.defaultPrevented || e.isComposing || !e.key) return;
   const combo = comboOf(e);
   if (!combo) return;
   const inField = !!e.target.closest?.('input, textarea, select, [contenteditable]');
@@ -931,6 +932,11 @@ document.addEventListener('click', (e) => {
 document.addEventListener('mousedown', (e) => {
   if (e.target.closest?.('.inline-copy')) e.preventDefault(); // don't end editing elsewhere
 });
+
+// #Encrypted blocks: open them on unlock; save and hide them on lock.
+document.addEventListener('blockseq:unlocked', () => { for (const ed of editors) ed.openSecrets(); });
+document.addEventListener('blockseq:locking', (e) => { for (const ed of editors) e.detail.wait.push(ed.beforeLock()); });
+document.addEventListener('blockseq:locked', () => { for (const ed of editors) ed.afterLock(); toast('Encrypted blocks locked'); });
 
 // Image sizes ({:size "half"}) depend on the picture's real size, known once loaded.
 const SIZE_FACTORS = { original: 1, half: 0.5, quarter: 0.25 };

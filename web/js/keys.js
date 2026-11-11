@@ -43,7 +43,8 @@ const MODIFIERS = new Set(['Control', 'Shift', 'Alt', 'Meta']);
 // The combo a key event stands for, e.g. "Ctrl+Shift+Enter" or "?".
 // Shift is left out for printable characters ("?" already includes it).
 export function comboOf(e) {
-  if (MODIFIERS.has(e.key)) return null;
+  // Autofill sends keydown events with no key at all.
+  if (!e.key || MODIFIERS.has(e.key)) return null;
   let key = e.key === ' ' ? 'Space' : e.key;
   if (key.length === 1 && /[a-z]/i.test(key) && (e.ctrlKey || e.metaKey || e.altKey)) key = key.toUpperCase();
   const mods = [];

@@ -11,6 +11,7 @@
 mod api;
 mod assets;
 mod config;
+mod crypto;
 mod db;
 mod md;
 mod workbooks;
@@ -140,6 +141,15 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let data_env = std::env::var("BLOCKSEQ_DATA").unwrap_or_else(|_| "data".into());
+    if std::env::args().nth(1).as_deref() == Some("reset-encryption-password") {
+        if let Err(e) = crypto::reset_command(std::path::Path::new(&data_env)) {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let addr = std::env::var("BLOCKSEQ_ADDR").unwrap_or_else(|_| "0.0.0.0:3030".into());
     let data_dir = PathBuf::from(std::env::var("BLOCKSEQ_DATA").unwrap_or_else(|_| "data".into()));
     let password = std::env::var("BLOCKSEQ_PASSWORD").ok().filter(|p| !p.is_empty());
@@ -179,6 +189,7 @@ async fn main() -> Result<()> {
         .route("/assets", get(api::list_assets).post(api::upload_asset).delete(api::delete_asset))
         .route("/workbooks", get(api::list_workbooks).post(api::create_workbook))
         .route("/config", get(api::get_config).put(api::put_config))
+        .route("/encryption", get(api::get_encryption).put(api::put_encryption))
         .route("/events", get(api::events));
 
     let app = Router::new()

@@ -55,7 +55,8 @@ export function openModal(title, body, buttons = [['Close']]) {
   }
   box.append(h, body, foot);
   overlay.append(box);
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
+  // Some dialogs (e.g. the recovery key) must be closed with their own button.
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay && !box.classList.contains('no-overlay-close')) closeModal(); });
   document.body.append(overlay);
   return box;
 }

@@ -305,6 +305,35 @@ button next to it.
 line when nothing is selected (status words and trailing tags stay outside).
 Press again to undo it.
 
+**Encrypted blocks:** tag a block `#Encrypted` and everything nested under it
+is encrypted in your browser (AES-256-GCM) before it is saved. The tagged block's
+own text stays readable as a label; the server, the database, the Markdown files
+and backups only hold scrambled text. Locked blocks show "🔒 Encrypted. Click to
+unlock"; one password unlocks every encrypted block in every workbook, and they
+lock again after 15 idle minutes (change it in *Settings → Security*), when the
+tab closes, or with the 🔓 Lock button. Copying an encrypted block copies it
+encrypted.
+
+- **Set the password** in *Settings → Security*. You are shown a **recovery key**
+  once: save it in a password manager or print it. Without the password *or* the
+  recovery key, encrypted blocks cannot be read by anyone, including the server.
+- **Change it** in *Settings → Security* (needs the current password).
+- **Forgot it?** Use *Forgot password…* in Settings with the recovery key, or on
+  the server:
+
+  ```sh
+  ssh -t blockseq 'BLOCKSEQ_DATA=/var/lib/blockseq blockseq reset-encryption-password'
+  ```
+
+  It asks for the recovery key and a new password (typing is hidden). Existing
+  blocks stay readable. `-t` gives the command a terminal so it can ask
+  questions; running it as root is fine, it keeps `config.json` owned by the
+  service user.
+- Encryption needs **HTTPS** (your Caddy address): browsers only offer it on
+  secure pages. Over plain `http://` encrypted blocks stay locked.
+- Text inside encrypted blocks is not searchable, and links or tags inside it
+  don't create pages. Logseq shows encrypted blocks as scrambled text.
+
 **Renaming pages and tags:** open the page (click a tag to get to its page),
 then ⋯ → *Rename…*. Every `#tag`, `#[[tag]]`, `[[link]]` and `tags::` entry in
 the workbook is rewritten to the new name. If a page with the new name already

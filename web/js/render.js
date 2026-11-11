@@ -214,7 +214,7 @@ export function inline(text) {
 // Block properties Blockseq manages itself. They are stored in the block text
 // the way Logseq writes them (so the Markdown mirror stays compatible), but
 // hidden while viewing and editing.
-export const HIDDEN_PROPS = ['logseq.order-list-type', 'background-color', 'heading'];
+export const HIDDEN_PROPS = ['logseq.order-list-type', 'background-color', 'heading', 'encrypted'];
 const ALWAYS_HIDDEN = new Set(['id', 'collapsed', ...HIDDEN_PROPS]);
 
 // Splits managed properties out of block text: {content, props}.

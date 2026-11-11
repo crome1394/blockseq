@@ -15,6 +15,8 @@ import {
 import { getStatuses, statusOf, statusPrefix, stripStatus, withStatus, nextStatus, statusStyle, hasTaskTag } from './tasks.js';
 import { matches } from './keys.js';
 import { openPdfPane, openFilePane } from './pdfview.js';
+import { ENCRYPTED_TAG, isUnlocked, available as cryptoAvailable, encryptText, decryptText } from './crypto.js';
+import { unlockDialog } from './secure-ui.js';
 import { journalName } from './dates.js';
 import { toast, copyText, updateStatus, openModal } from './ui.js';
 import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
@@ -85,7 +87,7 @@ function nodeAt(ed, target) {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (!selectedEditor || e.defaultPrevented || isField(e.target) || document.querySelector('.modal-overlay, .menu')) return;
+  if (!e.key || !selectedEditor || e.defaultPrevented || isField(e.target) || document.querySelector('.modal-overlay, .menu')) return;
   if (selectedEditor.disposed || !selectedEditor.sel) { selectedEditor = null; return; }
   selectedEditor.onSelectionKey(e);
 });
@@ -245,6 +247,117 @@ export class PageEditor {
     this.redoStack = [];
     this.burst = false;
     this.render();
+    this.openSecrets();
+  }
+
+  // ---- #Encrypted blocks -----------------------------------------------------
+  //
+  // A block tagged #Encrypted keeps its own text readable; its children are
+  // stored as one encrypted outline in its hidden `encrypted::` property.
+  // `node.unsealed` means the children are decrypted in memory right now.
+
+  // Every #Encrypted block, innermost first (so nested ones seal before the
+  // block that contains them).
+  secretRoots() {
+    const out = [];
+    const walk = (n) => n.children.forEach((c) => {
+      walk(c);
+      if (ENCRYPTED_TAG.test(c.content) || c.props.encrypted) out.push(c);
+    });
+    walk(this.root);
+    return out;
+  }
+
+  // Decrypts every locked encrypted block on the page (when unlocked).
+  async openSecrets() {
+    if (!isUnlocked()) return;
+    let changed = false;
+    for (const r of this.secretRoots()) {
+      if (!r.props.encrypted || r.unsealed) continue;
+      try {
+        const text = await decryptText(r.props.encrypted);
+        if (this.disposed || r.unsealed) return;
+        const kids = text.trim() ? (parseOutline(text, uuid) || []) : [];
+        const existing = new Set(this.flatten().map((b) => b.id));
+        const adopt = (n, parent) => {
+          if (existing.has(n.id)) n.id = uuid();
+          existing.add(n.id);
+          n.parent = parent;
+          const split = splitProps(n.content);
+          n.content = split.content;
+          n.props = split.props;
+          n.children.forEach((c) => adopt(c, n));
+        };
+        kids.forEach((k) => adopt(k, r));
+        r.children = [...kids, ...r.children]; // keep blocks added while locked
+        r.unsealed = true;
+        r.sealedText = text;
+        r.decryptError = false;
+        changed = true;
+      } catch {
+        r.decryptError = true;
+        changed = true;
+      }
+    }
+    if (changed && !this.disposed) {
+      this.refresh(this.editing, this.ta?.selectionStart);
+      // Opening a block may reveal encrypted blocks nested inside it.
+      if (this.secretRoots().some((r) => r.props.encrypted && !r.unsealed && !r.decryptError)) this.openSecrets();
+    }
+  }
+
+  // Before saving: encrypt the children of every #Encrypted block. Children
+  // are only ever sent to the server inside the encrypted property.
+  async sealSecrets() {
+    for (const r of this.secretRoots()) {
+      const tagged = ENCRYPTED_TAG.test(r.content);
+      if (!tagged && r.props.encrypted && r.unsealed) {
+        // Tag removed while unlocked: store the children as normal blocks again.
+        delete r.props.encrypted;
+        r.unsealed = false;
+        this.decorateSecret(r);
+        continue;
+      }
+      if (!tagged || !isUnlocked()) continue;
+      if (r.props.encrypted && !r.unsealed) continue; // still locked
+      const text = r.children.map((c) => subtreeMarkdown(c, { ids: true })).join('\n');
+      if (!r.props.encrypted || text !== r.sealedText) {
+        r.props.encrypted = await encryptText(text);
+        r.sealedText = text;
+      }
+      const was = r.unsealed;
+      r.unsealed = true;
+      if (!was) this.decorateSecret(r);
+    }
+  }
+
+  // Called while locking: save (encrypting with the key one last time).
+  async beforeLock() {
+    if (this.editing && this.secretRoots().some((r) => isInside(this.editing, r))) this.stopEdit();
+    if (this.codeEdit && this.secretRoots().some((r) => isInside(this.codeEdit.node, r))) this.closeCodeEditor();
+    if (this.dirty || this.secretRoots().some((r) => ENCRYPTED_TAG.test(r.content) && r.unsealed && !r.props.encrypted)) {
+      this.dirty = true;
+      await this.save();
+    }
+  }
+
+  // After locking: drop decrypted text from memory (and undo history).
+  afterLock() {
+    let any = false;
+    for (const r of this.secretRoots()) {
+      if (r.props.encrypted && r.unsealed) {
+        if (this.editing && isInside(this.editing, r)) this.stopEdit();
+        r.children = [];
+        r.unsealed = false;
+        r.sealedText = null;
+        any = true;
+      }
+    }
+    if (any) {
+      this.undoStack = [];
+      this.redoStack = [];
+      this.refresh(this.editing, this.ta?.selectionStart);
+    }
   }
 
   get lower() { return this.name.toLowerCase(); }
@@ -279,16 +392,19 @@ export class PageEditor {
     return found;
   }
 
-  flatten() {
+  // opts.forSave: leave out the children of unlocked #Encrypted blocks
+  // (they travel inside the block's encrypted property instead).
+  flatten(opts = {}) {
     const out = [];
     const walk = (n) => n.children.forEach((c) => {
+      const sealed = opts.forSave && c.props.encrypted && c.unsealed;
       out.push({
         id: c.id,
         parent_id: n === this.root ? null : n.id,
         content: joinProps(c.content, c.props),
-        collapsed: c.collapsed && c.children.length > 0,
+        collapsed: !sealed && c.collapsed && c.children.length > 0,
       });
-      walk(c);
+      if (!sealed) walk(c);
     });
     walk(this.root);
     return out;
@@ -332,6 +448,8 @@ export class PageEditor {
     closeAutocomplete();
     this.root = buildTree(snap.blocks);
     if (!this.root.children.length) this.insertChild(this.root, makeNode(), 0);
+    // Restored encrypted blocks that came back with their children are open.
+    for (const r of this.secretRoots()) if (r.props.encrypted && r.children.length && isUnlocked()) r.unsealed = true;
     this.markDirty();
     this.render();
     const n = snap.focus && this.findNode(snap.focus.id);
@@ -414,8 +532,56 @@ export class PageEditor {
       this.appendNodes(kids, node.children);
       wrap.append(kids);
     }
+    this.decorateSecret(node);
     hydrateRefs(content);
     return wrap;
+  }
+
+  // Lock button, styling and the locked / not-encrypted notice of an
+  // #Encrypted block. Re-run whenever its state changes.
+  decorateSecret(node) {
+    const wrap = node.el;
+    if (!wrap) return;
+    const row = wrap.querySelector(':scope > .block-row');
+    wrap.querySelector(':scope > .secret-box')?.remove();
+    row?.querySelector(':scope > .secret-lock')?.remove();
+    const secret = ENCRYPTED_TAG.test(node.content) || !!node.props.encrypted;
+    wrap.classList.toggle('secret-root', secret);
+    wrap.classList.toggle('unlocked', secret && !!node.unsealed);
+    if (!secret) return;
+    if (node.unsealed && row) {
+      const lockBtn = el('button', 'secret-lock', '🔓 Lock');
+      lockBtn.type = 'button';
+      lockBtn.title = 'Lock all encrypted blocks now';
+      lockBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      lockBtn.addEventListener('click', () => import('./crypto.js').then((m) => m.lock()));
+      row.append(lockBtn);
+    } else if (node.props.encrypted || node.children.length) {
+      wrap.append(this.secretNotice(node));
+    }
+  }
+
+  // The box shown under a locked #Encrypted block (or one not encrypted yet).
+  secretNotice(node) {
+    const box = el('div', 'children secret-box');
+    const btn = el('button', 'secret-unlock');
+    btn.type = 'button';
+    if (!node.props.encrypted) {
+      btn.textContent = '⚠ Not encrypted yet: unlock (or set a password in Settings → Security) to encrypt this block';
+      btn.classList.add('warn');
+    } else if (!cryptoAvailable()) {
+      btn.textContent = '🔒 Encrypted. Open Blockseq over HTTPS to unlock it.';
+      btn.disabled = true;
+    } else if (node.decryptError) {
+      btn.textContent = "🔒 Encrypted, but it couldn't be decrypted with the current key.";
+      btn.disabled = true;
+    } else {
+      btn.textContent = '🔒 Encrypted. Click to unlock.';
+    }
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', () => unlockDialog());
+    box.append(btn);
+    return box;
   }
 
   renderConflict() {
@@ -442,6 +608,7 @@ export class PageEditor {
   rerenderContent(node) {
     if (!node.contentEl) return;
     node.el?.classList.toggle('quote-block', QUOTE_TAG.test(node.content));
+    this.decorateSecret(node);
     this.styleContent(node, node.contentEl);
     node.contentEl.innerHTML = renderContent(node.content);
     decorateCode(node.contentEl);
@@ -842,7 +1009,7 @@ export class PageEditor {
     } else if ((k === 'Backspace' || k === 'Delete') && !mod) {
       e.preventDefault();
       this.deleteSelection();
-    } else if (mod && k.toLowerCase() === 'a' && !e.shiftKey) {
+    } else if (mod && k?.toLowerCase() === 'a' && !e.shiftKey) {
       e.preventDefault();
       const top = this.root.children;
       if (top.length) this.selectBlocks(top[0], vis[vis.length - 1]);
@@ -1519,7 +1686,8 @@ export class PageEditor {
     const seq = this.changeSeq;
     const wasNew = this.version === 0;
     try {
-      const r = await api.savePage(this.name, this.version, this.flatten(), opts);
+      await this.sealSecrets();
+      const r = await api.savePage(this.name, this.version, this.flatten({ forSave: true }), opts);
       if (r.status === 200) {
         this.version = r.data.page.version;
         this.offline = false;
@@ -1608,6 +1776,9 @@ function subtreeMarkdown(node, opts = {}) {
       if (opts.ids) lines.push(`${ind}  id:: ${n.id}`);
       rest.forEach((l) => lines.push(`${ind}  ${l}`));
     }
+    // An open #Encrypted block is copied encrypted (its property holds the
+    // children), so plaintext never ends up on the clipboard.
+    if (n.props.encrypted && n.unsealed) return;
     n.children.forEach((c) => walk(c, depth + 1));
   };
   walk(node, 0);
