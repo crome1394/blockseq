@@ -31,6 +31,10 @@ export function pdfView(meta) {
   return /:view\s+"?preview"?/.test(meta || '') ? 'preview' : 'link';
 }
 
+const COPY_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+export { COPY_ICON, CHECK_ICON };
+
 const FILE_ICON = '<svg class="file-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
 
 // File kinds by extension (matches the server's assets::kind_of).
@@ -127,6 +131,7 @@ let imageIndex = 0;
 let linkIndex = 0; // [name](../assets/…) file links, counted separately
 
 const INLINE = [
+  '``(?<code2>[^\\n]+?)``',
   '`(?<code>[^`\\n]+)`',
   '\\{\\{(?:video|youtube|vimeo)\\s+(?<embed>[^}\\s]+)\\s*\\}\\}',
   '!\\[(?<imgAlt>[^\\]\\n]*)\\]\\((?<imgUrl>[^)\\s]+)\\)(?:\\{(?<imgMeta>[^}\\n]*)\\})?',
@@ -168,7 +173,13 @@ export function inline(text) {
   while ((m = re.exec(text))) {
     out += esc(text.slice(last, m.index));
     const g = m.groups;
-    if (g.code !== undefined) out += `<code>${esc(g.code)}</code>`;
+    if (g.code2 !== undefined) {
+      // ``text`` is code with a copy button. Like Markdown, one space just
+      // inside the backticks is dropped (so `` `x` `` can hold backticks).
+      const code = g.code2.replace(/^ (.*) $/, '$1');
+      out += `<span class="code-copyable"><code>${esc(code)}</code><button type="button" class="inline-copy" data-copy="${esc(code)}" title="Copy" aria-label="Copy">${COPY_ICON}</button></span>`;
+    }
+    else if (g.code !== undefined) out += `<code>${esc(g.code)}</code>`;
     else if (g.embed !== undefined) out += embedHtml(g.embed);
     else if (g.imgUrl !== undefined && /\.pdf$/i.test(g.imgUrl.split('?')[0])) {
       out += pdfHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);

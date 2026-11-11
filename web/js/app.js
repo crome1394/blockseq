@@ -2,9 +2,9 @@
 
 import { api, clientId, invalidatePageNames } from './api.js';
 import { journalName, journalDay, formatTime } from './dates.js';
-import { esc, renderContent, tagHue, inline } from './render.js';
+import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
-import { toast, updateStatus, setConnected, openModal, closeModal } from './ui.js';
+import { toast, updateStatus, setConnected, openModal, closeModal, copyText } from './ui.js';
 import { decorateCode } from './code.js';
 import { onSettingChange, getSetting, setSetting } from './settings.js';
 import { settingsForm } from './settings-ui.js';
@@ -866,6 +866,20 @@ async function reloadStatuses() {
 document.addEventListener('blockseq:statuses', () => {
   refreshTasks();
   for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
+});
+
+// Copy buttons on ``inline code`` work everywhere (pages, references, tasks).
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('.inline-copy');
+  if (!btn) return;
+  e.preventDefault();
+  copyText(btn.dataset.copy);
+  btn.innerHTML = CHECK_ICON;
+  btn.classList.add('copied');
+  setTimeout(() => { btn.innerHTML = COPY_ICON; btn.classList.remove('copied'); }, 1200);
+});
+document.addEventListener('mousedown', (e) => {
+  if (e.target.closest?.('.inline-copy')) e.preventDefault(); // don't end editing elsewhere
 });
 
 // Image sizes ({:size "half"}) depend on the picture's real size, known once loaded.

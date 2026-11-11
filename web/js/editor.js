@@ -506,6 +506,7 @@ export class PageEditor {
       return;
     }
     if (t.closest('video, audio')) return; // using the player, not editing
+    if (t.closest('.inline-copy')) return; // copied by the page-wide handler in app.js
     const file = t.closest('.file-wrap, .media-wrap');
     if (file) {
       e.stopPropagation();

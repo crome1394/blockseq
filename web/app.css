@@ -628,6 +628,30 @@ html.tag-colors .block-tags .page-ref.tag:hover, html.tag-colors .page-table .ta
 }
 .rendered blockquote.md-quote + blockquote.md-quote { margin-top: -4px; padding-top: 0; }
 .rendered code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+/* ``code`` with a copy button. */
+.code-copyable {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 2px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  vertical-align: baseline;
+  max-width: 100%;
+}
+.code-copyable code { background: none; overflow-wrap: anywhere; }
+.inline-copy {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 3px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.inline-copy:hover { color: var(--text); background: var(--border); }
+.inline-copy.copied { color: var(--ok); }
 .rendered pre { background: var(--code-bg); padding: 8px 12px; border-radius: 6px; overflow-x: auto; margin: 4px 0; }
 .rendered pre code { padding: 0; background: none; }
 

@@ -295,6 +295,9 @@ outline, **Ctrl+X** cuts, **Backspace** deletes, **Ctrl+V** pastes after them,
 edits, **Esc** clears. Copied blocks paste back as blocks, in Blockseq or
 Logseq.
 
+**Inline code:** `` `text` `` is inline code. Double backticks, ` ``text`` `, add a copy
+button next to it.
+
 **Bold and italic:** **Ctrl+B** / **Ctrl+I** wrap the selected text, or the whole
 line when nothing is selected (status words and trailing tags stay outside).
 Press again to undo it.

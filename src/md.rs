@@ -66,6 +66,24 @@ pub fn extract_tags(content: &str) -> std::collections::BTreeSet<String> {
 fn scan_refs(content: &str, mut add: impl FnMut(&str, bool)) {
     // Ignore anything inside inline code or code fences.
     let mut text = String::with_capacity(content.len());
+    // ``code`` counts like `code`: a run of exactly two backticks becomes one
+    // (``` fences are left alone).
+    let content = {
+        let mut out = String::with_capacity(content.len());
+        let mut run = 0;
+        for c in content.chars().chain(std::iter::once('\0')) {
+            if c == '`' {
+                run += 1;
+                continue;
+            }
+            out.push_str(&"`".repeat(if run == 2 { 1 } else { run }));
+            run = 0;
+            if c != '\0' {
+                out.push(c);
+            }
+        }
+        out
+    };
     for (i, part) in content.split('`').enumerate() {
         if i % 2 == 0 {
             text.push_str(part);
@@ -381,6 +399,9 @@ mod tests {
         assert_eq!(names, ["Alice Smith", "Big Plans", "home", "rust", "work"]);
         assert!(extract_refs("# Heading and a#b").is_empty());
         assert!(extract_refs("#+BEGIN_TIP\nhello\n#+END_TIP").is_empty());
+        assert!(extract_refs("run ``echo #notatag`` now").is_empty());
+        assert!(extract_refs("```bash\necho #notatag\n```").is_empty());
+        assert_eq!(extract_refs("``a`` #real").len(), 1);
         let tags: Vec<String> = extract_tags("Met [[Alice Smith]] about #rust and #[[Big Plans]]\ntags:: work").into_iter().collect();
         assert_eq!(tags, ["big plans", "rust", "work"]);
     }
