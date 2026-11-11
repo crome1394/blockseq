@@ -305,6 +305,12 @@ button next to it.
 line when nothing is selected (status words and trailing tags stay outside).
 Press again to undo it.
 
+**Renaming pages and tags:** open the page (click a tag to get to its page),
+then ⋯ → *Rename…*. Every `#tag`, `#[[tag]]`, `[[link]]` and `tags::` entry in
+the workbook is rewritten to the new name. If a page with the new name already
+exists, the two are merged (the other page's blocks first). Journals and the
+*task* page can't be renamed.
+
 **Tags:** typing `#` suggests existing tags as you type, with *New tag …* first.
 Enter puts the chosen tag at the end of the line (shown on the right);
 **Ctrl+Enter** keeps it where you typed it. A tag or link page that is empty
@@ -348,7 +354,11 @@ journals), Journals, Starred or All. Each browser remembers the last choice.
 - *Tasks:* the status list (shared by all devices)
 - *Keyboard:* change any global shortcut
 
-Everything except task statuses is saved per browser.
+Changes in Settings take effect when you click **Apply**. **Undo changes**
+throws away what you haven't applied; after an Apply, **Undo last apply** puts
+the previous settings back. The search box at the top finds any option,
+shortcut or the task statuses. Everything except task statuses is saved per
+browser.
 
 Code highlighting is built in, with no third-party library. It covers bash/shell,
 ini/conf/toml/systemd, YAML, JSON, Python, JavaScript/TypeScript, Rust, Go,

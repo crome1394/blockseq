@@ -175,6 +175,42 @@ pub async fn ensure_page(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
 }
 
 #[derive(Deserialize)]
+pub struct RenameQuery {
+    name: String,
+    to: String,
+}
+
+/// Renames a page or tag, rewriting every link and tag to it (merging into
+/// an existing page of the new name).
+pub async fn rename_page(
+    State(s): Shared,
+    Wb(wb): Wb,
+    Query(q): Query<RenameQuery>,
+    headers: HeaderMap,
+) -> ApiResult {
+    let words = s.task_words();
+    let client = client_id(&headers);
+    let out = db::rename_page(&mut wb.db.lock().unwrap(), &q.name, &q.to, &words)
+        .map_err(|e| bad(format!("{e:#}")))?;
+    wb.remove_mirror(&out.old);
+    s.notify(&wb, json!({ "type": "deleted", "name": out.old.name, "client": "" }));
+    {
+        let conn = wb.db.lock().unwrap();
+        let blocks = db::get_blocks(&conn, &out.page.id)?;
+        drop(conn);
+        wb.write_mirror(&out.page, &blocks);
+    }
+    for (page, blocks) in &out.changed {
+        wb.write_mirror(page, blocks);
+        s.notify(&wb, json!({ "type": "page", "name": page.name, "version": page.version, "client": "" }));
+    }
+    s.notify(&wb, json!({ "type": "page", "name": out.page.name, "version": out.page.version, "client": "" }));
+    prune(&s, &wb, &client);
+    let updated = out.changed.iter().filter(|(p, _)| p.id != out.page.id).count();
+    Ok(Json(json!({ "page": out.page, "merged": out.merged, "updated_pages": updated })).into_response())
+}
+
+#[derive(Deserialize)]
 pub struct FavoriteQuery {
     name: String,
     on: bool,

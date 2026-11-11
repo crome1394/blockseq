@@ -169,6 +169,7 @@ async fn main() -> Result<()> {
         )
         .route("/page/ensure", post(api::ensure_page))
         .route("/page/favorite", post(api::set_favorite))
+        .route("/page/rename", post(api::rename_page))
         .route("/pages", get(api::list_pages))
         .route("/names", get(api::names))
         .route("/journals", get(api::journals))

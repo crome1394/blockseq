@@ -220,6 +220,7 @@ CRDTs (conflict-free merge structures):
   | `GET/POST /api/workbooks` | `list_workbooks` / `create_workbook` | not workbook-scoped |
   | `GET/PUT /api/config` | `get_config` / `put_config` | task statuses; event `config` |
   | `POST /api/page/favorite?name=&on=` | `set_favorite` | star / unstar, event `favorite` |
+  | `POST /api/page/rename?name=&to=` | `rename_page` | rename or merge; rewrites links/tags everywhere (`md::rename_refs`, code left alone) |
   | `GET /api/pages` | `list_pages` | name, journal day, created, updated, block count, favorite, tags |
   | `GET /api/names` | `names` | page names plus linked-only names |
   | `GET /api/journals?before=&limit=` | `journals` | newest first, with blocks |

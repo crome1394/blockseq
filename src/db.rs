@@ -192,6 +192,93 @@ pub fn prune_orphans(conn: &Connection) -> Result<Vec<PageMeta>> {
     Ok(orphans)
 }
 
+pub struct RenameOutcome {
+    /// The page under its new name.
+    pub page: PageMeta,
+    /// The page as it was, so its old Markdown file can be removed.
+    pub old: PageMeta,
+    /// True when it was merged into an existing page of that name.
+    pub merged: bool,
+    /// Every page whose blocks were rewritten, with its blocks (for the mirror).
+    pub changed: Vec<(PageMeta, Vec<Block>)>,
+}
+
+/// Renames a page (or tag) and rewrites every link and tag to it. If another
+/// page already has the new name, the two are merged: this page's blocks are
+/// added after that page's blocks.
+pub fn rename_page(conn: &mut Connection, from: &str, to: &str, task_words: &[String]) -> Result<RenameOutcome> {
+    let to = to.trim();
+    if to.is_empty() || to.contains('\n') || to.contains("[[") || to.contains("]]") || to.starts_with('#') {
+        bail!("names can't be empty, start with # or contain [[ ]]");
+    }
+    if md::parse_journal_name(to).is_some() {
+        bail!("that name is a journal date");
+    }
+    let Some(old) = get_page(conn, from)? else { bail!("no page called {from}") };
+    if old.journal_day.is_some() {
+        bail!("journals can't be renamed");
+    }
+    if old.name_lower() == TASK_PAGE {
+        bail!("the task page is used by task statuses and can't be renamed");
+    }
+    let now = now_ms();
+    let mut merged = false;
+    let mut changed = Vec::new();
+    let page = match get_page(conn, to)? {
+        Some(target) if target.id != old.id => {
+            // Merge: move this page's blocks to the end of the other page.
+            let mut blocks = get_blocks(conn, &target.id)?;
+            blocks.extend(get_blocks(conn, &old.id)?);
+            let saved = match save_page(conn, &target.name, target.version, &blocks, task_words)? {
+                SaveOutcome::Saved(p) => p,
+                SaveOutcome::Conflict(..) => bail!("{} changed during the rename", target.name),
+            };
+            if old.favorite {
+                set_favorite(conn, &target.name, true)?;
+            }
+            conn.execute("DELETE FROM pages WHERE id = ?1", [&old.id])?;
+            merged = true;
+            changed.push((saved.clone(), blocks));
+            saved
+        }
+        _ => {
+            conn.execute(
+                "UPDATE pages SET name = ?1, name_lower = ?2, version = version + 1, updated_at = ?3 WHERE id = ?4",
+                params![to, to.to_lowercase(), now, old.id],
+            )?;
+            get_page(conn, to)?.expect("renamed page")
+        }
+    };
+    // Rewrite links and tags everywhere they appear.
+    let pages: Vec<String> = conn
+        .prepare(
+            "SELECT DISTINCT p.name FROM refs r JOIN blocks b ON b.id = r.block_id
+             JOIN pages p ON p.id = b.page_id WHERE r.target_lower = ?1",
+        )?
+        .query_map([old.name_lower()], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for name in pages {
+        let Some(p) = get_page(conn, &name)? else { continue };
+        let mut blocks = get_blocks(conn, &p.id)?;
+        let mut any = false;
+        for b in &mut blocks {
+            // Links use the surviving page's spelling (matters when merging).
+            if let Some(c) = md::rename_refs(&b.content, &old.name, &page.name) {
+                b.content = c;
+                any = true;
+            }
+        }
+        if any {
+            if let SaveOutcome::Saved(saved) = save_page(conn, &p.name, p.version, &blocks, task_words)? {
+                changed.retain(|(c, _)| c.id != saved.id);
+                changed.push((saved, blocks));
+            }
+        }
+    }
+    let page = get_page(conn, &page.name)?.unwrap_or(page);
+    Ok(RenameOutcome { page, old, merged, changed })
+}
+
 /// Page that every task links to.
 pub const TASK_PAGE: &str = "task";
 
@@ -314,6 +401,12 @@ pub fn ensure_page(conn: &Connection, name: &str, now: i64) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+impl PageMeta {
+    pub fn name_lower(&self) -> String {
+        self.name.to_lowercase()
+    }
 }
 
 fn page_from_row(r: &rusqlite::Row) -> rusqlite::Result<PageMeta> {
@@ -679,6 +772,30 @@ mod tests {
             content: content.into(),
             collapsed: false,
         }
+    }
+
+    #[test]
+    fn pages_rename_and_merge() {
+        let mut c = mem();
+        save_page(&mut c, "Notes", 0, &[block("a", None, "Server #emby and [[Emby]]")], &[]).unwrap();
+        // "Emby" exists (version 0) because Notes links to it.
+        assert!(matches!(save_page(&mut c, "Emby", 0, &[block("e", None, "About emby")], &[]).unwrap(), SaveOutcome::Saved(_)));
+        let out = rename_page(&mut c, "emby", "Emby Server", &[]).unwrap();
+        assert!(!out.merged);
+        assert_eq!(out.page.name, "Emby Server");
+        let notes = get_page(&c, "Notes").unwrap().unwrap();
+        assert_eq!(get_blocks(&c, &notes.id).unwrap()[0].content, "Server #[[Emby Server]] and [[Emby Server]]");
+        assert!(get_page(&c, "Emby").unwrap().is_none());
+        assert_eq!(backlinks(&c, "Emby Server").unwrap().len(), 1);
+        // Merge into an existing page.
+        save_page(&mut c, "Media", 0, &[block("m", None, "Media page")], &[]).unwrap();
+        let out = rename_page(&mut c, "Emby Server", "media", &[]).unwrap();
+        assert!(out.merged);
+        let media = get_page(&c, "Media").unwrap().unwrap();
+        let contents: Vec<String> = get_blocks(&c, &media.id).unwrap().into_iter().map(|b| b.content).collect();
+        assert_eq!(contents, ["Media page", "About emby"]);
+        assert_eq!(get_blocks(&c, &notes.id).unwrap()[0].content, "Server #Media and [[Media]]");
+        assert!(rename_page(&mut c, "Notes", "Nov 11th, 2026", &[]).is_err());
     }
 
     #[test]

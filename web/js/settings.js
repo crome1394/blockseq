@@ -84,8 +84,10 @@ export const CATEGORIES = [
   { id: 'keyboard', label: 'Keyboard', custom: true },
 ];
 
-// One setting as a form row (checkbox, or a select when it has choices).
-export function settingRow([name, label, help, choices]) {
+// One setting as a form row (checkbox, select or number). `store` reads and
+// writes the value; the Settings screen passes a draft so nothing changes
+// until Apply.
+export function settingRow([name, label, help, choices], store = { get: getSetting, set: setSetting }) {
   const row = document.createElement('label');
   row.className = 'setting';
   const text = document.createElement('div');
@@ -99,13 +101,13 @@ export function settingRow([name, label, help, choices]) {
     input.className = 'setting-number';
     input.min = choices.min;
     input.max = choices.max;
-    input.value = getSetting(name);
+    input.value = store.get(name);
     input.addEventListener('change', () => {
       const v = Math.round(Number(input.value));
-      if (!Number.isFinite(v)) { input.value = getSetting(name); return; }
+      if (!Number.isFinite(v)) { input.value = store.get(name); return; }
       const clamped = Math.min(choices.max, Math.max(choices.min, v));
       input.value = clamped;
-      setSetting(name, clamped);
+      store.set(name, clamped);
     });
     row.append(text, input);
   } else if (choices) {
@@ -117,14 +119,14 @@ export function settingRow([name, label, help, choices]) {
       opt.textContent = t;
       select.append(opt);
     }
-    select.value = getSetting(name);
-    select.addEventListener('change', () => setSetting(name, select.value));
+    select.value = store.get(name);
+    select.addEventListener('change', () => store.set(name, select.value));
     row.append(text, select);
   } else {
     const box = document.createElement('input');
     box.type = 'checkbox';
-    box.checked = !!getSetting(name);
-    box.addEventListener('change', () => setSetting(name, box.checked));
+    box.checked = !!store.get(name);
+    box.addEventListener('change', () => store.set(name, box.checked));
     row.append(box, text);
   }
   return row;

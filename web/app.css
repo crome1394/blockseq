@@ -1071,6 +1071,8 @@ textarea.code-edit.live::selection { background: rgba(100, 150, 255, 0.35); colo
 .settings { max-height: 62vh; overflow-y: auto; padding-right: 4px; }
 .dialog-form { display: flex; flex-direction: column; gap: 10px; }
 .field { display: flex; align-items: center; gap: 12px; font-weight: 600; }
+.field input { flex: 1; font-weight: 400; outline: none; }
+.field input:focus { border-color: var(--accent); }
 .journal-pick { display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
 .pick-row { display: flex; justify-content: space-between; gap: 12px; border: none; background: none; text-align: left; padding: 7px 10px; border-radius: 6px; }
 .pick-row:hover, .pick-row.active { background: var(--accent-soft); }
@@ -1327,6 +1329,13 @@ kbd {
   color: var(--text);
 }
 
+.settings-wrap { display: flex; flex-direction: column; gap: 12px; }
+.settings-search { width: 100%; }
+.settings-bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.settings-bar .muted { margin-right: auto; color: var(--busy); }
+.settings-result { margin-bottom: 16px; display: flex; flex-direction: column; gap: 12px; }
+.settings-result-cat { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
+.rename-merge { color: var(--busy); }
 .settings-screen { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 20px; min-height: 380px; }
 .settings-nav { display: flex; flex-direction: column; gap: 2px; border-right: 1px solid var(--border); padding-right: 12px; }
 .settings-nav button { text-align: left; border: none; background: none; padding: 6px 10px; color: var(--text); }

@@ -207,6 +207,141 @@ pub fn mirror_path(name: &str, journal_day: Option<i64>) -> String {
     format!("pages/{file}.md")
 }
 
+fn is_tag_char(c: char) -> bool {
+    !c.is_whitespace() && !",.!?;:()[]\"'`#".contains(c)
+}
+
+/// How a page name is written as a tag: `#name`, or `#[[name]]` when it has
+/// spaces or other characters a bare tag can't hold.
+pub fn tag_token(name: &str) -> String {
+    if !name.is_empty() && name.chars().all(is_tag_char) && !name.starts_with('+') {
+        format!("#{name}")
+    } else {
+        format!("#[[{name}]]")
+    }
+}
+
+/// Byte ranges of `content` outside code (``` fences and `inline` code), the
+/// only places links and tags count.
+fn text_ranges(content: &str) -> Vec<(usize, usize)> {
+    let b = content.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let mut run = 0;
+        while i + run < b.len() && b[i + run] == b'`' {
+            run += 1;
+        }
+        // Find the closing run: same length for inline code, 3+ for fences.
+        let mut j = i + run;
+        let mut close = None;
+        while j < b.len() {
+            if b[j] == b'`' {
+                let mut r = 0;
+                while j + r < b.len() && b[j + r] == b'`' {
+                    r += 1;
+                }
+                if (run >= 3 && r >= 3) || r == run {
+                    close = Some(j + r);
+                    break;
+                }
+                j += r;
+            } else {
+                j += 1;
+            }
+        }
+        match close {
+            Some(end) => {
+                out.push((start, i));
+                start = end;
+                i = end;
+            }
+            None => i += run, // unmatched backticks are ordinary text
+        }
+    }
+    out.push((start, b.len()));
+    out
+}
+
+/// Rewrites links and tags to page `old` so they point to `new`:
+/// `[[old]]`, `#old`, `#[[old]]` and `tags::` entries (case-insensitive).
+/// Code is left alone. Returns None if nothing changed.
+pub fn rename_refs(content: &str, old: &str, new: &str) -> Option<String> {
+    let old_l = old.trim().to_lowercase();
+    let tag = tag_token(new);
+    let mut out = String::with_capacity(content.len() + 16);
+    let mut changed = false;
+    let mut last = 0;
+    for (zs, ze) in text_ranges(content) {
+        out.push_str(&content[last..zs]);
+        let zone = &content[zs..ze];
+        let mut i = 0;
+        let mut piece = String::with_capacity(zone.len());
+        while i < zone.len() {
+            let rest = &zone[i..];
+            let prev = zone[..i].chars().next_back();
+            let tag_start = prev.is_none_or(|c| c.is_whitespace() || c == '(');
+            // #[[name]] and [[name]]
+            let (hash, after) = if tag_start && rest.starts_with("#[[") { (true, 3) } else if rest.starts_with("[[") { (false, 2) } else { (false, 0) };
+            if after > 0 {
+                if let Some(end) = rest[after..].find("]]") {
+                    let name = &rest[after..after + end];
+                    if !name.contains('\n') && name.trim().to_lowercase() == old_l {
+                        piece.push_str(&if hash { tag.clone() } else { format!("[[{new}]]") });
+                        i += after + end + 2;
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+            // #name
+            if tag_start && rest.starts_with('#') {
+                let name: String = rest[1..].chars().take_while(|c| is_tag_char(*c)).collect();
+                if !name.is_empty() && name.to_lowercase() == old_l {
+                    piece.push_str(&tag);
+                    i += 1 + name.len();
+                    changed = true;
+                    continue;
+                }
+            }
+            let c = rest.chars().next().unwrap();
+            piece.push(c);
+            i += c.len_utf8();
+        }
+        // tags:: a, old, b
+        let piece = piece
+            .split('\n')
+            .map(|line| {
+                let Some(v) = line.trim_start().strip_prefix("tags::") else { return line.to_string() };
+                let indent = &line[..line.len() - line.trim_start().len()];
+                let items: Vec<String> = v
+                    .split(',')
+                    .map(|t| {
+                        let bare = t.trim().trim_start_matches('#').trim_start_matches("[[").trim_end_matches("]]").trim();
+                        if !bare.is_empty() && bare.to_lowercase() == old_l {
+                            changed = true;
+                            new.to_string()
+                        } else {
+                            t.trim().to_string()
+                        }
+                    })
+                    .collect();
+                format!("{indent}tags:: {}", items.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&piece);
+        last = ze;
+    }
+    out.push_str(&content[last..]);
+    changed.then_some(out)
+}
+
 /// True when a block starts with one of the task status words
 /// ("TODO Buy milk"), which makes it a task.
 pub fn is_task(content: &str, words: &[String]) -> bool {
@@ -363,6 +498,18 @@ mod tests {
         assert_eq!(b[3].parent_id.as_deref(), Some(b[2].id.as_str()));
         assert!(b[2].collapsed);
         assert_eq!(b[4].parent_id, None);
+    }
+
+    #[test]
+    fn references_are_renamed() {
+        let r = |c: &str| rename_refs(c, "emby", "Emby Server");
+        assert_eq!(r("Media #Emby and #[[emby]] see [[EMBY]]").as_deref(),
+            Some("Media #[[Emby Server]] and #[[Emby Server]] see [[Emby Server]]"));
+        assert_eq!(r("tags:: linux, emby\nmore").as_deref(), Some("tags:: linux, Emby Server\nmore"));
+        assert_eq!(r("`#emby` and ```\n#emby\n``` and #embyx"), None);
+        assert_eq!(r("not a#emby tag"), None);
+        assert_eq!(rename_refs("TODO x #task", "task", "Job").as_deref(), Some("TODO x #Job"));
+        assert_eq!(rename_refs("Café #café!", "café", "Bar").as_deref(), Some("Café #Bar!"));
     }
 
     #[test]

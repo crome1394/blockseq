@@ -48,6 +48,7 @@ export const api = {
     request('PUT', `/api/page?name=${enc(name)}`, { base_version: baseVersion, blocks }, opts),
   deletePage: (name) => request('DELETE', `/api/page?name=${enc(name)}`),
   ensurePage: (name) => request('POST', `/api/page/ensure?name=${enc(name)}`),
+  renamePage: (name, to) => request('POST', `/api/page/rename?name=${enc(name)}&to=${enc(to)}`),
   setFavorite: (name, on) => request('POST', `/api/page/favorite?name=${enc(name)}&on=${on}`),
   pages: () => getJson('/api/pages'),
   names: () => getJson('/api/names'),

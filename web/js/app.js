@@ -1,6 +1,6 @@
 // App shell: routing, views, search and live updates from the server.
 
-import { api, clientId, invalidatePageNames } from './api.js';
+import { api, clientId, invalidatePageNames, getPageNames } from './api.js';
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
@@ -164,6 +164,7 @@ async function pageView(name, seq, blockId) {
     e.stopPropagation();
     showMenu(e.clientX - 160, e.clientY, [
       [fav ? 'Remove from favorites' : 'Add to favorites', () => star.click()],
+      ...(isJournal || data.name.toLowerCase() === 'task' ? [] : [['Rename…', () => renameDialog(data)]]),
       [isJournal ? 'Delete journal' : 'Delete page', () => deletePage(data.name, isJournal), 'danger'],
     ]);
   });
@@ -219,6 +220,54 @@ async function deletePage(name, journal = false) {
   } else {
     toast(`Delete failed: ${r.data?.error || r.status}`);
   }
+}
+
+// Renames a page or tag; every link and tag to it is rewritten on the server.
+async function renameDialog(data) {
+  const refs = data.backlinks.reduce((n, g) => n + g.blocks.length, 0);
+  const body = el('div', 'dialog-form');
+  const label = el('label', 'field');
+  label.append(el('span', '', 'New name'));
+  const input = el('input');
+  input.value = data.name;
+  label.append(input);
+  const note = el('p', 'muted small', refs
+    ? `${refs} block${refs === 1 ? '' : 's'} link to or tag this page; they will be updated to the new name.`
+    : 'No other blocks link to this page yet.');
+  const merge = el('p', 'small rename-merge');
+  const err = el('p', 'error small');
+  body.append(label, note, merge, err);
+  const names = await getPageNames(true);
+  const check = () => {
+    const v = input.value.trim().toLowerCase();
+    const other = v && v !== data.name.toLowerCase() && names.find((n) => n.toLowerCase() === v);
+    merge.textContent = other ? `A page called “${other}” already exists. Its blocks are kept and this page's blocks are added after them.` : '';
+  };
+  input.addEventListener('input', check);
+  const go = async () => {
+    const to = input.value.trim();
+    if (!to || to === data.name) return false;
+    // Let pending edits land under the old name first.
+    for (const ed of [...editors]) if (!ed.disposed) ed.dispose();
+    await settleSaves();
+    const r = await api.renamePage(data.name, to);
+    if (!r.ok) {
+      err.textContent = r.data?.error || 'Could not rename it';
+      route(); // reopen the editors
+      return false;
+    }
+    closeModal();
+    clearRefCache();
+    invalidatePageNames();
+    refreshFavorites(true);
+    const n = r.data.updated_pages;
+    toast(r.data.merged ? `Merged into ${r.data.page.name}` : `Renamed${n ? `; updated ${n} page${n === 1 ? '' : 's'}` : ''}`);
+    location.hash = pageHref(r.data.page.name);
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+  openModal(`Rename “${data.name}”`, body, [['Cancel'], ['Rename', () => { go(); return false; }, 'primary']]);
+  input.focus();
+  input.select();
 }
 
 // True when a name is a journal date like "Nov 11th, 2026".
@@ -610,7 +659,8 @@ function openHelp() {
 }
 
 function openSettings(category) {
-  const box = openModal('Settings', settingsForm(category));
+  const form = settingsForm(category);
+  const box = openModal('Settings', form, [['Close', () => form.canClose()]]);
   box.classList.add('modal-wide');
 }
 document.getElementById('open-settings').addEventListener('click', () => openSettings());
