@@ -685,6 +685,27 @@ html.tag-colors .block-tags .page-ref.tag:hover, html.tag-colors .page-table .ta
 .rendered pre.code .lc { padding: 0 12px; white-space: pre; }
 html.code-wrap .rendered pre.code .code-body { grid-template-columns: auto minmax(0, 1fr); }
 html.code-wrap .rendered pre.code .lc { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Folded long code: first lines, fading out, then a "Show all" bar. */
+.rendered pre.code.folded .code-body {
+  max-height: calc(var(--fold-lines, 6) * 1.6em + 8px);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+.code-fold {
+  display: block;
+  width: 100%;
+  padding: 5px 12px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  background: none;
+  color: var(--accent);
+  font: 600 12.5px system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.code-fold:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .code-head {
   position: absolute;
   top: 4px;

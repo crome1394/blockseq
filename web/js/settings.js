@@ -11,6 +11,8 @@ const DEFAULTS = {
   linksNewTab: true, // open web links in a new browser tab
   liveCode: true, // syntax colours while editing code blocks
   codeWrap: false, // wrap long lines in code blocks instead of scrolling sideways
+  codeFold: true, // long code blocks start folded
+  codeFoldLines: '20', // "long" means more lines than this
 };
 
 const listeners = new Set();
@@ -70,6 +72,8 @@ export const CATEGORIES = [
     ['threadAlways', 'Always show bullet threading', 'Show the lines connecting every block to its parent all the time, not only while editing.'],
     ['liveCode', 'Highlight code while editing', 'Show syntax colours while you type in a code block.'],
     ['codeWrap', 'Wrap long lines in code', 'Wrap long lines onto the next row. When off, long lines scroll sideways.'],
+    ['codeFold', 'Fold long code blocks', 'Long code blocks start folded, showing the first few lines and a "Show all" bar.'],
+    ['codeFoldLines', 'Fold code blocks longer than', 'How many lines make a code block "long".', [['10', '10 lines'], ['20', '20 lines'], ['30', '30 lines'], ['50', '50 lines'], ['100', '100 lines']]],
   ] },
   { id: 'sidebar', label: 'Sidebar', options: [
     ['favorites', 'Favorites in the sidebar', 'Show starred pages in the sidebar. Star a page with ☆ next to its title.'],

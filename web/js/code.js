@@ -7,6 +7,42 @@
 
 import { esc } from './render.js';
 import { copyText } from './ui.js';
+import { getSetting } from './settings.js';
+
+// Long code blocks start folded (Settings > Editor). Blocks the user opened
+// stay open while the page is re-rendered; they're remembered by content.
+const FOLD_PREVIEW = 6; // lines shown while folded
+const unfolded = new Set();
+const foldKey = (lang, text) => {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) h = (Math.imul(h, 31) + text.charCodeAt(i)) | 0;
+  return `${lang}:${text.length}:${h}`;
+};
+
+function addFold(pre, text, lang) {
+  const lines = text.split('\n').length;
+  const limit = Number(getSetting('codeFoldLines')) || 20;
+  if (!getSetting('codeFold') || lines <= limit) return;
+  const key = foldKey(lang, text);
+  const bar = document.createElement('button');
+  bar.type = 'button';
+  bar.className = 'code-fold';
+  const draw = () => {
+    const folded = !unfolded.has(key);
+    pre.classList.toggle('folded', folded);
+    pre.style.setProperty('--fold-lines', FOLD_PREVIEW);
+    bar.textContent = folded ? `Show all ${lines} lines ▾` : 'Show less ▴';
+  };
+  bar.addEventListener('mousedown', (e) => e.preventDefault());
+  bar.addEventListener('click', (e) => {
+    e.stopPropagation(); // don't open the code editor
+    if (unfolded.has(key)) unfolded.delete(key); else unfolded.add(key);
+    draw();
+    if (!unfolded.has(key)) pre.scrollIntoView({ block: 'nearest' });
+  });
+  pre.append(bar);
+  draw();
+}
 
 const STR_D = /"(?:\\.|[^"\\\n])*"?/y;
 const STR_S = /'(?:\\.|[^'\\\n])*'?/y;
@@ -350,6 +386,7 @@ export function decorateCode(container) {
     });
     head.append(btn);
     pre.replaceChildren(body, head);
+    addFold(pre, text, lang);
   });
 }
 
