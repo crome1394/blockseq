@@ -14,6 +14,7 @@ const DEFAULTS = {
   codeFold: true, // long code blocks start folded
   codeFoldLines: 20, // "long" means more lines than this
   codeFoldShow: 6, // lines shown while a code block is folded
+  commentColor: 'yellow', // colour of comments in code blocks
 };
 
 const listeners = new Set();
@@ -73,6 +74,7 @@ export const CATEGORIES = [
     ['threadAlways', 'Always show bullet threading', 'Show the lines connecting every block to its parent all the time, not only while editing.'],
     ['liveCode', 'Highlight code while editing', 'Show syntax colours while you type in a code block.'],
     ['codeWrap', 'Wrap long lines in code', 'Wrap long lines onto the next row. When off, long lines scroll sideways.'],
+    ['commentColor', 'Comment colour in code', 'Colour of comments (# in shell, -- in Lua and SQL, // in C-like languages).', [['yellow', 'Yellow'], ['grey', 'Grey (quiet)']]],
     ['codeFold', 'Fold long code blocks', 'Long code blocks start folded, showing their first lines and a "Show all" bar.'],
     ['codeFoldLines', 'Fold code blocks longer than (lines)', 'A code block with more lines than this starts folded.', { number: true, min: 2, max: 1000 }],
     ['codeFoldShow', 'Lines to show when folded', 'How many lines of a folded code block stay visible.', { number: true, min: 1, max: 200 }],

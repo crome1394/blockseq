@@ -726,7 +726,11 @@ html.code-wrap .rendered pre.code .lc { white-space: pre-wrap; overflow-wrap: an
 pre.code:hover .code-copy, .code-copy:focus { opacity: 1; }
 @media (hover: none) { .code-copy { opacity: 1; } }
 
-.c-comment { color: var(--c-comment); font-style: italic; }
+/* Comments stand out in yellow (a deeper gold on light themes so they stay
+   readable); Settings > Editor can make them quiet grey again. light-dark()
+   follows each theme's color-scheme. */
+.c-comment { color: light-dark(#8a6400, #f2d24b); font-style: italic; }
+html.comments-grey .c-comment { color: var(--c-comment); }
 .c-string { color: var(--c-string); }
 .c-number, .c-literal { color: var(--c-number); }
 .c-keyword { color: var(--c-keyword); }

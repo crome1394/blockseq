@@ -362,8 +362,9 @@ browser.
 
 Code highlighting is built in, with no third-party library. It covers bash/shell,
 ini/conf/toml/systemd, YAML, JSON, Python, JavaScript/TypeScript, Rust, Go,
-C-family (C, C++, C#, Java, Kotlin, Swift, PHP), SQL, HTML/XML, CSS, Dockerfile
-and diff. Other languages get basic colouring of comments, strings and numbers.
+C-family (C, C++, C#, Java, Kotlin, Swift, PHP), SQL, HTML/XML, CSS, Dockerfile,
+diff and Lua. Comments are yellow (*Settings → Editor → Comment colour* can make
+them grey). Other languages get basic colouring of comments, strings and numbers.
 Pasting a Logseq outline (`- item` lines) creates the matching blocks and keeps
 their `id::` values, so block refs carry over.
 

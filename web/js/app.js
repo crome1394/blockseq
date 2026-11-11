@@ -962,6 +962,7 @@ function applySettings() {
   const theme = getSetting('theme');
   if (theme && theme !== 'auto') root.dataset.theme = theme; else delete root.dataset.theme;
   root.classList.toggle('code-wrap', !!getSetting('codeWrap'));
+  root.classList.toggle('comments-grey', getSetting('commentColor') === 'grey');
   root.classList.toggle('wide', !!getSetting('wideLayout'));
   root.classList.toggle('tag-colors', !!getSetting('tagColors'));
   root.classList.toggle('no-favorites', !getSetting('favorites'));

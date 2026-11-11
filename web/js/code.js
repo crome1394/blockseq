@@ -209,6 +209,21 @@ const LANGS = {
       [null, WORD],
     ],
   },
+  lua: {
+    aliases: ['luau'],
+    rules: [
+      ['comment', /--\[(=*)\[[\s\S]*?(?:\]\1\]|$)/y],
+      ['comment', /--.*/y],
+      ['string', /\[(=*)\[[\s\S]*?(?:\]\1\]|$)/y],
+      ['string', STR_D],
+      ['string', STR_S],
+      ['keyword', kw('and break do else elseif end for function goto if in local not or repeat return then until while')],
+      ['literal', kw('true false nil')],
+      ['number', NUM],
+      ['cmd', CALL],
+      [null, WORD],
+    ],
+  },
   html: {
     aliases: ['xml', 'svg', 'xhtml', 'vue', 'plist'],
     rules: [
@@ -320,6 +335,9 @@ export function guessLang(code) {
   if (/\b(function\s*\w*\(|const\s+\w+\s*=|console\.log)|=>/.test(t)) return 'javascript';
   if (/^\s*(select|insert|update|delete|create\s+table|alter\s+table)\b/im.test(t)
     && /\b(from|into|set|table|where)\b/i.test(t)) return 'sql';
+  if (/^\s*--(?!-)/m.test(t) || /\blocal\s+\w+\s*=/.test(t)) {
+    if (/\b(local|function|end|then|elseif|nil)\b/.test(t)) return 'lua';
+  }
   const lines = t.split('\n').filter((l) => l.trim() && !/^\s*#/.test(l));
   const share = (re) => lines.filter((l) => re.test(l)).length / Math.max(1, lines.length);
   const SH = /^\s*(\$\s|sudo|cd|ls|mkdir|echo|export|apt(-get)?|pacman|yay|paru|dnf|yum|brew|flatpak|systemctl|journalctl|curl|wget|git|ssh|scp|rsync|docker|podman|kubectl|cat|cp|mv|rm|chmod|chown|ln|tar|source|make|cargo|npm|pip3?|python3?|openssl|ssh-keygen|if|for|while|fi|done|then)\b/;
@@ -432,7 +450,7 @@ export const LANG_CHOICES = [
   ['', 'Auto-detect'], ['text', 'Plain text'], ['bash', 'Shell'], ['python', 'Python'], ['javascript', 'JavaScript'],
   ['typescript', 'TypeScript'], ['rust', 'Rust'], ['go', 'Go'], ['c', 'C'], ['cpp', 'C++'],
   ['csharp', 'C#'], ['java', 'Java'], ['json', 'JSON'], ['yaml', 'YAML'], ['toml', 'TOML'],
-  ['ini', 'INI / Config'], ['sql', 'SQL'], ['html', 'HTML'], ['xml', 'XML'], ['css', 'CSS'],
+  ['ini', 'INI / Config'], ['sql', 'SQL'], ['lua', 'Lua'], ['html', 'HTML'], ['xml', 'XML'], ['css', 'CSS'],
   ['dockerfile', 'Dockerfile'], ['diff', 'Diff'], ['markdown', 'Markdown'],
 ];
 
