@@ -6,11 +6,9 @@ import { IMAGE_SRC, assetUrl } from './render.js';
 import { toast } from './ui.js';
 import { withWb } from './workbook.js';
 
-const isPdf = (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
-
-// Images and PDFs from a drop, paste or file picker.
+// Files from a drop, paste or file picker (any type).
 export function imageFiles(dataTransfer) {
-  return [...(dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/') || isPdf(f));
+  return [...(dataTransfer?.files || [])];
 }
 
 // Uploads one image or PDF; resolves to the Markdown that shows it.
@@ -24,7 +22,11 @@ export async function uploadImage(file) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return `![${altFrom(file.name)}](${data.path})`;
+  // Images, PDFs, video and audio are embedded (![…]); other files are links
+  // labelled with their original name, like Logseq does.
+  if (['image', 'pdf', 'video', 'audio'].includes(data.kind)) return `![${altFrom(file.name)}](${data.path})`;
+  const label = (file.name || 'file').replace(/[[\]\n]/g, '').trim() || 'file';
+  return `[${label}](${data.path})`;
 }
 
 function altFrom(name) {
@@ -75,6 +77,23 @@ export function withMeta(text, index, key, value) {
 // Returns the text with the image's alignment changed ('left' = default).
 export function withAlign(text, index, align) {
   return withMeta(text, index, 'align', align === 'left' ? null : align);
+}
+
+const ASSET_LINK = '(?<!!)\\[([^\\]\\n]+)\\]\\((\\.\\./assets/[^)\\s]+)\\)';
+
+// Removes the index-th [name](../assets/…) file link.
+export function withoutFileLink(text, index) {
+  const re = new RegExp(ASSET_LINK, 'g');
+  let m;
+  let i = 0;
+  while ((m = re.exec(text))) {
+    if (i++ === index) {
+      const before = text.slice(0, m.index).replace(/[ \t]+$/, '');
+      const after = text.slice(m.index + m[0].length).replace(/^[ \t]+/, '');
+      return (before && after && !before.endsWith('\n') && !after.startsWith('\n') ? `${before} ${after}` : before + after).trim();
+    }
+  }
+  return text;
 }
 
 export function withoutImage(text, index) {

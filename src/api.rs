@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -286,49 +286,179 @@ pub async fn events(State(s): Shared) -> Sse<impl Stream<Item = Result<Event, In
 
 // ---- assets -------------------------------------------------------------------
 
-/// Stores an uploaded image or PDF (raw bytes in the body). The original file
-/// name may be given in `X-Filename`. Returns the path to put in the block text.
-pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body: Bytes) -> ApiResult {
-    if body.is_empty() {
-        return Err(bad("empty upload"));
-    }
+/// Stores an uploaded file (raw bytes in the body), streaming it to disk so
+/// large videos don't sit in memory. The original file name may be given in
+/// `X-Filename`. Returns the path to put in the block text.
+pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body: Body) -> ApiResult {
     let original = headers
         .get("x-filename")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("file")
         .to_string();
     let dir = wb.assets_dir();
-    let name = tokio::task::spawn_blocking(move || assets::save(&dir, &body, &original, db::now_ms()))
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?
-        .map_err(|e| ApiError(StatusCode::UNSUPPORTED_MEDIA_TYPE, format!("{e:#}")))?;
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| anyhow::anyhow!(e))?;
+    // Hidden temp name: valid_name() rejects it, so it is never served.
+    let tmp = dir.join(format!(".upload-{}.part", uuid::Uuid::new_v4()));
+    let result = receive_upload(&tmp, body, s.max_upload).await;
+    let head = match result {
+        Ok(head) => head,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e);
+        }
+    };
+    let ext = assets::ext_for(&head, &original);
+    let stem = assets::safe_stem(&original);
+    let placed = {
+        let (dir, tmp) = (dir.clone(), tmp.clone());
+        tokio::task::spawn_blocking(move || assets::place(&dir, &tmp, &stem, &ext, db::now_ms()))
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?
+    };
+    let name = match placed {
+        Ok(name) => name,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e.into());
+        }
+    };
     s.notify(&wb, json!({ "type": "assets", "name": name, "client": client_id(&headers) }));
-    Ok(Json(json!({ "name": name, "path": format!("../assets/{name}") })).into_response())
+    Ok(Json(json!({ "name": name, "path": format!("../assets/{name}"), "kind": assets::kind_of(&name) }))
+        .into_response())
 }
 
-/// Serves an uploaded file. Names never change, so browsers may cache forever.
-pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>) -> Response {
+/// Writes the request body to `tmp`; returns its first bytes (for type
+/// detection). Fails if the body is empty or bigger than `max` bytes.
+async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64) -> Result<Vec<u8>, ApiError> {
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(tmp).await.map_err(|e| anyhow::anyhow!(e))?;
+    let mut stream = body.into_data_stream();
+    let mut head = Vec::with_capacity(16);
+    let mut total: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| bad(format!("upload interrupted: {e}")))?;
+        total += chunk.len() as u64;
+        if total > max {
+            return Err(ApiError(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("file is larger than {} MB", max / 1024 / 1024),
+            ));
+        }
+        if head.len() < 16 {
+            head.extend_from_slice(&chunk[..chunk.len().min(16 - head.len())]);
+        }
+        file.write_all(&chunk).await.map_err(|e| anyhow::anyhow!(e))?;
+    }
+    if total == 0 {
+        return Err(bad("empty upload"));
+    }
+    file.sync_all().await.map_err(|e| anyhow::anyhow!(e))?;
+    Ok(head)
+}
+
+/// Parses a single `Range: bytes=…` header against a file length.
+/// None: no usable range (send everything). Some(Err): unsatisfiable.
+fn parse_range(header: &str, len: u64) -> Option<Result<(u64, u64), ()>> {
+    let spec = header.strip_prefix("bytes=")?;
+    if spec.contains(',') {
+        return None; // multiple ranges: just send the whole file
+    }
+    let (a, b) = spec.split_once('-')?;
+    let range = match (a.trim(), b.trim()) {
+        ("", n) => {
+            let n: u64 = n.parse().ok()?;
+            if n == 0 || len == 0 {
+                return Some(Err(()));
+            }
+            (len.saturating_sub(n), len - 1)
+        }
+        (a, b) => {
+            let start: u64 = a.parse().ok()?;
+            let end: u64 = if b.is_empty() { len.saturating_sub(1) } else { b.parse().ok()? };
+            if start >= len || end < start {
+                return Some(Err(()));
+            }
+            (start, end.min(len - 1))
+        }
+    };
+    Some(Ok(range))
+}
+
+/// Serves an uploaded file. Names never change, so browsers may cache
+/// forever. Supports range requests, so videos can seek, and streams the
+/// file instead of loading it into memory.
+pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap) -> Response {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
     if !assets::valid_name(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Ok(bytes) = tokio::fs::read(wb.assets_dir().join(&name)).await else {
+    let path = wb.assets_dir().join(&name);
+    let Ok(meta) = tokio::fs::metadata(&path).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mime = mime_guess::from_path(&name).first_or_octet_stream();
-    let mut headers = vec![
-        (header::CONTENT_TYPE, mime.as_ref().to_string()),
-        (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string()),
-        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-        (header::CONTENT_DISPOSITION, format!("inline; filename=\"{name}\"")),
-    ];
-    // Images never need scripts or other resources. PDFs are shown by the
-    // browser's own viewer, which a strict policy would block.
-    if mime.type_() == mime_guess::mime::IMAGE {
-        headers.push((header::CONTENT_SECURITY_POLICY, "default-src 'none'".to_string()));
+    if !meta.is_file() {
+        return StatusCode::NOT_FOUND.into_response();
     }
-    let mut res = bytes.into_response();
-    for (k, v) in headers {
-        res.headers_mut().insert(k, v.parse().unwrap());
+    let len = meta.len();
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| parse_range(v, len));
+    let (status, start, end) = match range {
+        Some(Ok((a, b))) => (StatusCode::PARTIAL_CONTENT, a, b),
+        Some(Err(())) => {
+            return (StatusCode::RANGE_NOT_SATISFIABLE, [(header::CONTENT_RANGE, format!("bytes */{len}"))])
+                .into_response();
+        }
+        None => (StatusCode::OK, 0, len.saturating_sub(1)),
+    };
+    let count = if len == 0 { 0 } else { end - start + 1 };
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(4);
+    tokio::spawn(async move {
+        let mut file = match tokio::fs::File::open(&path).await {
+            Ok(f) => f,
+            Err(e) => return drop(tx.send(Err(e)).await),
+        };
+        if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+            return drop(tx.send(Err(e)).await);
+        }
+        let mut left = count;
+        let mut buf = vec![0u8; 64 * 1024];
+        while left > 0 {
+            let want = buf.len().min(left as usize);
+            match file.read(&mut buf[..want]).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    left -= n as u64;
+                    if tx.send(Ok(Bytes::copy_from_slice(&buf[..n]))).await.is_err() {
+                        break; // the browser stopped reading
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let (ctype, inline, csp) = assets::serve_policy(&name);
+    let disposition = format!("{}; filename=\"{name}\"", if inline { "inline" } else { "attachment" });
+    let mut res = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)).into_response();
+    *res.status_mut() = status;
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, ctype.parse().unwrap());
+    h.insert(header::CONTENT_LENGTH, count.into());
+    h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+    h.insert(header::CACHE_CONTROL, "private, max-age=31536000, immutable".parse().unwrap());
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+    h.insert(header::CONTENT_DISPOSITION, disposition.parse().unwrap());
+    if let Some(csp) = csp {
+        h.insert(header::CONTENT_SECURITY_POLICY, csp.parse().unwrap());
+    }
+    if status == StatusCode::PARTIAL_CONTENT {
+        h.insert(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}").parse().unwrap());
     }
     res
 }

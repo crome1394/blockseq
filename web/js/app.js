@@ -13,7 +13,7 @@ import { workbook, setWorkbook, withWb } from './workbook.js';
 import { loadStatuses, statusOf, withStatus, badgeHtml, taskTitle } from './tasks.js';
 import { ACTIONS, keyFor, comboOf, prettyKey } from './keys.js';
 import { openPane, closePane, isPaneShowing, paneKind } from './pane.js';
-import { openPdfPane } from './pdfview.js';
+import { openFilePane } from './pdfview.js';
 import { downloadImage } from './images.js';
 
 const main = document.getElementById('main');
@@ -734,8 +734,14 @@ async function assetsView(seq) {
         img.loading = 'lazy';
         img.alt = '';
         thumb.append(img);
+      } else if (a.kind === 'video') {
+        const v = el('video');
+        v.src = `${url}#t=0.5`;
+        v.preload = 'metadata';
+        v.muted = true;
+        thumb.append(v);
       } else {
-        thumb.append(el('span', 'asset-kind', a.kind === 'pdf' ? 'PDF' : 'FILE'));
+        thumb.append(el('span', `asset-kind kind-${a.kind}`, (a.name.split('.').pop() || 'file').toUpperCase().slice(0, 4)));
       }
       const name = el('td', 'col-name asset-name', a.name);
       const used = el('td', 'asset-used');
@@ -753,7 +759,7 @@ async function assetsView(seq) {
         b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
         actions.append(b);
       };
-      btn('Open', () => (a.kind === 'pdf' ? openPdfPane(url, a.name) : window.open(url, '_blank', 'noopener')));
+      btn('Open', () => (a.kind === 'image' ? window.open(url, '_blank', 'noopener') : openFilePane(url, a.name, a.kind === 'other' ? 'tab' : a.kind)));
       btn('Download', () => downloadImage(url));
       btn('Delete', async () => {
         const warn = a.pages.length ? `\n\nIt is used on: ${a.pages.join(', ')}. Those blocks will show a broken link.` : '';

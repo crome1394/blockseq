@@ -6,6 +6,7 @@
 //!                      "Main" workbook (database, Markdown mirror, assets/),
 //!                      other workbooks in workbooks/<name>/, and config.json
 //!   BLOCKSEQ_PASSWORD  require this password via HTTP basic auth (optional)
+//!   BLOCKSEQ_MAX_UPLOAD_MB  largest file upload in MB (default 2048)
 
 mod api;
 mod assets;
@@ -37,6 +38,8 @@ pub struct AppState {
     pub config: RwLock<config::Config>,
     pub events: broadcast::Sender<String>,
     pub password: Option<String>,
+    /// Largest upload accepted, in bytes (BLOCKSEQ_MAX_UPLOAD_MB).
+    pub max_upload: u64,
 }
 
 impl AppState {
@@ -140,6 +143,7 @@ async fn main() -> Result<()> {
     let addr = std::env::var("BLOCKSEQ_ADDR").unwrap_or_else(|_| "0.0.0.0:3030".into());
     let data_dir = PathBuf::from(std::env::var("BLOCKSEQ_DATA").unwrap_or_else(|_| "data".into()));
     let password = std::env::var("BLOCKSEQ_PASSWORD").ok().filter(|p| !p.is_empty());
+    let max_upload_mb: u64 = std::env::var("BLOCKSEQ_MAX_UPLOAD_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(2048);
 
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating {}", data_dir.display()))?;
@@ -150,6 +154,7 @@ async fn main() -> Result<()> {
         config: RwLock::new(config),
         events: broadcast::channel(256).0,
         password,
+        max_upload: max_upload_mb * 1024 * 1024,
     });
     // Open Main now, so a broken database is reported at startup.
     state

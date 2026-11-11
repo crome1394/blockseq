@@ -211,10 +211,10 @@ CRDTs (conflict-free merge structures):
   | `PUT /api/page?name=` | `put_page` | save; 200 or 409 |
   | `DELETE /api/page?name=` | `delete_page` | 204 / 404 |
   | `POST /api/page/ensure?name=` | `ensure_page` | create an empty page if missing (calendar) |
-  | `POST /api/assets` | `upload_asset` | raw image or PDF bytes; `X-Filename` optional; returns `../assets/<name>` |
+  | `POST /api/assets` | `upload_asset` | raw bytes of any file, streamed to disk (cap `BLOCKSEQ_MAX_UPLOAD_MB`); `X-Filename` optional; returns path and kind |
   | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them |
   | `DELETE /api/assets?name=` | `delete_asset` | removes the file |
-  | `GET /assets/<name>` | `get_asset` | cached forever, `nosniff`; images also get `default-src 'none'` (PDFs can't, the browser viewer needs to run) |
+  | `GET /assets/<name>` | `get_asset` | streamed, `Range` support (video seeking), cached forever, `nosniff`; `assets::serve_policy` decides type and inline vs download (HTML/SVG/unknown always download, with `sandbox` CSP) |
   | `PUT /api/block?id=` | `put_block` | change one block's text (task list status changes); saves the page |
   | `GET /api/tasks` | `tasks` | every block linked to `task` |
   | `GET/POST /api/workbooks` | `list_workbooks` / `create_workbook` | not workbook-scoped |
@@ -259,6 +259,11 @@ CRDTs (conflict-free merge structures):
   The global handler in `app.js` supports single keys (only outside text
   fields), modifier combos and two-key sequences (`g j`). The editor checks
   `cycleStatus` / `statusPicker` itself.
+- **Files and embeds.** `render.fileKind()` mirrors `assets::kind_of()`.
+  `![x](../assets/f)` shows images, PDFs, `<video>` / `<audio>` players, or a
+  file chip; `[x](../assets/f)` (how non-media uploads are written) is always a
+  chip. `{{video URL}}` becomes a youtube-nocookie / Vimeo iframe or a
+  `<video>`. Pasting a lone YouTube/Vimeo URL writes the macro.
 - **Block selection** (`PageEditor.sel = {anchor, focus}`) is a range of
   visible blocks; `selectedRoots()` drops blocks whose parent is also
   selected, so children always travel with their parent. One editor holds a

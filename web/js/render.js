@@ -33,6 +33,76 @@ export function pdfView(meta) {
 
 const FILE_ICON = '<svg class="file-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
 
+// File kinds by extension (matches the server's assets::kind_of).
+const KINDS = {
+  image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'],
+  pdf: ['pdf'],
+  video: ['mp4', 'm4v', 'webm', 'mkv', 'mov', 'ogv'],
+  audio: ['mp3', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'wav', 'flac'],
+  text: ['txt', 'md', 'markdown', 'csv', 'tsv', 'log', 'json', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'sh', 'py', 'rs', 'go', 'c', 'h', 'cpp', 'java', 'sql', 'env'],
+};
+export function fileExt(url) {
+  return (/\.([a-z0-9]+)$/i.exec(url.split(/[?#]/)[0])?.[1] || '').toLowerCase();
+}
+export function fileKind(url) {
+  const ext = fileExt(url);
+  return Object.keys(KINDS).find((k) => KINDS[k].includes(ext)) || 'other';
+}
+const isAsset = (url) => url.startsWith('../assets/');
+
+// A downloadable / openable file. `md` says how the block text holds it:
+// "image" for ![name](…) (counted with images), "link" for [name](…).
+function fileChip(url, label, index, md) {
+  const kind = fileKind(url);
+  const ext = fileExt(url).toUpperCase() || 'FILE';
+  return `<span class="file-wrap" data-md="${md}" data-index="${index}" data-src="${esc(url)}" data-kind="${kind}">`
+    + `<button type="button" class="file-open" title="${kind === 'other' ? 'Download' : 'Open'}">${FILE_ICON}<span class="file-name">${esc(label)}</span><span class="file-ext">${esc(ext)}</span></button>`
+    + '<button type="button" class="file-menu" title="File options">⋮</button></span>';
+}
+
+function mediaHtml(url, alt, meta, index) {
+  const kind = fileKind(url);
+  const label = alt || decodeURIComponent(url.split('?')[0].split('/').pop());
+  if (kind === 'video' || kind === 'audio') {
+    const tag = kind === 'video'
+      ? `<video src="${esc(url)}" controls preload="metadata" playsinline></video>`
+      : `<audio src="${esc(url)}" controls preload="metadata"></audio>`;
+    return `<span class="media-wrap ${kind}-wrap" data-md="image" data-index="${index}" data-src="${esc(url)}" data-kind="${kind}" title="${esc(label)}">`
+      + `${tag}<button type="button" class="file-menu" title="${kind === 'video' ? 'Video' : 'Audio'} options">⋮</button></span>`;
+  }
+  return fileChip(url, label, index, 'image');
+}
+
+// {{video URL}}: YouTube / Vimeo players, or a plain <video> for a file URL.
+export function youtubeId(url) {
+  const m = /^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#]*&)?v=|shorts\/|embed\/|live\/|v\/)|youtu\.be\/)([\w-]{11})/i.exec(url)
+    || /^([\w-]{11})$/.exec(url);
+  return m ? m[1] : null;
+}
+export function vimeoId(url) {
+  return /^(?:https?:\/\/)?(?:www\.|player\.)?vimeo\.com\/(?:video\/)?(\d+)/i.exec(url)?.[1] || null;
+}
+export function isVideoUrl(url) {
+  return !!(youtubeId(url) && /[/.]/.test(url)) || !!vimeoId(url);
+}
+
+function embedHtml(url) {
+  const yt = youtubeId(url);
+  const frame = (src, title) => `<span class="embed-wrap"><iframe src="${esc(src)}" title="${title}" loading="lazy" `
+    + 'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" '
+    + 'referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></span>';
+  if (yt) {
+    const t = /[?&#](?:t|start)=(\d+)/.exec(url)?.[1];
+    return frame(`https://www.youtube-nocookie.com/embed/${yt}${t ? `?start=${t}` : ''}`, 'YouTube video');
+  }
+  const vm = vimeoId(url);
+  if (vm) return frame(`https://player.vimeo.com/video/${vm}`, 'Vimeo video');
+  if (/^https?:\/\//i.test(url) && fileKind(url) === 'video') {
+    return `<span class="embed-wrap embed-file"><video src="${esc(url)}" controls preload="metadata"></video></span>`;
+  }
+  return `<a class="ext" href="${esc(safeUrl(url))}"${linkTarget()}>${esc(url)}</a>`;
+}
+
 function pdfHtml(url, alt, meta, index) {
   const name = esc(alt || decodeURIComponent(url.split('?')[0].split('/').pop()));
   const open = `<button type="button" class="pdf-open" title="Open in side pane">${FILE_ICON}<span>${name}</span></button>`
@@ -54,9 +124,11 @@ export function imageAlign(meta) {
 // Counts images while rendering one block, so each image knows its position
 // (the image menu uses it to find the image in the block text).
 let imageIndex = 0;
+let linkIndex = 0; // [name](../assets/…) file links, counted separately
 
 const INLINE = [
   '`(?<code>[^`\\n]+)`',
+  '\\{\\{(?:video|youtube|vimeo)\\s+(?<embed>[^}\\s]+)\\s*\\}\\}',
   '!\\[(?<imgAlt>[^\\]\\n]*)\\]\\((?<imgUrl>[^)\\s]+)\\)(?:\\{(?<imgMeta>[^}\\n]*)\\})?',
   '\\[(?<linkText>[^\\]]+)\\]\\((?<linkUrl>[^)\\s]+)\\)',
   '#\\[\\[(?<tagb>[^\\]\\n]+)\\]\\]',
@@ -97,8 +169,12 @@ export function inline(text) {
     out += esc(text.slice(last, m.index));
     const g = m.groups;
     if (g.code !== undefined) out += `<code>${esc(g.code)}</code>`;
+    else if (g.embed !== undefined) out += embedHtml(g.embed);
     else if (g.imgUrl !== undefined && /\.pdf$/i.test(g.imgUrl.split('?')[0])) {
       out += pdfHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);
+    }
+    else if (g.imgUrl !== undefined && fileKind(g.imgUrl) !== 'image' && isAsset(g.imgUrl)) {
+      out += mediaHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);
     }
     else if (g.imgUrl !== undefined) {
       const align = imageAlign(g.imgMeta);
@@ -107,6 +183,7 @@ export function inline(text) {
         + `<img src="${esc(assetUrl(g.imgUrl))}" alt="${esc(g.imgAlt)}" loading="lazy"${size ? ` data-size="${size}"` : ''}>`
         + '<button class="img-menu" type="button" title="Image options">⋮</button></span></span>';
     }
+    else if (g.linkUrl !== undefined && isAsset(g.linkUrl)) out += fileChip(assetUrl(g.linkUrl), g.linkText, linkIndex++, 'link');
     else if (g.linkUrl !== undefined) out += `<a class="ext" href="${esc(safeUrl(g.linkUrl))}"${linkTarget()}>${inline(g.linkText)}</a>`;
     else if (g.tagb !== undefined) out += pageLink(g.tagb, true);
     else if (g.page !== undefined) out += pageLink(g.page);
@@ -312,6 +389,7 @@ function pullTrailingTags(src) {
 export function renderContent(src, opts = {}) {
   if (!src.trim()) return '<span class="empty"></span>';
   imageIndex = 0;
+  linkIndex = 0;
   let prefix = '';
   let cls = '';
   const st = statusOf(src);

@@ -27,8 +27,13 @@ pub fn image_ext(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// File type from the first bytes: an image type, or "pdf".
+pub fn file_ext(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF-") { Some("pdf") } else { image_ext(bytes) }
+}
+
 /// A safe file-name stem from the uploaded file's name ("Screenshot 1.png" →
-/// "Screenshot_1"), or "image" if nothing usable is left.
+/// "Screenshot_1"), or "file" if nothing usable is left.
 pub fn safe_stem(original: &str) -> String {
     let stem = Path::new(original)
         .file_stem()
@@ -39,7 +44,7 @@ pub fn safe_stem(original: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect();
     let cleaned: String = cleaned.trim_matches('_').chars().take(40).collect();
-    if cleaned.is_empty() { "image".into() } else { cleaned }
+    if cleaned.is_empty() { "file".into() } else { cleaned }
 }
 
 /// True for names this module could have created: no paths, no hidden files.
@@ -51,16 +56,93 @@ pub fn valid_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// File type from the first bytes: an image type, or "pdf".
-pub fn file_ext(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"%PDF-") { Some("pdf") } else { image_ext(bytes) }
+const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "avif"];
+const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "webm", "mkv", "mov", "ogv"];
+const AUDIO_EXTS: &[&str] = &["mp3", "m4a", "aac", "ogg", "oga", "opus", "wav", "flac"];
+const TEXT_EXTS: &[&str] = &[
+    "txt", "md", "markdown", "csv", "tsv", "log", "json", "yaml", "yml", "toml", "ini", "conf", "cfg", "sh", "py",
+    "rs", "go", "c", "h", "cpp", "java", "sql", "env",
+];
+
+fn ext_of(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((_, e)) => e.to_ascii_lowercase(),
+        None => String::new(),
+    }
+}
+
+/// What kind of file a stored name is: "image", "pdf", "video", "audio",
+/// "text" or "other". Decides how blocks show it.
+pub fn kind_of(name: &str) -> &'static str {
+    let ext = ext_of(name);
+    let e = ext.as_str();
+    if IMAGE_EXTS.contains(&e) {
+        "image"
+    } else if e == "pdf" {
+        "pdf"
+    } else if VIDEO_EXTS.contains(&e) {
+        "video"
+    } else if AUDIO_EXTS.contains(&e) {
+        "audio"
+    } else if TEXT_EXTS.contains(&e) {
+        "text"
+    } else {
+        "other"
+    }
+}
+
+/// Extension to store an upload under. Images and PDFs are recognised from
+/// their bytes; other files keep their own (cleaned) extension. A file that
+/// claims to be an image or PDF but isn't one is stored as ".bin".
+pub fn ext_for(head: &[u8], original: &str) -> String {
+    if let Some(e) = file_ext(head) {
+        return e.to_string();
+    }
+    let ext: String = ext_of(original).chars().filter(|c| c.is_ascii_alphanumeric()).take(10).collect();
+    if ext.is_empty() || IMAGE_EXTS.contains(&ext.as_str()) || ext == "pdf" {
+        "bin".into()
+    } else {
+        ext
+    }
+}
+
+/// How to serve a stored file: content type, whether the browser may show it
+/// (otherwise it is a download), and an optional Content-Security-Policy.
+/// Only types that can't run scripts on Blockseq's address are shown; HTML,
+/// SVG and anything unknown are always downloads.
+pub fn serve_policy(name: &str) -> (String, bool, Option<&'static str>) {
+    let mime = mime_guess::from_path(name).first_or_octet_stream().essence_str().to_string();
+    match kind_of(name) {
+        "image" => (mime, true, Some("default-src 'none'")),
+        "pdf" => ("application/pdf".into(), true, None),
+        "video" | "audio" => (mime, true, None),
+        "text" => ("text/plain; charset=utf-8".into(), true, Some("sandbox")),
+        _ => ("application/octet-stream".into(), false, Some("sandbox")),
+    }
+}
+
+/// Picks a free name "{stem}_{ms}_{i}.{ext}" and moves `tmp` there.
+/// Creating the name with create_new first means names never collide.
+pub fn place(dir: &Path, tmp: &Path, stem: &str, ext: &str, now_ms: i64) -> Result<String> {
+    for i in 0..1000 {
+        let name = format!("{stem}_{now_ms}_{i}.{ext}");
+        let path = dir.join(&name);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(_) => {
+                std::fs::rename(tmp, &path)?;
+                return Ok(name);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    bail!("could not pick a file name")
 }
 
 pub struct AssetInfo {
     pub name: String,
     pub size: u64,
     pub modified: i64,
-    /// "image", "pdf" or "other".
     pub kind: &'static str,
 }
 
@@ -74,47 +156,26 @@ pub fn list(dir: &Path) -> Result<Vec<AssetInfo>> {
         if !meta.is_file() || !valid_name(&name) {
             continue;
         }
-        let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        let kind = match ext.as_str() {
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" => "image",
-            "pdf" => "pdf",
-            _ => "other",
-        };
         let modified = meta
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        out.push(AssetInfo { name, size: meta.len(), modified, kind });
+        out.push(AssetInfo { kind: kind_of(&name), name, size: meta.len(), modified });
     }
     out.sort_by(|a, b| b.modified.cmp(&a.modified));
     Ok(out)
 }
 
-/// Saves an upload and returns its file name, e.g. "image_1762870000000_0.png".
+/// Saves an upload held in memory and returns its file name (tests and
+/// small files; the API streams uploads to disk instead).
+#[cfg(test)]
 pub fn save(dir: &Path, bytes: &[u8], original_name: &str, now_ms: i64) -> Result<String> {
-    let Some(ext) = file_ext(bytes) else {
-        bail!("not a supported file (PNG, JPEG, GIF, WebP, AVIF or PDF)");
-    };
     std::fs::create_dir_all(dir)?;
-    let stem = safe_stem(original_name);
-    for i in 0..1000 {
-        let name = format!("{stem}_{now_ms}_{i}.{ext}");
-        let path = dir.join(&name);
-        // create_new fails if the file exists, so names never collide.
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                use std::io::Write;
-                file.write_all(bytes)?;
-                file.sync_all()?;
-                return Ok(name);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.into()),
-        }
-    }
-    bail!("could not pick a file name")
+    let tmp = dir.join(format!(".upload-{}.part", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, bytes)?;
+    place(dir, &tmp, &safe_stem(original_name), &ext_for(bytes, original_name), now_ms)
 }
 
 #[cfg(test)]
@@ -135,8 +196,8 @@ mod tests {
     fn names_are_safe() {
         assert_eq!(safe_stem("Screenshot 2026-11-11 at 10.00.png"), "Screenshot_2026-11-11_at_10_00");
         assert_eq!(safe_stem("../../etc/passwd"), "passwd");
-        assert_eq!(safe_stem(""), "image");
-        assert_eq!(safe_stem("日本.png"), "image");
+        assert_eq!(safe_stem(""), "file");
+        assert_eq!(safe_stem("日本.png"), "file");
         assert!(valid_name("image_1_0.png"));
         assert!(!valid_name("../blockseq.db"));
         assert!(!valid_name(".hidden"));
@@ -150,7 +211,26 @@ mod tests {
         let a = save(&dir, png, "shot.png", 42).unwrap();
         let b = save(&dir, png, "shot.png", 42).unwrap();
         assert_eq!((a.as_str(), b.as_str()), ("shot_42_0.png", "shot_42_1.png"));
-        assert!(save(&dir, b"not an image", "x.png", 42).is_err());
+        // Claims to be a PNG but isn't one: stored as .bin.
+        assert_eq!(save(&dir, b"not an image", "x.png", 42).unwrap(), "x_42_0.bin");
+        assert_eq!(save(&dir, b"hello", "notes.TXT", 42).unwrap(), "notes_42_0.txt");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_are_served_safely() {
+        assert_eq!(kind_of("a.MP4"), "video");
+        assert_eq!(kind_of("a.flac"), "audio");
+        assert_eq!(kind_of("a.docx"), "other");
+        assert_eq!(ext_for(b"%PDF-1.4", "x"), "pdf");
+        assert_eq!(ext_for(b"PK..", "Report.DOCX"), "docx");
+        assert_eq!(ext_for(b"<svg>", "evil.svg"), "svg");
+        let (ct, inline, _) = serve_policy("evil.svg");
+        assert_eq!((ct.as_str(), inline), ("application/octet-stream", false));
+        let (ct, inline, _) = serve_policy("page.html");
+        assert_eq!((ct.as_str(), inline), ("application/octet-stream", false));
+        let (ct, inline, csp) = serve_policy("notes.txt");
+        assert_eq!((ct.as_str(), inline, csp), ("text/plain; charset=utf-8", true, Some("sandbox")));
+        assert!(serve_policy("clip.mp4").1);
     }
 }

@@ -21,6 +21,7 @@ if [[ ! -f /etc/blockseq.env ]]; then
 BLOCKSEQ_ADDR=0.0.0.0:3030
 # Uncomment to require a password (browser login prompt, any username).
 #BLOCKSEQ_PASSWORD=change-me
+#BLOCKSEQ_MAX_UPLOAD_MB=2048
 EOF
   chmod 640 /etc/blockseq.env
 fi

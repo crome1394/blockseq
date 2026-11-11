@@ -6,14 +6,15 @@
 import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
 import {
   renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
+  isVideoUrl,
 } from './render.js';
 import {
-  imageFiles, uploadImage, pickImages, imageAt, withAlign, withMeta, withoutImage,
+  imageFiles, uploadImage, pickImages, imageAt, withAlign, withMeta, withoutImage, withoutFileLink,
   openLightbox, copyImage, downloadImage,
 } from './images.js';
 import { getStatuses, statusOf, statusPrefix, stripStatus, withStatus, nextStatus, statusStyle, hasTaskTag } from './tasks.js';
 import { matches } from './keys.js';
-import { openPdfPane } from './pdfview.js';
+import { openPdfPane, openFilePane } from './pdfview.js';
 import { journalName } from './dates.js';
 import { toast, copyText, updateStatus, openModal } from './ui.js';
 import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
@@ -499,6 +500,15 @@ export class PageEditor {
         this.beginOp();
         this.setMarker(node, word);
       });
+      return;
+    }
+    if (t.closest('video, audio')) return; // using the player, not editing
+    const file = t.closest('.file-wrap, .media-wrap');
+    if (file) {
+      e.stopPropagation();
+      const name = file.querySelector('.file-name')?.textContent || file.title || 'File';
+      if (t.closest('.file-menu')) this.showFileMenu(node, file, name, e);
+      else if (t.closest('.file-open')) openFilePane(file.dataset.src, name, file.dataset.kind);
       return;
     }
     const pdf = t.closest('.pdf-wrap');
@@ -1311,6 +1321,13 @@ export class PageEditor {
       return;
     }
     const text = e.clipboardData?.getData('text/plain');
+    // A pasted YouTube / Vimeo link becomes an embedded player.
+    if (text && !text.trim().includes('\n') && isVideoUrl(text.trim()) && !inFence(ta.value, ta.selectionStart)) {
+      e.preventDefault();
+      this.beginOp();
+      this.replaceText(node, ta, ta.selectionStart, ta.selectionEnd, `{{video ${text.trim()}}}`);
+      return;
+    }
     if (text && text === lastCopy && /^- [^\n]*$/.test(text)) {
       // One block copied from Blockseq: paste its text, not "- text".
       e.preventDefault();
@@ -1387,6 +1404,22 @@ export class PageEditor {
       { label: 'Download', fn: () => downloadImage(info.url) },
       '-',
       { label: 'Delete image', danger: true, fn: () => this.changeText(node, withoutImage(node.content, index)) },
+    ]);
+  }
+
+  showFileMenu(node, wrap, name, e) {
+    lastEditor = this;
+    const url = wrap.dataset.src;
+    const kind = wrap.dataset.kind;
+    const index = Number(wrap.dataset.index);
+    const remove = () => this.changeText(node, wrap.dataset.md === 'link'
+      ? withoutFileLink(node.content, index) : withoutImage(node.content, index));
+    showMenu(e.clientX, e.clientY, [
+      ...(kind === 'other' ? [] : [{ label: 'Open in side pane', fn: () => openFilePane(url, name, kind) }]),
+      { label: 'Open in new tab', fn: () => window.open(url, '_blank', 'noopener') },
+      { label: 'Download', fn: () => downloadImage(url) },
+      '-',
+      { label: 'Remove from block', danger: true, fn: remove },
     ]);
   }
 
@@ -1631,6 +1664,8 @@ const SLASH_COMMANDS = [
   { id: 'pinned', label: 'Pinned', hint: 'admonition' },
   { id: 'image', label: 'Upload image', hint: 'png, jpg, gif, webp' },
   { id: 'pdf', label: 'Upload PDF', hint: 'link or preview' },
+  { id: 'file', label: 'Upload file', hint: 'video, audio, documents…' },
+  { id: 'video', label: 'Embed video', hint: 'YouTube or Vimeo link' },
   { id: 'today', label: 'Today', hint: "today's journal" },
   { id: 'tomorrow', label: 'Tomorrow' },
   { id: 'yesterday', label: 'Yesterday' },
@@ -1680,6 +1715,10 @@ function runSlash(editor, node, ta, cmd, at) {
     }
     case 'pdf':
       return pickImages('application/pdf,.pdf').then((files) => { if (files.length) editor.insertImages(node, files, at); });
+    case 'file':
+      return pickImages('').then((files) => { if (files.length) editor.insertImages(node, files, at); });
+    case 'video':
+      return editor.replaceText(node, ta, at, at, '{{video }}', 8);
     case 'numbered': return editor.toggleNumbered(node);
     case 'h1': case 'h2': case 'h3': return editor.setHeading(node, Number(cmd[1]));
     case 'quote': {

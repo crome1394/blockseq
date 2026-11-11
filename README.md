@@ -42,6 +42,7 @@ Settings are environment variables:
 | `BLOCKSEQ_ADDR`     | `0.0.0.0:3030` | Listen address                                  |
 | `BLOCKSEQ_DATA`     | `./data`       | Database, Markdown mirror and uploaded images   |
 | `BLOCKSEQ_PASSWORD` | unset          | If set, the browser asks for this password      |
+| `BLOCKSEQ_MAX_UPLOAD_MB` | `2048`     | Largest file you can upload, in MB              |
 
 ## Deploy to a Proxmox LXC
 
@@ -246,6 +247,20 @@ same line to show them side by side; they shrink together to fit the window.
 between a link and a full inline preview, and offers open in the side pane, open
 in a new tab, download, and remove. Clicking the PDF's name opens it in the side
 pane. Files go in the workbook's `assets/` folder.
+
+**Other files:** drop, paste or `/file` any file. Videos (mp4, webm, mkv, mov)
+and audio (mp3, m4a, ogg, wav, flac) get a player in the block; put two videos
+on one line to show them side by side. Text files (txt, md, csv, json, logs…)
+show as a chip that opens in the side pane. Anything else (.doc, .xlsx, .zip…)
+shows as a chip that downloads. Every file goes in the workbook's `assets/`
+folder. Whether a video plays depends on the browser: mp4 (H.264) and webm
+play everywhere; mkv plays in Chrome/Edge when its codecs are supported.
+For safety, HTML, SVG and unknown file types are always downloaded rather than
+shown, so a file can't run code on your Blockseq address.
+
+**YouTube / Vimeo:** paste a video link on its own and it becomes an embedded
+player (stored as `{{video URL}}`, as in Logseq; `&t=42s` start times are kept).
+`/video` inserts the same thing. Videos are loaded from youtube-nocookie.com.
 
 **Assets** (sidebar) lists every file in the workbook's `assets/` folder with
 a thumbnail, size, date and the pages that use it, and buttons to open,
