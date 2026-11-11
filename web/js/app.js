@@ -922,7 +922,7 @@ refreshFavorites(true);
 onSettingChange((name) => {
   if (['paneWidth', 'sidebar', 'tasksShowDone', 'keys', 'allPagesShow'].includes(name)) return;
   applySettings();
-  if (['linksNewTab', 'codeFold', 'codeFoldLines'].includes(name)) for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
+  if (['linksNewTab', 'codeFold', 'codeFoldLines', 'codeFoldShow'].includes(name)) for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
   if (name === 'favorites') refreshFavorites(true);
   // Layout may have changed (width, theme fonts): redraw threading lines.
   requestAnimationFrame(() => { for (const ed of editors) ed.updateThread(); });

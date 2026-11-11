@@ -12,7 +12,8 @@ const DEFAULTS = {
   liveCode: true, // syntax colours while editing code blocks
   codeWrap: false, // wrap long lines in code blocks instead of scrolling sideways
   codeFold: true, // long code blocks start folded
-  codeFoldLines: '20', // "long" means more lines than this
+  codeFoldLines: 20, // "long" means more lines than this
+  codeFoldShow: 6, // lines shown while a code block is folded
 };
 
 const listeners = new Set();
@@ -72,8 +73,9 @@ export const CATEGORIES = [
     ['threadAlways', 'Always show bullet threading', 'Show the lines connecting every block to its parent all the time, not only while editing.'],
     ['liveCode', 'Highlight code while editing', 'Show syntax colours while you type in a code block.'],
     ['codeWrap', 'Wrap long lines in code', 'Wrap long lines onto the next row. When off, long lines scroll sideways.'],
-    ['codeFold', 'Fold long code blocks', 'Long code blocks start folded, showing the first few lines and a "Show all" bar.'],
-    ['codeFoldLines', 'Fold code blocks longer than', 'How many lines make a code block "long".', [['10', '10 lines'], ['20', '20 lines'], ['30', '30 lines'], ['50', '50 lines'], ['100', '100 lines']]],
+    ['codeFold', 'Fold long code blocks', 'Long code blocks start folded, showing their first lines and a "Show all" bar.'],
+    ['codeFoldLines', 'Fold code blocks longer than (lines)', 'A code block with more lines than this starts folded.', { number: true, min: 2, max: 1000 }],
+    ['codeFoldShow', 'Lines to show when folded', 'How many lines of a folded code block stay visible.', { number: true, min: 1, max: 200 }],
   ] },
   { id: 'sidebar', label: 'Sidebar', options: [
     ['favorites', 'Favorites in the sidebar', 'Show starred pages in the sidebar. Star a page with ☆ next to its title.'],
@@ -90,7 +92,23 @@ export function settingRow([name, label, help, choices]) {
   text.innerHTML = `<div class="setting-label"></div><div class="setting-help"></div>`;
   text.firstChild.textContent = label;
   text.lastChild.textContent = help;
-  if (choices) {
+  if (choices?.number) {
+    row.classList.add('setting-select');
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'setting-number';
+    input.min = choices.min;
+    input.max = choices.max;
+    input.value = getSetting(name);
+    input.addEventListener('change', () => {
+      const v = Math.round(Number(input.value));
+      if (!Number.isFinite(v)) { input.value = getSetting(name); return; }
+      const clamped = Math.min(choices.max, Math.max(choices.min, v));
+      input.value = clamped;
+      setSetting(name, clamped);
+    });
+    row.append(text, input);
+  } else if (choices) {
     row.classList.add('setting-select');
     const select = document.createElement('select');
     for (const [value, t] of choices) {

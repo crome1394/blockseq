@@ -213,8 +213,9 @@ the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.d
 **Code blocks:** type ```` ``` ```` (optionally with a language, e.g. ```` ```bash ````) and
 press Tab or Enter, or use `/code`. The code editor opens with the cursor inside.
 Click any code block to edit it again. Code blocks longer than 20 lines start
-folded (first few lines and a *Show all N lines* bar); change or turn this off
-in *Settings → Editor*. Copy always copies the whole block. Blocks with no language get a guessed
+folded, showing their first 6 lines and a *Show all N lines* bar. In
+*Settings → Editor* you can turn this off, set how long a block must be to fold,
+and set how many lines stay visible while folded. Copy always copies the whole block. Blocks with no language get a guessed
 one (shown as "Auto-detect" in the language picker); pick "Plain text" for no
 colours. In the code editor:
 
@@ -342,7 +343,7 @@ journals), Journals, Starred or All. Each browser remembers the last choice.
   width, a colour per tag
 - *Editor:* open links in a new tab, bullet threading (and showing it all the
   time), syntax colours while editing code, wrapping long code lines, folding
-  long code blocks (and how many lines count as long)
+  long code blocks (when to fold, and how many lines to show)
 - *Sidebar:* favorites
 - *Tasks:* the status list (shared by all devices)
 - *Keyboard:* change any global shortcut

@@ -689,8 +689,9 @@ html.code-wrap .rendered pre.code .lc { white-space: pre-wrap; overflow-wrap: an
 .rendered pre.code.folded .code-body {
   max-height: calc(var(--fold-lines, 6) * 1.6em + 8px);
   overflow: hidden;
-  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
-  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  /* Fade out only the last line. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2em), transparent);
 }
 .code-fold {
   display: block;
@@ -1057,7 +1058,8 @@ textarea.code-edit.live::selection { background: rgba(100, 150, 255, 0.35); colo
 .setting-label { font-weight: 600; }
 .setting-help, .small { font-size: 13px; color: var(--muted); }
 .setting-select { justify-content: space-between; align-items: center; }
-.setting select, .field input {
+.setting-number { width: 84px; text-align: right; }
+.setting select, .field input, .setting-number {
   font: inherit;
   font-size: 14px;
   padding: 5px 8px;
