@@ -106,18 +106,48 @@ export function withoutImage(text, index) {
 
 // ---- actions -------------------------------------------------------------------
 
-export function openLightbox(url, alt = '') {
+// Full-size preview. `images` is a list of {src, alt}; with more than one
+// (images on the same row) ‹ › arrows and ←/→ step through them.
+export function openLightbox(images, start = 0) {
   document.querySelector('.lightbox')?.remove();
+  let index = start;
   const box = document.createElement('div');
   box.className = 'lightbox';
   const img = document.createElement('img');
-  img.src = url;
-  img.alt = alt;
   box.append(img);
+  const counter = document.createElement('div');
+  counter.className = 'lb-count';
+  const many = images.length > 1;
+  const show = (i) => {
+    index = (i + images.length) % images.length;
+    img.src = images[index].src;
+    img.alt = images[index].alt || '';
+    counter.textContent = `${index + 1} / ${images.length}`;
+  };
+  const arrow = (cls, text, dir, label) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `lb-arrow ${cls}`;
+    b.textContent = text;
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    b.addEventListener('click', (e) => { e.stopPropagation(); show(index + dir); });
+    return b;
+  };
+  if (many) box.classList.add('many');
+  if (many) box.append(arrow('lb-prev', '‹', -1, 'Previous image (←)'), arrow('lb-next', '›', 1, 'Next image (→)'), counter);
   const close = () => { box.remove(); document.removeEventListener('keydown', onKey, true); };
-  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); }
+    else if (many && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.stopPropagation();
+      e.preventDefault();
+      show(index + (e.key === 'ArrowLeft' ? -1 : 1));
+    }
+  };
   box.addEventListener('click', close);
   document.addEventListener('keydown', onKey, true);
+  show(start);
   document.body.append(box);
 }
 

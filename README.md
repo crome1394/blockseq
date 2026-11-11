@@ -242,6 +242,8 @@ Click an image for a full-size preview. Its ⋮ button offers align
 left/center/right, size (fit, original, half, quarter, very small), copy image,
 open in new tab, download, and delete. Put two or more images (or PDFs) on the
 same line to show them side by side; they shrink together to fit the window.
+Clicking one of them opens a viewer with ‹ › arrows (or ← / →) that step
+through the images on that line.
 
 **PDFs:** drag a PDF onto a block, paste it, or use `/pdf`. Its ⋮ menu switches
 between a link and a full inline preview, and offers open in the side pane, open
@@ -326,7 +328,8 @@ in the sidebar. They are stored on the server, so every computer shows the same 
 
 **All pages** is a table of favorite star, page name, tags, created and updated
 time. Click a star to (un)favorite, or a column heading to sort. The filter
-matches names and tags.
+box matches names and tags, and the buttons next to it show Pages (no
+journals), Journals, Starred or All. Each browser remembers the last choice.
 
 **Settings** (bottom of the sidebar), by category:
 - *Appearance:* theme (Automatic, Light, Dark, Sepia, Solarized Light/Dark,

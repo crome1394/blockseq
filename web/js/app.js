@@ -266,17 +266,28 @@ async function allPagesView(seq) {
   const filter = el('input', 'filter');
   filter.type = 'search';
   filter.placeholder = 'Filter pages';
-  const hideLabel = el('label', 'check');
-  const hide = el('input');
-  hide.type = 'checkbox';
-  hide.checked = true;
-  hideLabel.append(hide, ' Hide journals');
+  // Which pages to list; remembered per browser.
+  const SHOW = [['pages', 'Pages', 'Hide journals'], ['journals', 'Journals', 'Only journals'], ['starred', 'Starred', 'Only starred pages'], ['all', 'All', 'Everything']];
+  let show = getSetting('allPagesShow') || 'pages';
+  const showGroup = el('div', 'seg');
+  showGroup.setAttribute('role', 'group');
+  for (const [value, label, title] of SHOW) {
+    const b = el('button', 'seg-btn', label);
+    b.type = 'button';
+    b.title = title;
+    b.dataset.value = value;
+    b.addEventListener('click', () => { show = value; setSetting('allPagesShow', value); draw(); });
+    showGroup.append(b);
+  }
+  const keep = (p) => (show === 'pages' ? p.journal_day == null
+    : show === 'journals' ? p.journal_day != null
+      : show === 'starred' ? p.favorite : true);
   const newBtn = el('button', 'primary', 'New page');
   newBtn.addEventListener('click', () => {
     const n = prompt('Page name');
     if (n?.trim()) location.hash = pageHref(n.trim());
   });
-  controls.append(filter, hideLabel, newBtn);
+  controls.append(filter, showGroup, newBtn);
   const wrap = el('div', 'table-wrap');
   const table = el('table', 'page-table');
   const COLS = [['favorite', '★'], ['name', 'Page name'], ['tags', 'Tags'], ['created_at', 'Created at'], ['updated_at', 'Updated at']];
@@ -309,7 +320,8 @@ async function allPagesView(seq) {
   const fullTime = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
   const draw = () => {
     const q = filter.value.trim().toLowerCase();
-    const rows = pages.filter((p) => (!hide.checked || p.journal_day == null)
+    showGroup.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.value === show));
+    const rows = pages.filter((p) => keep(p)
       && (p.name.toLowerCase().includes(q) || p.tags.some((t) => t.toLowerCase().includes(q))));
     rows.sort((a, b) => {
       const x = a[sortKey];
@@ -354,10 +366,11 @@ async function allPagesView(seq) {
       tr.addEventListener('click', (e) => { if (!e.target.closest('a')) location.hash = pageHref(p.name); });
       return tr;
     }));
-    empty.textContent = rows.length ? '' : (q ? 'No matching pages.' : 'No pages yet.');
+    empty.textContent = rows.length ? '' : q ? 'No matching pages.'
+      : show === 'starred' ? 'No starred pages yet. Click a ☆ to star one.'
+        : show === 'journals' ? 'No journals yet.' : 'No pages yet.';
   };
   filter.addEventListener('input', draw);
-  hide.addEventListener('change', draw);
   draw();
   filter.focus();
 }
@@ -893,7 +906,7 @@ function applySettings() {
 applySettings();
 refreshFavorites(true);
 onSettingChange((name) => {
-  if (['paneWidth', 'sidebar', 'tasksShowDone', 'keys'].includes(name)) return;
+  if (['paneWidth', 'sidebar', 'tasksShowDone', 'keys', 'allPagesShow'].includes(name)) return;
   applySettings();
   if (name === 'linksNewTab') for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
   if (name === 'favorites') refreshFavorites(true);

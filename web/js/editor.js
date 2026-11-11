@@ -489,7 +489,10 @@ export class PageEditor {
     }
     const img = t.closest('.img-box img');
     if (img) {
-      openLightbox(img.src, img.alt);
+      // Images on the same row can be stepped through with ‹ ›.
+      const row = img.closest('.media-row');
+      const imgs = row ? [...row.querySelectorAll('.img-box img')] : [img];
+      openLightbox(imgs.map((i) => ({ src: i.src, alt: i.alt })), imgs.indexOf(img));
       return;
     }
     const badge = t.closest('.status-badge');
