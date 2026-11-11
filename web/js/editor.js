@@ -346,6 +346,24 @@ export class PageEditor {
     await this.save();
   }
 
+  // After /encrypted: open an empty child for the secret text, and ask to
+  // unlock first if needed so nothing is saved as plain text.
+  startSecretChild(node) {
+    const child = makeNode();
+    this.insertChild(node, child, 0);
+    node.collapsed = false;
+    this.refresh(child, 'end');
+    if (!isUnlocked()) {
+      // The password prompt takes the focus; come back to the child after it.
+      const reopen = () => setTimeout(() => {
+        const n = this.findNode(child.id);
+        if (n && !this.disposed) this.edit(n, 'end');
+      }, 50);
+      document.addEventListener('blockseq:unlocked', reopen, { once: true });
+      unlockDialog();
+    }
+  }
+
   // Called while locking: save (encrypting with the key one last time).
   async beforeLock() {
     if (this.editing && this.secretRoots().some((r) => isInside(this.editing, r))) this.stopEdit();
@@ -1848,6 +1866,7 @@ const SLASH_COMMANDS = [
   { id: 'h3', label: 'Heading 3', hint: '###' },
   { id: 'quote', label: 'Quote line', hint: '>' },
   { id: 'quoteblock', label: 'Quote block', hint: '#quote (block and children)' },
+  { id: 'encrypted', label: 'Encrypted block', hint: '#Encrypted (children are encrypted)' },
   { id: 'tip', label: 'Tip', hint: 'admonition' },
   { id: 'note', label: 'Note', hint: 'admonition' },
   { id: 'important', label: 'Important', hint: 'admonition' },
@@ -1898,6 +1917,15 @@ function runSlash(editor, node, ta, cmd, at) {
       const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
       const kind = cmd.toUpperCase();
       return editor.replaceText(node, ta, at, at, `${lead}#+BEGIN_${kind}\n\n#+END_${kind}`, lead.length + kind.length + 9);
+    }
+    case 'encrypted': {
+      // This block becomes the readable label; the secret goes in a child.
+      const first = ta.value.split('\n')[0];
+      if (!ENCRYPTED_TAG.test(first)) {
+        const label = first.trim() ? `${first.trimEnd()} ` : 'Encrypted ';
+        editor.replaceText(node, ta, 0, first.length, `${label}#Encrypted`);
+      }
+      return editor.startSecretChild(node);
     }
     case 'quoteblock': {
       const first = ta.value.split('\n')[0];

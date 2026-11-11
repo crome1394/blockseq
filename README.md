@@ -305,7 +305,7 @@ button next to it.
 line when nothing is selected (status words and trailing tags stay outside).
 Press again to undo it.
 
-**Encrypted blocks:** tag a block `#Encrypted` and everything nested under it
+**Encrypted blocks:** type `/encrypted` (or tag a block `#Encrypted`) and everything nested under it
 is encrypted in your browser (AES-256-GCM) before it is saved. The tagged block's
 own text stays readable as a label; the server, the database, the Markdown files
 and backups only hold scrambled text. Locked blocks show "🔒 Encrypted. Click to
@@ -313,7 +313,9 @@ unlock"; one password unlocks every encrypted block in every workbook, and they
 lock again after 15 idle minutes (change it in *Settings → Security*), when the
 tab closes, or with the 🔓 Lock button. The 🔒/🔓 button at the top right
 (next to ?) locks or unlocks them from anywhere. Copying an encrypted block
-copies it encrypted. Blocks tagged before a password existed (or while locked)
+copies it encrypted. `/encrypted` turns the current block into the label ("Encrypted" if it
+was empty), opens a child block for the secret, and asks you to unlock first if
+needed. Blocks tagged before a password existed (or while locked)
 are still plain text, and say so; they are encrypted as soon as you set the
 password or unlock, including on pages you don't have open.
 
