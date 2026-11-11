@@ -1,0 +1,104 @@
+# AGENTS.md
+
+Guidance for AI coding agents (and people) working on Blockseq. Read
+[README.md](README.md) for what the app does and how it is deployed, and
+[ARCHITECTURE.md](ARCHITECTURE.md) for how it works inside. This file covers
+how to work on it.
+
+## What this is
+
+A self-hosted, single-user, Logseq-style outliner. A Rust (axum + SQLite)
+server stores notes and serves a plain-JavaScript web UI that is embedded in the
+binary. The owner uses it from several computers on a LAN / tailnet, alongside
+Logseq, so **data safety and Logseq file compatibility matter more than
+features**.
+
+## Layout
+
+- `src/` Rust server: `main.rs` (startup, router), `api.rs` (handlers),
+  `db.rs` (all SQL, schema, migrations), `md.rs` (Markdown import/export,
+  link and tag parsing), `workbooks.rs` (workbook folders, Logseq import),
+  `assets.rs` (uploads), `config.rs` (shared settings).
+- `web/` UI: `index.html`, `app.css`, and ES modules in `web/js/`. No build
+  step, no bundler, no npm.
+- `deploy/` systemd unit and install script for the Proxmox LXC.
+
+## Build, run, test
+
+```sh
+cargo build                        # debug build; reads web/ from disk
+BLOCKSEQ_DATA=/tmp/bq BLOCKSEQ_ADDR=127.0.0.1:3939 ./target/debug/blockseq
+cargo test                         # unit tests (db, md, assets)
+cargo build --release              # release build embeds web/ in the binary
+```
+
+- With a **debug** build, UI changes only need a browser refresh. A
+  **release** build must be rebuilt after any change in `web/`.
+- Always use a throwaway `BLOCKSEQ_DATA` directory for testing, never the
+  owner's real data.
+- Run `cargo test` and check the build has no warnings before finishing.
+- UI changes should be checked in a real browser. Headless Chrome via
+  `deno` + `npm:puppeteer-core` works well. The live-update stream (SSE)
+  keeps a connection open, so wait for selectors, not `networkidle`.
+
+## Rules
+
+**Data safety**
+- The SQLite database is the source of truth; the `.md` files are a mirror.
+- Schema changes go in `db::migrate` as a new step, with `SCHEMA_VERSION`
+  bumped. They must upgrade existing databases in place without losing data.
+  Never drop or rewrite user content in a migration.
+- Saves use optimistic versioning (`base_version`, HTTP 409 on conflict).
+  Keep it: two devices editing the same page must never silently overwrite
+  each other.
+- Never delete user files (pages, assets, workbook folders) without an
+  explicit user action and a confirmation in the UI.
+- Validate every name that becomes a path (`workbooks::valid_id`,
+  `assets::valid_name`). No path traversal.
+
+**Logseq compatibility**
+- Block text stays Logseq-flavoured Markdown. Things Blockseq manages
+  (numbered lists, colours, headings, image alignment/size, PDF view,
+  admonitions) are stored the way Logseq writes them, e.g.
+  `logseq.order-list-type:: number`, `{:align "center"}`, `#+BEGIN_TIP`.
+- The Markdown mirror must stay readable by Logseq (`pages/`, `journals/`,
+  `assets/`, `___` for `/` in file names, tab-indented `- ` bullets).
+
+**Code style**
+- No new runtime dependencies without a strong reason. In particular, no
+  third-party JavaScript: the syntax highlighter, Markdown renderer and editor
+  are written in-house on purpose. Rust crates must be permissively licensed
+  (MIT / Apache-2.0 / BSD / similar), compatible with the MIT license.
+- The UI must work over plain HTTP on a LAN address: `crypto.randomUUID`
+  and `navigator.clipboard` are not available there, so use the fallbacks in
+  `api.js` (`uuid()`) and `ui.js` (`copyText`).
+- Keep the UI usable at phone width and in every theme (colours come from
+  CSS variables; test light and dark).
+- Comments explain *why*, briefly. Match the surrounding style.
+- Per-device preferences live in `localStorage` (`settings.js`); settings
+  every device must share (task statuses) live on the server (`config.json`).
+
+**Docs**
+- Update README.md (user-facing behaviour) and ARCHITECTURE.md (internals)
+  in the same change as the code.
+
+## Provenance (clean room)
+
+Blockseq is an independent implementation. It must not contain code, styles,
+icons or other assets copied or translated from Logseq (which is AGPL-3.0) or
+from any project whose license is incompatible with MIT.
+
+- Build from observed behaviour, screenshots, and the publicly documented
+  file format (Markdown outlines, `key:: value` properties, journal file
+  names, `config.edn` favourites). Do not read Logseq's source to implement a
+  feature.
+- If you are unsure where an idea or snippet came from, write it fresh.
+
+## Deployment notes
+
+- Production runs on a Proxmox LXC as the `blockseq` system user, with data in
+  `/var/lib/blockseq` (Main workbook; other workbooks in `workbooks/<name>/`).
+- Changes that touch the schema run their migration on first start. Tell the
+  owner to back up `blockseq.db` before deploying such a change.
+- Do not run deploy commands, SSH into the server, or push to remotes unless
+  the owner asks.

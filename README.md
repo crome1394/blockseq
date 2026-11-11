@@ -11,7 +11,10 @@ and you use them from any browser on your LAN or tailnet.
   colour-coded, with a task list in a side pane
 - Markdown formatting, code blocks, tables, numbered lists, admonitions
   (tip, note, warning…), quote blocks
-- `/` commands, undo/redo, tags at the end of a line shown on the right
+- `/` commands, undo/redo, tags at the end of a line shown on the right,
+  `#` tag suggestions as you type
+- Select whole blocks (keyboard or mouse) to copy, cut, paste, delete or format
+  them; Ctrl+B / Ctrl+I for bold and italic
 - Code blocks with syntax colours, line numbers and a copy button, plus an
   in-block code editor (current-line highlight, language picker, auto-indent)
 - Bullet menu with block colours, headings, block links, export; bullet threading
@@ -247,12 +250,11 @@ pane. Files go in the workbook's `assets/` folder.
 a thumbnail, size, date and the pages that use it, and buttons to open,
 download or delete. *Only unused* finds files no block links to any more.
 
-**Task statuses:** start a block with a status word (`TODO Call the bank`), use
-`/` and the status name, or press **Ctrl+Enter** to step through the statuses
-(**Ctrl+Shift+Enter** opens a picker). Click a status badge to change it. Finished
-statuses (Done, Cancelled) are struck out. Every task also counts as tagged
-`#task`, so the *task* page lists them all, without `#task` being added to the
-text. Define your own statuses (word, label, colour, finished or not) in
+**Task statuses:** use `/` and the status name, or press **Ctrl+Enter** to step
+through the statuses (**Ctrl+Shift+Enter** opens a picker). Click a status badge
+to change it. Setting a status adds `#task` to the end of the line (shown on the
+right); removing the status removes it. Finished statuses (Done, Cancelled) are
+struck out. A block you type as `TODO …` by hand also counts as a task. Define your own statuses (word, label, colour, finished or not) in
 *Settings → Tasks*; they are shared by all devices.
 
 **Task list:** the ☑ icon at the top right (or **t**) opens the open tasks in
@@ -265,6 +267,23 @@ Enter adds a line inside the box.
 
 **Quotes:** `> text` is a quote line. Put `#quote` on a block (or `/quote block`)
 to show it and all its children as a quotation.
+
+**Selecting blocks:** press **Esc** while editing to select that block, then
+**Shift+↑/↓** to add blocks (or **Shift+↑/↓** on the first/last line of a block).
+You can also drag from one block into another, or Shift+click. With blocks
+selected: **Ctrl+C** copies them (with their children) as a Logseq-style
+outline, **Ctrl+X** cuts, **Backspace** deletes, **Ctrl+V** pastes after them,
+**Ctrl+B / Ctrl+I** formats them, **Ctrl+Enter** changes their status, **Enter**
+edits, **Esc** clears. Copied blocks paste back as blocks, in Blockseq or
+Logseq.
+
+**Bold and italic:** **Ctrl+B** / **Ctrl+I** wrap the selected text, or the whole
+line when nothing is selected (status words and trailing tags stay outside).
+Press again to undo it.
+
+**Tags:** typing `#` suggests existing tags as you type, with *New tag …* first.
+Enter puts the chosen tag at the end of the line (shown on the right);
+**Ctrl+Enter** keeps it where you typed it.
 
 **Help:** press **?** (when you're not typing in a block; Esc stops editing) for
 the list of shortcuts. Change them in *Settings → Keyboard*. *Copy image*
@@ -309,6 +328,12 @@ C-family (C, C++, C#, Java, Kotlin, Swift, PHP), SQL, HTML/XML, CSS, Dockerfile
 and diff. Other languages get basic colouring of comments, strings and numbers.
 Pasting a Logseq outline (`- item` lines) creates the matching blocks and keeps
 their `id::` values, so block refs carry over.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Blockseq is an independent implementation written
+from scratch; it contains no code or assets from Logseq. See the provenance
+note in [AGENTS.md](AGENTS.md).
 
 ## How it works
 

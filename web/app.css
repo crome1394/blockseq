@@ -1269,3 +1269,19 @@ kbd {
 .key-btn { min-width: 150px; font: 600 12.5px var(--mono); padding: 3px 10px; }
 .key-btn.capturing { border-color: var(--accent); color: var(--accent); }
 .key-btn.clash { border-color: var(--danger); color: var(--danger); }
+
+
+/* ---- block selection ---- */
+
+.block.selected {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.block.selected .block.selected { background: none; box-shadow: none; }
+
+/* ---- tag autocomplete ---- */
+
+.autocomplete mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+.autocomplete .ac-foot { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 6px; font-size: 12px; color: var(--muted); }
+.autocomplete .ac-foot kbd { font-size: 11px; }

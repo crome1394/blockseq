@@ -50,9 +50,30 @@ export function stripStatus(content) {
   return content.slice(statusPrefix(content).length);
 }
 
+// A block with a status also carries a #task tag at the end of its first
+// line (shown on the right). Removing the status removes the tag too.
+const TASK_TAG = /(^|\s)#task(?=\s|$)/i;
+
+export function hasTaskTag(content) {
+  return TASK_TAG.test(content);
+}
+
 export function withStatus(content, word) {
   const body = stripStatus(content);
-  return word ? `${word} ${body}` : body;
+  const nl = body.indexOf('\n');
+  let first = nl === -1 ? body : body.slice(0, nl);
+  const rest = nl === -1 ? '' : body.slice(nl);
+  if (word) {
+    if (!TASK_TAG.test(body) && !first.startsWith('```')) first = first.trimEnd() + (first.trim() ? ' ' : '') + '#task';
+    return `${word} ${first}${rest}`;
+  }
+  first = first.replace(/(^|\s+)#task(?=\s|$)/i, '').trimEnd();
+  return first + rest;
+}
+
+// The first line without the status word or the #task tag (task list).
+export function taskTitle(content) {
+  return stripStatus(content).split('\n')[0].replace(/(^|\s+)#task(?=\s|$)/i, '').trim();
 }
 
 // Ctrl+Enter order: none → first → … → last → none.

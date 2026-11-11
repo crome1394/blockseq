@@ -14,6 +14,8 @@ export const ACTIONS = [
   ['goAssets', 'Go to assets', 'g f', 'Navigation', true],
   ['switchWorkbook', 'Switch workbook', 'w', 'Navigation', true],
   ['help', 'Keyboard shortcuts (this screen)', '?', 'Navigation', true],
+  ['bold', 'Bold (selection, or the whole line)', 'Ctrl+B', 'Formatting', false],
+  ['italic', 'Italic (selection, or the whole line)', 'Ctrl+I', 'Formatting', false],
   ['cycleStatus', 'Next task status', 'Ctrl+Enter', 'Tasks', false],
   ['statusPicker', 'Choose task status', 'Ctrl+Shift+Enter', 'Tasks', false],
 ];

@@ -11,7 +11,7 @@ import {
   imageFiles, uploadImage, pickImages, imageAt, withAlign, withMeta, withoutImage,
   openLightbox, copyImage, downloadImage,
 } from './images.js';
-import { getStatuses, statusOf, statusPrefix, stripStatus, withStatus, nextStatus, statusStyle } from './tasks.js';
+import { getStatuses, statusOf, statusPrefix, stripStatus, withStatus, nextStatus, statusStyle, hasTaskTag } from './tasks.js';
 import { matches } from './keys.js';
 import { openPdfPane } from './pdfview.js';
 import { journalName } from './dates.js';
@@ -32,6 +32,131 @@ const COLORS = ['yellow', 'red', 'pink', 'green', 'blue', 'purple', 'gray'];
 
 // The editor the user touched last; keyboard undo outside a block goes here.
 let lastEditor = null;
+// The editor that has blocks selected (only one at a time).
+let selectedEditor = null;
+// Text we last put on the clipboard from selected blocks.
+let lastCopy = '';
+
+const isField = (t) => !!t?.closest?.('input, textarea, select, [contenteditable]');
+
+// Toggles **bold** or _italic_ around one line's text, leaving a status word,
+// heading marker and trailing #tags outside the marks.
+const TRAILING_TAG_RUN = /(?:\s+(?:#\[\[[^\]\n]+\]\]|#[^\s#,.!?;:()[\]"'`+][^\s#,.!?;:()[\]"'`]*))+\s*$/;
+const MARKS = ['**', '_'];
+
+function toggleMark(core, mark) {
+  const m = mark.length;
+  if (core.length >= 2 * m && core.startsWith(mark) && core.endsWith(mark)) return core.slice(m, -m);
+  for (const other of MARKS) {
+    const o = other.length;
+    if (other !== mark && core.length >= 2 * o && core.startsWith(other) && core.endsWith(other)) {
+      return other + toggleMark(core.slice(o, -o), mark) + other;
+    }
+  }
+  return core ? mark + core + mark : core;
+}
+
+function toggleLine(line, mark, isFirst) {
+  if (/^\s*(```|#\+|\|)/.test(line) || /^[\w.-]+:: /.test(line)) return line;
+  let pre = isFirst ? statusPrefix(line) : '';
+  let rest = line.slice(pre.length);
+  const h = /^(\s*(?:#{1,6} |> )?)/.exec(rest)[1];
+  pre += h;
+  rest = rest.slice(h.length);
+  let tail = '';
+  const t = TRAILING_TAG_RUN.exec(rest);
+  if (t && t.index > 0) { tail = rest.slice(t.index); rest = rest.slice(0, t.index); }
+  const ws = /\s*$/.exec(rest)[0];
+  if (ws) { tail = ws + tail; rest = rest.slice(0, rest.length - ws.length); }
+  return pre + toggleMark(rest, mark) + tail;
+}
+
+// ---- block selection: page-wide events ----------------------------------------
+
+function editorAt(target) {
+  for (const ed of editors) if (!ed.disposed && ed.container.contains(target)) return ed;
+  return null;
+}
+
+function nodeAt(ed, target) {
+  const block = target?.closest?.('.block');
+  return block && ed.container.contains(block) ? ed.findNode(block.dataset.id) : null;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!selectedEditor || e.defaultPrevented || isField(e.target) || document.querySelector('.modal-overlay, .menu')) return;
+  if (selectedEditor.disposed || !selectedEditor.sel) { selectedEditor = null; return; }
+  selectedEditor.onSelectionKey(e);
+});
+
+document.addEventListener('copy', (e) => {
+  if (!selectedEditor?.sel || isField(e.target)) return;
+  const n = selectedEditor.selectedRoots().length;
+  lastCopy = selectedEditor.selectionMarkdown();
+  e.clipboardData.setData('text/plain', lastCopy);
+  e.preventDefault();
+  toast(`Copied ${n} block${n === 1 ? '' : 's'}`);
+});
+
+document.addEventListener('cut', (e) => {
+  if (!selectedEditor?.sel || isField(e.target)) return;
+  // Ids are kept, so ((references)) still work after pasting it elsewhere.
+  lastCopy = selectedEditor.selectionMarkdown({ ids: true });
+  e.clipboardData.setData('text/plain', lastCopy);
+  e.preventDefault();
+  selectedEditor.deleteSelection();
+  toast('Cut. Paste it anywhere to move it.');
+});
+
+document.addEventListener('paste', (e) => {
+  const ed = selectedEditor;
+  if (!ed?.sel || isField(e.target)) return;
+  const text = e.clipboardData?.getData('text/plain');
+  if (!text) return;
+  e.preventDefault();
+  const roots = parseOutline(text, uuid) || [makeNode(text.replace(/\r\n/g, '\n'))];
+  const sel = ed.selectedRoots();
+  const anchor = sel[sel.length - 1];
+  if (!anchor) return;
+  ed.beginOp();
+  const first = roots[0];
+  ed.insertOutline(anchor, roots);
+  ed.refresh();
+  const last = ed.findNode(roots[roots.length - 1].id);
+  if (first && last) ed.selectBlocks(ed.findNode(first.id), last);
+});
+
+// Dragging from one block into another selects whole blocks.
+let drag = null;
+document.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  const ed = editorAt(e.target);
+  const node = ed && !e.target.closest('.bullet, .toggle, button, a, .code-editor') && nodeAt(ed, e.target);
+  drag = node ? { ed, node, active: false } : null;
+  // Clicking anywhere else clears a block selection.
+  if (selectedEditor?.sel && !e.target.closest('.menu, .popup, .modal-overlay') && !(e.shiftKey && node)) {
+    if (!node || selectedEditor !== ed) selectedEditor.clearSelection();
+  }
+});
+document.addEventListener('mousemove', (e) => {
+  if (!drag || !(e.buttons & 1)) return;
+  const over = nodeAt(drag.ed, document.elementFromPoint(e.clientX, e.clientY));
+  if (!over || (over === drag.node && !drag.active)) return;
+  drag.active = true;
+  e.preventDefault();
+  window.getSelection()?.removeAllRanges();
+  const cur = drag.ed.sel;
+  if (!cur || cur.anchor !== drag.node || cur.focus !== over) drag.ed.selectBlocks(drag.node, over);
+});
+document.addEventListener('mouseup', () => {
+  // A finished drag must not turn into a click that starts editing.
+  if (drag?.active) {
+    const stop = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+    document.addEventListener('click', stop, { capture: true, once: true });
+    setTimeout(() => document.removeEventListener('click', stop, { capture: true }), 0);
+  }
+  drag = null;
+});
 export function activeEditor() {
   return lastEditor && editors.has(lastEditor) && !lastEditor.disposed ? lastEditor : null;
 }
@@ -217,6 +342,8 @@ export class PageEditor {
 
   render() {
     this.rendering = true;
+    if (selectedEditor === this) selectedEditor = null;
+    this.sel = null;
     this.editing = null;
     this.ta = null;
     this.mirror = null;
@@ -336,6 +463,16 @@ export class PageEditor {
 
   onContentClick(node, e) {
     const t = e.target;
+    if (e.shiftKey && !t.closest('a, button')) {
+      const anchor = this.sel?.anchor || this.lastEdited;
+      if (anchor && this.findNode(anchor.id)) {
+        e.preventDefault();
+        window.getSelection()?.removeAllRanges();
+        this.selectBlocks(anchor, node);
+        return;
+      }
+    }
+    if (this.sel) this.clearSelection();
     if (t.closest('.code-editor')) return; // the code editor handles its own clicks
     if (t.closest('a') || t.closest('.code-copy')) return; // links navigate (hash router / new tab)
     const pre = t.closest('pre.code');
@@ -445,6 +582,7 @@ export class PageEditor {
   stopEdit() {
     const node = this.editing;
     if (!node) return;
+    this.lastEdited = node;
     this.editing = null;
     this.ta = null;
     this.mirror = null;
@@ -564,10 +702,186 @@ export class PageEditor {
       const vis = this.visible();
       const next = vis[vis.indexOf(node) + 1];
       if (next) { e.preventDefault(); this.edit(next, 'start'); }
-    } else if (k === 'Escape') {
+    } else if ((k === 'ArrowUp' || k === 'ArrowDown') && e.shiftKey && !mod && !e.altKey && start === end
+      && (k === 'ArrowUp' ? !v.slice(0, start).includes('\n') : !v.slice(end).includes('\n'))) {
+      // Shift+↑ on the first line / Shift+↓ on the last selects whole blocks.
       e.preventDefault();
-      ta.blur();
+      const vis = this.visible();
+      const other = vis[vis.indexOf(node) + (k === 'ArrowUp' ? -1 : 1)] || node;
+      this.selectBlocks(node, other);
+    } else if (matches(e, 'bold') || matches(e, 'italic')) {
+      e.preventDefault();
+      this.formatText(node, ta, matches(e, 'bold') ? '**' : '_');
+    } else if (k === 'Escape') {
+      // Esc stops editing and selects the block (Esc again clears it).
+      e.preventDefault();
+      this.selectBlocks(node);
     }
+  }
+
+  // ---- bold / italic ---------------------------------------------------------
+
+  // Ctrl+B / Ctrl+I: wrap the selected text, or the whole current line when
+  // nothing is selected. Pressing again removes the marks.
+  formatText(node, ta, mark) {
+    this.beginOp();
+    const v = ta.value;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const m = mark.length;
+    if (s !== e) {
+      const sel = v.slice(s, e);
+      if (sel.length >= 2 * m && sel.startsWith(mark) && sel.endsWith(mark)) {
+        const inner = sel.slice(m, -m);
+        return this.replaceText(node, ta, s, e, inner, 0, inner.length);
+      }
+      if (v.slice(s - m, s) === mark && v.slice(e, e + m) === mark) {
+        return this.replaceText(node, ta, s - m, e + m, sel, 0, sel.length);
+      }
+      return this.replaceText(node, ta, s, e, mark + sel + mark, m, m + sel.length);
+    }
+    const { start: ls, end: le, line } = lineAt(v, s);
+    const next = toggleLine(line, mark, ls === 0);
+    const shift = (next.length - line.length) / 2;
+    const caret = Math.max(0, Math.min(next.length, s - ls + shift));
+    this.replaceText(node, ta, ls, le, next, caret);
+  }
+
+  // ---- block selection ---------------------------------------------------------
+
+  // Selects the visible blocks from `anchor` to `focus` (inclusive). Each
+  // selected block counts with all its children.
+  selectBlocks(anchor, focus = anchor) {
+    if (this.editing) this.stopEdit();
+    this.closeCodeEditor();
+    if (selectedEditor && selectedEditor !== this) selectedEditor.clearSelection();
+    selectedEditor = this;
+    lastEditor = this;
+    this.sel = { anchor, focus };
+    document.activeElement?.blur?.();
+    this.paintSelection();
+  }
+
+  clearSelection() {
+    this.sel = null;
+    if (selectedEditor === this) selectedEditor = null;
+    this.container.querySelectorAll('.block.selected').forEach((b) => b.classList.remove('selected'));
+  }
+
+  // Top-most selected nodes in document order (children ride along).
+  selectedRoots() {
+    if (!this.sel) return [];
+    const vis = this.visible();
+    let a = vis.indexOf(this.sel.anchor);
+    let b = vis.indexOf(this.sel.focus);
+    if (a === -1 || b === -1) return [];
+    if (a > b) [a, b] = [b, a];
+    const range = vis.slice(a, b + 1);
+    const set = new Set(range);
+    return range.filter((n) => { for (let p = n.parent; p; p = p.parent) if (set.has(p)) return false; return true; });
+  }
+
+  paintSelection() {
+    this.container.querySelectorAll('.block.selected').forEach((b) => b.classList.remove('selected'));
+    const roots = this.selectedRoots();
+    roots.forEach((n) => n.el?.classList.add('selected'));
+    roots[roots.length - 1]?.el?.scrollIntoView({ block: 'nearest' });
+  }
+
+  selectionMarkdown(opts = {}) {
+    return this.selectedRoots().map((n) => subtreeMarkdown(n, opts)).join('\n');
+  }
+
+  deleteSelection() {
+    const roots = this.selectedRoots();
+    if (!roots.length) return;
+    const vis = this.visible();
+    const after = vis.slice(vis.indexOf(roots[roots.length - 1]) + 1).find((n) => !roots.some((r) => isInside(n, r)));
+    this.beginOp();
+    roots.forEach((n) => this.detach(n));
+    if (!this.root.children.length) this.insertChild(this.root, makeNode(), 0);
+    this.refresh();
+    const next = after && this.findNode(after.id);
+    if (next) this.selectBlocks(next);
+  }
+
+  // Keys while blocks are selected (no text field focused).
+  onSelectionKey(e) {
+    const vis = this.visible();
+    const roots = this.selectedRoots();
+    if (!roots.length) return this.clearSelection();
+    const mod = e.ctrlKey || e.metaKey;
+    const k = e.key;
+    const step = (dir) => vis[Math.max(0, Math.min(vis.length - 1, vis.indexOf(this.sel.focus) + dir))];
+    if (k === 'Escape') {
+      e.preventDefault();
+      this.clearSelection();
+    } else if (k === 'Enter' && !mod && !e.shiftKey) {
+      e.preventDefault();
+      const n = roots[0];
+      this.clearSelection();
+      this.edit(n, 'end');
+    } else if ((k === 'ArrowUp' || k === 'ArrowDown') && !mod && !e.altKey) {
+      e.preventDefault();
+      const target = step(k === 'ArrowUp' ? -1 : 1);
+      if (e.shiftKey) { this.sel.focus = target; this.paintSelection(); } else this.selectBlocks(target);
+    } else if ((k === 'Backspace' || k === 'Delete') && !mod) {
+      e.preventDefault();
+      this.deleteSelection();
+    } else if (mod && k.toLowerCase() === 'a' && !e.shiftKey) {
+      e.preventDefault();
+      const top = this.root.children;
+      if (top.length) this.selectBlocks(top[0], vis[vis.length - 1]);
+    } else if (matches(e, 'cycleStatus')) {
+      e.preventDefault();
+      const word = nextStatus(statusOf(roots[0].content)?.word);
+      this.beginOp();
+      roots.forEach((n) => this.setMarker(n, word));
+      this.paintSelection();
+    } else if (matches(e, 'bold') || matches(e, 'italic')) {
+      e.preventDefault();
+      const mark = matches(e, 'bold') ? '**' : '_';
+      this.beginOp();
+      roots.forEach((n) => {
+        const nl = n.content.indexOf('\n');
+        const first = nl === -1 ? n.content : n.content.slice(0, nl);
+        this.applyValue(n, toggleLine(first, mark, true) + (nl === -1 ? '' : n.content.slice(nl)));
+      });
+      this.paintSelection();
+    } else if (k === 'Tab' && !mod) {
+      e.preventDefault(); // keep focus from jumping to the sidebar
+    }
+  }
+
+  // Inserts parsed outline nodes (from paste) after `anchor`, as siblings.
+  // Ids from the text are kept unless they already exist. Returns the
+  // last inserted node (deepest last child), or null.
+  insertOutline(anchor, roots, replaceEmpty = false) {
+    const existing = new Set(this.flatten().map((b) => b.id));
+    const adopt = (n, parent) => {
+      if (existing.has(n.id)) n.id = uuid();
+      existing.add(n.id);
+      n.parent = parent;
+      const split = splitProps(n.content);
+      n.content = split.content;
+      n.props = split.props;
+      n.children.forEach((c) => adopt(c, n));
+    };
+    let last = null;
+    roots.forEach((r, idx) => {
+      adopt(r, anchor.parent);
+      if (idx === 0 && replaceEmpty && anchor.content.trim() === '' && !anchor.children.length) {
+        const sibs = anchor.parent.children;
+        sibs.splice(sibs.indexOf(anchor), 1, r);
+      } else {
+        this.insertAfter(anchor, r);
+      }
+      anchor = r;
+      last = r;
+    });
+    if (!last) return null;
+    while (last.children.length && !last.collapsed) last = last.children[last.children.length - 1];
+    return last;
   }
 
   // Enter in a table row adds a row with the same number of cells. Enter on
@@ -800,9 +1114,25 @@ export class PageEditor {
     this.edit(n);
   }
 
-  // Sets the task status word (null removes it).
+  // Sets the task status word (null removes it). Setting one also adds
+  // #task at the end of the first line; the cursor stays in the text.
   setMarker(node, word) {
-    this.applyValue(node, withStatus(node.content, word));
+    const old = node.content;
+    const value = withStatus(old, word);
+    let caret;
+    if (this.editing === node && this.ta) {
+      const oldPre = statusPrefix(old).length;
+      const newPre = statusPrefix(value).length;
+      caret = Math.max(newPre, this.ta.selectionStart - oldPre + newPre);
+      if (word && !hasTaskTag(old)) {
+        const firstEnd = value.indexOf('\n') === -1 ? value.length : value.indexOf('\n');
+        if (value.slice(0, firstEnd).endsWith('#task')) {
+          const tagAt = firstEnd - '#task'.length;
+          caret = Math.min(caret, value[tagAt - 1] === ' ' ? tagAt - 1 : tagAt);
+        }
+      }
+    }
+    this.applyValue(node, value, caret);
   }
 
   // Sets "# " .. "###### " on the first line (level 0 removes it).
@@ -814,10 +1144,10 @@ export class PageEditor {
   }
 
   // Sets a block's whole text, keeping the cursor in place while editing.
-  applyValue(node, value) {
+  applyValue(node, value, caret) {
     const delta = value.length - node.content.length;
     if (this.editing === node && this.ta) {
-      const pos = Math.max(0, this.ta.selectionStart + delta);
+      const pos = caret ?? Math.max(0, this.ta.selectionStart + delta);
       this.ta.value = value;
       this.ta.setSelectionRange(pos, pos);
       this.setContent(node, value);
@@ -981,36 +1311,19 @@ export class PageEditor {
       return;
     }
     const text = e.clipboardData?.getData('text/plain');
+    if (text && text === lastCopy && /^- [^\n]*$/.test(text)) {
+      // One block copied from Blockseq: paste its text, not "- text".
+      e.preventDefault();
+      this.beginOp();
+      this.replaceText(node, ta, ta.selectionStart, ta.selectionEnd, text.slice(2));
+      return;
+    }
     if (!text || !text.includes('\n') || inFence(ta.value, ta.selectionStart)) return;
-    const existing = new Set(this.flatten().map((b) => b.id));
     const roots = parseOutline(text, uuid);
     if (!roots || !roots.length) return;
     e.preventDefault();
     this.beginOp();
-    // Keep ids from pasted Logseq text (so ((refs)) work) unless they clash.
-    const adopt = (n, parent) => {
-      if (existing.has(n.id)) n.id = uuid();
-      existing.add(n.id);
-      n.parent = parent;
-      const split = splitProps(n.content);
-      n.content = split.content;
-      n.props = split.props;
-      n.children.forEach((c) => adopt(c, n));
-    };
-    let anchor = node;
-    let lastNode = null;
-    roots.forEach((r, idx) => {
-      adopt(r, node.parent);
-      if (idx === 0 && node.content.trim() === '' && !node.children.length) {
-        const sibs = node.parent.children;
-        sibs.splice(sibs.indexOf(node), 1, r);
-      } else {
-        this.insertAfter(anchor, r);
-      }
-      anchor = r;
-      lastNode = r;
-    });
-    while (lastNode.children.length && !lastNode.collapsed) lastNode = lastNode.children[lastNode.children.length - 1];
+    const lastNode = this.insertOutline(node, roots, true);
     this.refresh(lastNode, 'end');
   }
 
@@ -1397,9 +1710,11 @@ async function updateAutocomplete(editor, node, ta) {
   const page = /\[\[([^[\]\n]*)$/.exec(before);
   const block = !page && /\(\(([^()\n]*)$/.exec(before);
   const slash = !page && !block && !inFence(ta.value, ta.selectionStart) && /(?:^|\s)\/([\w-]*)$/.exec(before);
-  if (!page && !block && !slash) return closeAutocomplete();
-  const query = (page || block || slash)[1];
-  const kind = page ? 'page' : block ? 'block' : 'slash';
+  const tag = !page && !block && !slash && !inFence(ta.value, ta.selectionStart)
+    && /(?:^|\s)#([^\s#,.!?;:()[\]"'`+][^\s#,.!?;:()[\]"'`]*|)$/.exec(before);
+  if (!page && !block && !slash && !tag) return closeAutocomplete();
+  const query = (page || block || slash || tag)[1];
+  const kind = page ? 'page' : block ? 'block' : slash ? 'slash' : 'tag';
   const seq = (ac?.seq || 0) + 1;
 
   let items = [];
@@ -1429,6 +1744,21 @@ async function updateAutocomplete(editor, node, ta) {
       .slice(0, 8)
       .map((n) => ({ label: esc(n), value: n }));
     if (q && !names.some((n) => n.toLowerCase() === q)) items.push({ label: `New page: <b>${esc(query)}</b>`, value: query });
+  } else if (kind === 'tag') {
+    // Like Logseq: "New tag …" first, then existing pages that match.
+    const q = query.toLowerCase();
+    const names = await getPageNames();
+    const mark = (n) => {
+      const i = n.toLowerCase().indexOf(q);
+      return q && i >= 0 ? `${esc(n.slice(0, i))}<mark>${esc(n.slice(i, i + q.length))}</mark>${esc(n.slice(i + q.length))}` : esc(n);
+    };
+    const found = names
+      .filter((n) => !/^[A-Z][a-z]{2} \d{1,2}(st|nd|rd|th), \d{4}$/.test(n) && n.toLowerCase().includes(q))
+      .sort((a, b) => (b.toLowerCase().startsWith(q) - a.toLowerCase().startsWith(q)) || a.length - b.length)
+      .slice(0, 7)
+      .map((n) => ({ label: mark(n), value: n }));
+    items = q && !names.some((n) => n.toLowerCase() === q) ? [{ label: `New tag <b>${esc(query)}</b>`, value: query }, ...found] : found;
+    if (!q && !items.length) return closeAutocomplete();
   } else if (kind === 'block' && query.trim().length >= 2) {
     try {
       const res = await api.search(query, 8);
@@ -1448,9 +1778,14 @@ async function updateAutocomplete(editor, node, ta) {
     ac.el.replaceChildren(...items.map((it, i) => {
       const row = el('div', 'item');
       row.innerHTML = it.label;
-      row.addEventListener('mousedown', (e) => { e.preventDefault(); ac.index = i; acceptAutocomplete(); });
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); ac.index = i; acceptAutocomplete(e.ctrlKey || e.metaKey); });
       return row;
     }));
+    if (kind === 'tag') {
+      const foot = el('div', 'hint ac-foot');
+      foot.innerHTML = '<kbd>Ctrl</kbd> <kbd>⏎</kbd> to put the tag here instead of at the end of the line';
+      ac.el.append(foot);
+    }
     highlight();
   }
   const r = ta.getBoundingClientRect();
@@ -1459,7 +1794,7 @@ async function updateAutocomplete(editor, node, ta) {
 }
 
 function highlight() {
-  [...ac.el.children].forEach((c, i) => c.classList.toggle('active', i === ac.index));
+  [...ac.el.querySelectorAll('.item')].forEach((c, i) => c.classList.toggle('active', i === ac.index));
 }
 
 function handleAutocompleteKey(e) {
@@ -1474,18 +1809,42 @@ function handleAutocompleteKey(e) {
   }
   if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault();
-    acceptAutocomplete();
+    acceptAutocomplete(e.ctrlKey || e.metaKey);
     return true;
   }
   return false;
 }
 
-function acceptAutocomplete() {
+function acceptAutocomplete(inline = false) {
   const { ta, editor, node, kind, query } = ac;
   const item = ac.items[ac.index];
   if (!item) return;
   const pos = ta.selectionStart;
   closeAutocomplete();
+  if (kind === 'tag') {
+    editor.beginOp();
+    const name = item.value;
+    const token = /^[^\s#,.!?;:()[\]"'`+][^\s#,.!?;:()[\]"'`]*$/.test(name) ? `#${name}` : `#[[${name}]]`;
+    const at = pos - query.length - 1; // where "#query" starts
+    const v = ta.value;
+    const firstEnd = v.indexOf('\n') === -1 ? v.length : v.indexOf('\n');
+    // Default: the tag goes to the end of the first line (shown on the right).
+    if (inline || v.startsWith('```') || at > firstEnd) {
+      const space = /^\s/.test(v.slice(pos)) ? '' : ' ';
+      editor.replaceText(node, ta, at, pos, token + space, token.length + space.length);
+      return;
+    }
+    const lead = at > 0 && v[at - 1] === ' ' ? 1 : 0;
+    let first = v.slice(0, at - lead) + v.slice(pos, firstEnd);
+    const has = new RegExp(`(^|\\s)${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|$)`, 'i').test(first);
+    if (!has) first = first.trimEnd() + (first.trim() ? ' ' : '') + token;
+    ta.value = first + v.slice(firstEnd);
+    const caret = at - lead;
+    ta.setSelectionRange(caret, caret);
+    editor.setContent(node, ta.value);
+    autosize(ta);
+    return;
+  }
   if (kind === 'slash') {
     editor.beginOp();
     const at = pos - query.length - 1; // remove "/query"

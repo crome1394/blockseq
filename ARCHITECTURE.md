@@ -256,6 +256,16 @@ CRDTs (conflict-free merge structures):
   The global handler in `app.js` supports single keys (only outside text
   fields), modifier combos and two-key sequences (`g j`). The editor checks
   `cycleStatus` / `statusPicker` itself.
+- **Block selection** (`PageEditor.sel = {anchor, focus}`) is a range of
+  visible blocks; `selectedRoots()` drops blocks whose parent is also
+  selected, so children always travel with their parent. One editor holds a
+  selection at a time (`selectedEditor`). Page-wide `copy` / `cut` / `paste`
+  listeners use `ClipboardEvent.clipboardData`, which works on plain HTTP
+  (unlike `navigator.clipboard`). Copies are Logseq-style outlines
+  (`subtreeMarkdown`); cut includes `id::` lines so references survive a move.
+- **Tags typed with `#`** reuse the autocomplete popup (`kind: 'tag'`).
+  Accepting moves the tag to the end of the first line unless Ctrl is held.
+  Setting a task status writes `#task` the same way (`tasks.withStatus`).
 - **Side pane** (`pane.js`) is a fixed right-hand panel. While it is open the
   body gets `padding-right: var(--pane-w)` so pages re-centre beside it.
 

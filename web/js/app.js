@@ -10,7 +10,7 @@ import { onSettingChange, getSetting, setSetting } from './settings.js';
 import { settingsForm } from './settings-ui.js';
 import { Calendar } from './calendar.js';
 import { workbook, setWorkbook, withWb } from './workbook.js';
-import { loadStatuses, statusOf, stripStatus, withStatus, badgeHtml } from './tasks.js';
+import { loadStatuses, statusOf, withStatus, badgeHtml, taskTitle } from './tasks.js';
 import { ACTIONS, keyFor, comboOf, prettyKey } from './keys.js';
 import { openPane, closePane, isPaneShowing, paneKind } from './pane.js';
 import { openPdfPane } from './pdfview.js';
@@ -555,7 +555,14 @@ const FIXED_KEYS = [
     ['↑ / ↓', 'Previous / next block'], ['Esc', 'Stop editing'],
     ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
   ]],
+  ['Selecting blocks', [
+    ['Esc', 'Select the block you are editing'], ['Shift + ↑ / ↓', 'Select more blocks'],
+    ['Drag across blocks', 'Select them'], ['Shift + click', 'Select a range'],
+    ['Ctrl + C / Ctrl + X / Ctrl + V', 'Copy / cut / paste blocks'], ['Backspace', 'Delete selected blocks'],
+    ['Ctrl + A', 'Select all blocks'], ['Enter', 'Edit the first selected block'],
+  ]],
   ['Typing', [
+    ['#', 'Tag: pick an existing one or make a new one'],
     ['[[', 'Link a page'], ['((', 'Reference a block'], ['/', 'Commands (link, code, admonitions, statuses…)'],
     ['``` then Tab', 'Code block'], ['#quote', 'Quote block (block and children)'],
   ]],
@@ -811,7 +818,7 @@ async function renderTasks() {
       lastPage = t.page_name;
     }
     const row = el('div', 'task-row' + (t.st.done ? ' done' : ''));
-    row.innerHTML = `${badgeHtml(t.st)}<span class="task-text">${inline(stripStatus(t.content).split('\n')[0])}</span>`;
+    row.innerHTML = `${badgeHtml(t.st)}<span class="task-text">${inline(taskTitle(t.content))}</span>`;
     row.querySelector('.status-badge').addEventListener('click', (e) => {
       e.stopPropagation();
       showStatusPicker(e.clientX, e.clientY, t.st.word, async (word) => {
