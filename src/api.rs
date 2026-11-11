@@ -19,7 +19,7 @@ use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::assets;
+use crate::{assets, backup};
 use crate::config::Config;
 use crate::db::{self, Block, SaveOutcome};
 use crate::workbooks::{MAIN, Workbook};
@@ -626,5 +626,141 @@ pub async fn put_config(State(s): Shared, Json(body): Json<StatusesBody>) -> Api
     .await
     .map_err(|e| anyhow::anyhow!(e))??;
     s.notify_all(json!({ "type": "config" }));
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// ---- backup ---------------------------------------------------------------------
+
+/// Streams a file that is already open (and maybe already unlinked).
+fn file_body(mut file: tokio::fs::File) -> Body {
+    use tokio::io::AsyncReadExt;
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(4);
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match file.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(Ok(Bytes::copy_from_slice(&buf[..n]))).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    break;
+                }
+            }
+        }
+    });
+    Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx))
+}
+
+/// Downloads the whole workbook as a backup zip (see backup.rs).
+pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
+    let id = uuid::Uuid::new_v4();
+    // Hidden names in the data folder: never listed, served or backed up.
+    let tmp_db = s.root.join(format!(".export-{id}.db"));
+    let tmp_zip = s.root.join(format!(".export-{id}.zip"));
+    let config = s.root.join("config.json");
+    let (wb2, zip_path) = (wb.clone(), tmp_zip.clone());
+    let made = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        // Hold the database only for the snapshot, not while zipping assets.
+        let snap = backup::snapshot(&wb2.db.lock().unwrap(), &tmp_db);
+        let result = snap.and_then(|_| backup::write_zip(&wb2.id, &wb2.dir, &tmp_db, &config, &zip_path));
+        let _ = std::fs::remove_file(&tmp_db);
+        result
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e))?;
+    if let Err(e) = made {
+        let _ = std::fs::remove_file(&tmp_zip);
+        return Err(e.into());
+    }
+    let file = tokio::fs::File::open(&tmp_zip).await.map_err(|e| anyhow::anyhow!(e))?;
+    let len = file.metadata().await.map_err(|e| anyhow::anyhow!(e))?.len();
+    // The open handle keeps the data readable; the name goes away now.
+    let _ = tokio::fs::remove_file(&tmp_zip).await;
+    let label = if wb.id == MAIN { "Main" } else { wb.id.as_str() };
+    let mut res = file_body(file).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, "application/zip".parse().unwrap());
+    h.insert(header::CONTENT_LENGTH, len.into());
+    h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{}\"", backup::file_name(label)).parse().unwrap(),
+    );
+    Ok(res)
+}
+
+/// Restores an uploaded backup zip (raw body) as the new workbook `name`.
+pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) -> ApiResult {
+    let name = q.name.trim().to_string();
+    if !crate::workbooks::valid_id(&name) {
+        return Err(bad("use letters, digits, spaces, dashes, dots or underscores (not \"main\")"));
+    }
+    let folder = s.root.join("workbooks");
+    if folder.join(&name).exists() {
+        return Err(bad(format!("a workbook called {name} already exists")));
+    }
+    tokio::fs::create_dir_all(&folder).await.map_err(|e| anyhow::anyhow!(e))?;
+    let tmp = folder.join(format!(".upload-{}.zip", uuid::Uuid::new_v4()));
+    if let Err(e) = receive_upload(&tmp, body, s.max_upload).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    let config_path = s.root.join("config.json");
+    let server_key = Config::load(&config_path).encryption;
+    // Backups compress well, so allow them to unpack to more than the upload limit.
+    let max_bytes = s.max_upload.saturating_mul(4);
+    let (state, zip, wb_name) = (s.clone(), tmp.clone(), name.clone());
+    let result = tokio::task::spawn_blocking(move || state.workbooks.restore(&wb_name, &zip, server_key.as_ref(), max_bytes))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let _ = tokio::fs::remove_file(&tmp).await;
+    let (info, mut report, adopt) = result.map_err(|e| bad(format!("{e:#}")))?;
+    if let Some(key) = adopt {
+        let mut cfg = Config::load(&config_path);
+        match &cfg.encryption {
+            // A password was set while the upload ran: treat the key as different.
+            Some(now) if now.check != key.check => {
+                std::fs::write(folder.join(&name).join(backup::IMPORTED_KEY), serde_json::to_string_pretty(&key).map_err(|e| anyhow::anyhow!(e))?)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                report.key = backup::KeyOutcome::Different;
+            }
+            Some(_) => report.key = backup::KeyOutcome::Same,
+            None => {
+                cfg.encryption = Some(key);
+                cfg.save(&config_path)?;
+                s.notify_all(json!({ "type": "encryption" }));
+            }
+        }
+    }
+    tracing::info!("restored workbook {name} from a backup ({} files)", report.files);
+    s.notify_all(json!({ "type": "workbooks" }));
+    Ok(Json(json!({ "workbook": info, "report": report })).into_response())
+}
+
+/// Pages holding encrypted blocks (the browser re-encrypts them after an import).
+pub async fn sealed_pages(Wb(wb): Wb) -> ApiResult {
+    Ok(Json(db::sealed_pages(&wb.db.lock().unwrap())?).into_response())
+}
+
+/// The key a restored workbook's encrypted blocks use, when it differs from
+/// this server's (still wrapped: only a password or recovery key opens it).
+pub async fn get_imported_key(Wb(wb): Wb) -> ApiResult {
+    let key: Option<crate::config::Encryption> = std::fs::read_to_string(wb.dir.join(backup::IMPORTED_KEY))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    Ok(Json(json!({ "encryption": key })).into_response())
+}
+
+/// Called once every block was re-encrypted. Kept under a hidden name rather
+/// than deleted, in case something was missed.
+pub async fn done_imported_key(Wb(wb): Wb) -> ApiResult {
+    let path = wb.dir.join(backup::IMPORTED_KEY);
+    if path.exists() {
+        std::fs::rename(&path, wb.dir.join(format!(".{}.old", backup::IMPORTED_KEY))).map_err(|e| anyhow::anyhow!(e))?;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

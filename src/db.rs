@@ -49,7 +49,7 @@ CREATE INDEX IF NOT EXISTS refs_block ON refs(block_id);
 "#;
 
 /// Current schema version, stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
@@ -109,6 +109,16 @@ pub fn encryption_pending(conn: &Connection) -> Result<Vec<String>> {
          WHERE r.target_lower = 'encrypted'
            AND b.content NOT LIKE '%encrypted:: v1:%'
            AND EXISTS (SELECT 1 FROM blocks c WHERE c.parent_id = b.id)",
+    )?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Pages with an encrypted block in them (for re-encrypting with a new key).
+pub fn sealed_pages(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT p.name FROM blocks b JOIN pages p ON p.id = b.page_id
+         WHERE b.content LIKE '%encrypted:: v1:%'",
     )?;
     let rows = stmt.query_map([], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

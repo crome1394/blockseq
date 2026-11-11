@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::{db, md};
+use crate::{backup, db, md};
 
 pub const MAIN: &str = "main";
 const DB_FILE: &str = "blockseq.db";
@@ -102,7 +102,7 @@ impl Registry {
         Registry { root, open: Mutex::new(HashMap::new()) }
     }
 
-    fn dir_of(&self, id: &str) -> Option<PathBuf> {
+    pub fn dir_of(&self, id: &str) -> Option<PathBuf> {
         if id == MAIN {
             Some(self.root.clone())
         } else if valid_id(id) {
@@ -152,6 +152,37 @@ impl Registry {
         }
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         Ok(WorkbookInfo { id: name.into(), name: name.into(), kind: "empty" })
+    }
+
+    /// Restores a backup zip (or a zipped Logseq graph) as a new workbook.
+    /// It is unpacked into a hidden folder first and only renamed into place
+    /// once complete, so a failed import leaves nothing behind.
+    pub fn restore(
+        &self,
+        name: &str,
+        zip: &Path,
+        server_key: Option<&crate::config::Encryption>,
+        max_bytes: u64,
+    ) -> Result<(WorkbookInfo, backup::ImportReport, Option<crate::config::Encryption>)> {
+        let name = name.trim();
+        if !valid_id(name) {
+            bail!("use letters, digits, spaces, dashes, dots or underscores (not \"main\")");
+        }
+        let dir = self.root.join("workbooks").join(name);
+        if dir.exists() {
+            bail!("a workbook called {name} already exists");
+        }
+        let tmp = self.root.join("workbooks").join(format!(".import-{}", uuid::Uuid::new_v4()));
+        let result = backup::import_zip(zip, &tmp, server_key, max_bytes).and_then(|r| {
+            std::fs::rename(&tmp, &dir).with_context(|| format!("creating {}", dir.display()))?;
+            Ok(r)
+        });
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        let (report, adopt) = result?;
+        let info = WorkbookInfo { id: name.into(), name: name.into(), kind: Self::kind(&dir) };
+        Ok((info, report, adopt))
     }
 
     /// Returns an open workbook, opening (and if needed importing) it first.

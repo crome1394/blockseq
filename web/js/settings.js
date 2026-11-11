@@ -88,6 +88,7 @@ export const CATEGORIES = [
     ['lockMinutes', 'Lock encrypted blocks after (minutes idle)', 'Unlocked #Encrypted blocks lock again after this long without activity. 0 means only when you close the tab.', { number: true, min: 0, max: 1440 }],
   ] },
   { id: 'keyboard', label: 'Keyboard', custom: true },
+  { id: 'backup', label: 'Backup', custom: true },
 ];
 
 // One setting as a form row (checkbox, select or number). `store` reads and

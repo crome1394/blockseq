@@ -10,6 +10,7 @@
 
 mod api;
 mod assets;
+mod backup;
 mod config;
 mod crypto;
 mod db;
@@ -149,6 +150,14 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if std::env::args().nth(1).as_deref() == Some("export") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        if let Err(e) = backup::export_command(std::path::Path::new(&data_env), &args) {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     let addr = std::env::var("BLOCKSEQ_ADDR").unwrap_or_else(|_| "0.0.0.0:3030".into());
     let data_dir = PathBuf::from(std::env::var("BLOCKSEQ_DATA").unwrap_or_else(|_| "data".into()));
@@ -191,6 +200,10 @@ async fn main() -> Result<()> {
         .route("/config", get(api::get_config).put(api::put_config))
         .route("/encryption", get(api::get_encryption).put(api::put_encryption))
         .route("/encryption/pending", get(api::encryption_pending))
+        .route("/encryption/sealed", get(api::sealed_pages))
+        .route("/encryption/imported", get(api::get_imported_key).delete(api::done_imported_key))
+        .route("/export", get(api::export))
+        .route("/import", post(api::import))
         .route("/events", get(api::events));
 
     let app = Router::new()

@@ -17,6 +17,7 @@ import { matches } from './keys.js';
 import { openPdfPane, openFilePane } from './pdfview.js';
 import { ENCRYPTED_TAG, isUnlocked, available as cryptoAvailable, encryptText, decryptText } from './crypto.js';
 import { unlockDialog } from './secure-ui.js';
+import { rekeyDialog } from './backup-ui.js';
 import { journalName } from './dates.js';
 import { toast, copyText, updateStatus, openModal } from './ui.js';
 import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
@@ -608,8 +609,12 @@ export class PageEditor {
       btn.textContent = '🔒 Encrypted. Open Blockseq over HTTPS to unlock it.';
       btn.disabled = true;
     } else if (node.decryptError) {
-      btn.textContent = "🔒 Encrypted, but it couldn't be decrypted with the current key.";
-      btn.disabled = true;
+      btn.textContent = "🔒 Encrypted with a different password (restored from a backup?). Click to re-encrypt it with your current password.";
+      btn.classList.add('warn');
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', () => rekeyDialog());
+      box.append(btn);
+      return box;
     } else {
       btn.textContent = '🔒 Encrypted. Click to unlock.';
     }

@@ -8,6 +8,7 @@ import { toast, updateStatus, setConnected, openModal, closeModal, copyText } fr
 import { decorateCode } from './code.js';
 import { onSettingChange, getSetting, setSetting } from './settings.js';
 import { settingsForm } from './settings-ui.js';
+import { importDialog } from './backup-ui.js';
 import { Calendar } from './calendar.js';
 import { workbook, setWorkbook, withWb } from './workbook.js';
 import { loadStatuses, statusOf, withStatus, badgeHtml, taskTitle } from './tasks.js';
@@ -737,7 +738,7 @@ async function openWorkbookDialog() {
   const list = el('div', 'journal-pick');
   body.append(list, el('p', 'muted small',
     'To add a workbook from another place, copy its folder into workbooks/ in the server\'s data folder (e.g. /var/lib/blockseq/workbooks/My Notes). A Logseq graph folder (with pages/ and journals/) is imported the first time you open it; its original files are kept in logseq-original/.'));
-  openModal('Open workbook', body, [['New workbook…', () => { newWorkbookDialog(); return false; }], ['Close']]);
+  openModal('Open workbook', body, [['Import backup…', () => { importDialog(); return false; }], ['New workbook…', () => { newWorkbookDialog(); return false; }], ['Close']]);
   list.append(el('p', 'muted', 'Loading…'));
   await loadWorkbooks();
   list.replaceChildren(...workbookList.map((w) => {
@@ -752,6 +753,13 @@ async function openWorkbookDialog() {
 }
 
 wbButton.addEventListener('click', () => openWorkbookDialog());
+// A backup was just restored (backup-ui.js).
+document.addEventListener('blockseq:open-workbook', async (e) => {
+  await loadWorkbooks();
+  switchWorkbook(e.detail.id);
+});
+// Pages were rewritten by this tab outside an editor (re-encryption).
+document.addEventListener('blockseq:resync', () => resyncAll());
 document.getElementById('new-workbook').addEventListener('click', newWorkbookDialog);
 document.getElementById('open-workbook').addEventListener('click', openWorkbookDialog);
 

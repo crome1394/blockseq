@@ -18,7 +18,8 @@ features**.
 - `src/` Rust server: `main.rs` (startup, router), `api.rs` (handlers),
   `db.rs` (all SQL, schema, migrations), `md.rs` (Markdown import/export,
   link and tag parsing), `workbooks.rs` (workbook folders, Logseq import),
-  `assets.rs` (uploads), `config.rs` (shared settings).
+  `assets.rs` (uploads), `config.rs` (shared settings), `backup.rs`
+  (backup zips, restore), `crypto.rs` (terminal password reset).
 - `web/` UI: `index.html`, `app.css`, and ES modules in `web/js/`. No build
   step, no bundler, no npm.
 - `deploy/` systemd unit and install script for the Proxmox LXC.
@@ -53,6 +54,8 @@ cargo build --release              # release build embeds web/ in the binary
   each other.
 - Never delete user files (pages, assets, workbook folders) without an
   explicit user action and a confirmation in the UI.
+- Imports never overwrite: a restored backup always becomes a new workbook.
+  Backups must keep encrypted blocks encrypted and include the wrapped key.
 - Validate every name that becomes a path (`workbooks::valid_id`,
   `assets::valid_name`). No path traversal.
 

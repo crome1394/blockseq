@@ -183,9 +183,53 @@ export async function encryptText(text) {
   return `${BLOB_PREFIX}${b64(iv)}:${b64(ct)}`;
 }
 
+async function decryptWith(k, blob) {
+  const [, iv, ct] = blob.split(':');
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, k, unb64(ct));
+  return dec.decode(pt);
+}
+
 export async function decryptText(blob) {
   if (!key) throw new Error('locked');
-  const [, iv, ct] = blob.split(':');
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, key, unb64(ct));
-  return dec.decode(pt);
+  return decryptWith(key, blob);
+}
+
+// ---- re-encrypting a restored backup ----
+//
+// A backup restored onto a server with a different password keeps its own
+// (wrapped) key. Its password or recovery key opens that old key here, and
+// every block is re-encrypted with the current one.
+
+export async function keyFromSetup(cfg, { password, recovery }) {
+  return importKey(recovery ? await rawFromRecovery(cfg, recovery) : await rawFromPassword(cfg, password));
+}
+
+const BLOB_RE = /(encrypted:: )(v1:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+)/g;
+
+// Re-encrypts every blob in `text` (and blobs nested inside them) from
+// `oldKey` to the current key. Blobs already on the current key are kept.
+export async function rekeyText(oldKey, text) {
+  if (!key) throw new Error('locked');
+  let count = 0;
+  let failed = 0;
+  const out = [];
+  let last = 0;
+  for (const m of text.matchAll(BLOB_RE)) {
+    out.push(text.slice(last, m.index), m[1]);
+    last = m.index + m[0].length;
+    let plain;
+    try {
+      plain = await decryptWith(oldKey, m[2]);
+    } catch {
+      try { await decryptWith(key, m[2]); } catch { failed++; }
+      out.push(m[2]);
+      continue;
+    }
+    const inner = await rekeyText(oldKey, plain);
+    count += inner.count + 1;
+    failed += inner.failed;
+    out.push(await encryptText(inner.text));
+  }
+  out.push(text.slice(last));
+  return { text: out.join(''), count, failed };
 }

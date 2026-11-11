@@ -9,6 +9,7 @@ import { getStatuses, setStatuses, STATUS_COLORS, statusStyle } from './tasks.js
 import { api } from './api.js';
 import { toast } from './ui.js';
 import { securityPanel } from './secure-ui.js';
+import { backupPanel } from './backup-ui.js';
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -121,6 +122,11 @@ export function settingsForm(initial) {
     panel.replaceChildren(el('h3', 'settings-heading', cat.label));
     if (id === 'tasks') panel.append(statusEditor());
     else if (id === 'keyboard') panel.append(keyEditor(ACTIONS));
+    else if (id === 'backup') {
+      const live = el('div');
+      panel.append(live);
+      backupPanel().then((p) => live.replaceChildren(p));
+    }
     else {
       const list = el('div', 'settings');
       cat.options.forEach((o) => list.append(settingRow(o, store)));
@@ -131,9 +137,11 @@ export function settingsForm(initial) {
         securityPanel().then((p) => live.replaceChildren(p));
       }
     }
-    panel.append(el('p', 'muted small', id === 'tasks'
-      ? 'Task statuses are shared by all your devices.'
-      : 'Saved in this browser, so each computer keeps its own.'));
+    if (id !== 'backup') {
+      panel.append(el('p', 'muted small', id === 'tasks'
+        ? 'Task statuses are shared by all your devices.'
+        : 'Saved in this browser, so each computer keeps its own.'));
+    }
   };
 
   // ---- search view ----
@@ -166,6 +174,11 @@ export function settingsForm(initial) {
         const open = el('button', '', 'Encryption password and locking…');
         open.type = 'button';
         open.addEventListener('click', () => show('security'));
+        add(open);
+      } else if (cat.id === 'backup' && hit('backup', 'export', 'import', 'restore', 'zip', 'download')) {
+        const open = el('button', '', 'Back up or restore a workbook…');
+        open.type = 'button';
+        open.addEventListener('click', () => show('backup'));
         add(open);
       } else if (cat.id === 'tasks' && hit('task', 'status', 'statuses', 'colour', 'color', 'todo', 'done', ...statusDraft.map((s) => `${s.word} ${s.label}`))) {
         const open = el('button', '', 'Edit task statuses…');

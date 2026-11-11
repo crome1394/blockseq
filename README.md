@@ -183,8 +183,45 @@ files are copied to `logseq-original/` first, because Blockseq then rewrites
 `pages/` and `journals/` in its own (Logseq-compatible) format. Folder names may
 use letters, digits, spaces, `-`, `_` and `.`.
 
-Back up the whole folder, or let Proxmox back up the container. To copy
-the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.db"`.
+### Backup and restore
+
+**Settings → Backup → Download backup** saves the workbook you're in as one
+`.zip`: a consistent copy of `blockseq.db` (safe while Blockseq is running),
+every page and journal as Logseq Markdown, all assets, and `config.json`. The
+zip also opens fine without Blockseq: unzip it and point Logseq at the folder.
+
+**#Encrypted blocks stay encrypted** in the zip. It contains only the
+scrambled text plus the *locked* copies of the key from `config.json`, so a
+leaked backup reveals no more than the server does, and after a restore your
+password (or recovery key) opens the blocks again. Keep the recovery key
+somewhere other than next to your backups.
+
+**Import backup…** (Settings → Backup, or *Open workbook…*) restores a zip
+as a **new** workbook; nothing that exists is changed or overwritten. A zipped
+Logseq graph works too. For encrypted blocks:
+
+- Same server (same password): they just work.
+- A server with no password yet: it starts using the backup's password.
+- A server with a different password: you're asked for the backup's old
+  password (or its recovery key) once, and the browser re-encrypts those
+  blocks with your current password. Until then they show "Encrypted with a
+  different password"; click that to do it later.
+
+**Automatic backups** from the server, e.g. a nightly cron job that keeps a
+zip of every workbook (works while Blockseq is running):
+
+```sh
+BLOCKSEQ_DATA=/var/lib/blockseq blockseq export --all --out /root/blockseq-backups
+# or one workbook:  blockseq export "Home Lab" --out /root/blockseq-backups
+```
+
+Example `/etc/cron.d/blockseq-backup` (keeps 30 days):
+
+```
+15 3 * * * root BLOCKSEQ_DATA=/var/lib/blockseq /usr/local/bin/blockseq export --all --out /root/blockseq-backups && find /root/blockseq-backups -name 'blockseq-*.zip' -mtime +30 -delete
+```
+
+Proxmox backups of the whole container are a good second layer.
 
 ## Keyboard
 
@@ -415,6 +452,6 @@ sync work, the API, and where future features would go.
 
 ## Not done yet
 
-Page rename, zooming into a block, editing inside linked references,
+Zooming into a block, editing inside linked references,
 unlinked references, queries, renaming or deleting workbooks from the UI, and
 full-text ranking.

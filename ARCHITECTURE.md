@@ -25,7 +25,9 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/main.rs` | Config from env, app state, router, optional password, static files, shutdown |
 | `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
 | `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import |
-| `src/config.rs` | Shared settings in `config.json` (task statuses) |
+| `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key) |
+| `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks (`POST /api/import`) |
+| `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
 | `src/db.rs` | Schema, all SQL, save transaction with version check, search, backlinks |
 | `src/md.rs` | Journal names, link/tag extraction, task detection, Logseq Markdown export and import (`parse_outline`) |
 | `src/assets.rs` | Image and PDF uploads: type detection from file bytes, safe names, saving, listing |
@@ -38,6 +40,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/dates.js` | Journal page names (`Nov 11th, 2026`) and day numbers |
 | `web/js/code.js` | Built-in syntax highlighter, code block decoration (line numbers, copy), live-edit backdrop |
 | `web/js/settings.js` | Per-browser preferences (localStorage), setting categories |
+| `web/js/backup-ui.js` | Settings → Backup: download, import, re-encrypting restored blocks |
 | `web/js/settings-ui.js` | Settings screen: categories, task-status editor, key-binding editor |
 | `web/js/keys.js` | Configurable shortcuts: defaults, matching key events, display |
 | `web/js/tasks.js` | Task statuses (loaded from the server): detect, set, cycle, badge |
@@ -282,6 +285,24 @@ CRDTs (conflict-free merge structures):
   command (`src/crypto.rs`, `blockseq reset-encryption-password`) unwraps the
   key with the recovery key and re-wraps it with a new password; its formats
   must match `crypto.js`.
+- **Backups** (`src/backup.rs`, `backup-ui.js`). Export takes a `VACUUM INTO`
+  snapshot while holding the workbook's connection, then zips it with
+  `pages/`, `journals/`, `assets/`, `logseq/` (no hidden or temp files),
+  `config.json` and a `blockseq-backup.json` manifest (`format: 1`) into a
+  hidden temp file that is unlinked once opened and streamed. Media and
+  archives are stored, the rest deflated. Import streams the upload to disk,
+  unpacks only known paths (via `enclosed_name`, so no traversal; a single
+  wrapping folder is stripped) into `workbooks/.import-<uuid>/`, caps the
+  unpacked size at 4× the upload limit, checks the database (`quick_check`,
+  `user_version` not newer) and only then renames the folder into place. Key
+  handling compares the backup's `encryption.check` with the server's: same →
+  nothing; server has none → adopted into `config.json`; different → the
+  backup's wrapping is saved as `imported-key.json` in the workbook. The
+  browser then opens that old key with the old password or recovery key
+  (`keyFromSetup`), rewrites every `encrypted:: v1:` blob, including ones
+  nested inside other blobs (`rekeyText`), on the pages from
+  `/api/encryption/sealed`, saves with the normal version check, and finally
+  `DELETE /api/encryption/imported` renames the file to a hidden `.old` copy.
 - **Block selection** (`PageEditor.sel = {anchor, focus}`) is a range of
   visible blocks; `selectedRoots()` drops blocks whose parent is also
   selected, so children always travel with their parent. One editor holds a
