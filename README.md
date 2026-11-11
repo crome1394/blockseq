@@ -239,7 +239,8 @@ and expand/collapse all.
 PNG, JPEG, GIF, WebP and AVIF are accepted (checked by file content, not name).
 Click an image for a full-size preview. Its ⋮ button offers align
 left/center/right, size (fit, original, half, quarter, very small), copy image,
-open in new tab, download, and delete.
+open in new tab, download, and delete. Put two or more images (or PDFs) on the
+same line to show them side by side; they shrink together to fit the window.
 
 **PDFs:** drag a PDF onto a block, paste it, or use `/pdf`. Its ⋮ menu switches
 between a link and a full inline preview, and offers open in the side pane, open

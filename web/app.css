@@ -838,6 +838,13 @@ textarea.code-edit.live::selection { background: rgba(100, 150, 255, 0.35); colo
 .img-box { position: relative; display: inline-block; max-width: 100%; vertical-align: top; }
 .img-box img { display: block; cursor: zoom-in; max-width: 100%; }
 .img-box img[data-size] { height: auto; }
+
+/* Several images / PDFs on one line: a row that shrinks to fit. */
+.media-row { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0; }
+.media-row > .img-wrap, .media-row > .pdf-wrap { flex: 0 1 auto; min-width: 0; margin: 0; }
+.media-row .img-box { max-width: 100%; }
+.media-row .img-box img { max-width: 100%; height: auto; }
+.media-row > .pdf-preview { flex: 1 1 50%; }
 .img-menu {
   position: absolute;
   top: 6px;

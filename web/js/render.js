@@ -216,6 +216,12 @@ function renderLine(line, pre) {
   }
   const h = /^(#{1,6}) (.*)$/.exec(line);
   if (h) return `<div class="h${h[1].length}">${pre}${inline(h[2])}</div>`;
+  // Two or more images / PDFs alone on a line sit side by side, shrinking
+  // together to fit the width.
+  const media = line.match(new RegExp(IMAGE_SRC, 'g'));
+  if (media && media.length > 1 && !line.replace(new RegExp(IMAGE_SRC, 'g'), '').trim()) {
+    return `${pre ? `<div>${pre}</div>` : ''}<div class="media-row">${inline(line)}</div>`;
+  }
   const q = /^> ?(.*)$/.exec(line);
   if (q) return `<blockquote class="md-quote">${pre}${inline(q[1])}</blockquote>`;
   return `<div>${pre}${inline(line) || (pre ? '' : '<br>')}</div>`;
