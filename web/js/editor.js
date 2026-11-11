@@ -83,6 +83,16 @@ export class PageEditor {
     this.pendingReload = false;
     this.disposed = false;
     editors.add(this);
+    // With "always show threading" the lines depend on layout (images
+    // loading, blocks collapsing), so redraw them when the outline resizes.
+    if (typeof ResizeObserver === 'function') {
+      this.resizeObs = new ResizeObserver(() => {
+        if (!getSetting('threadAlways')) return;
+        cancelAnimationFrame(this.threadFrame);
+        this.threadFrame = requestAnimationFrame(() => this.updateThread());
+      });
+      this.resizeObs.observe(container);
+    }
     this.load(data);
   }
 
@@ -870,6 +880,25 @@ export class PageEditor {
   updateThread() {
     this.container.querySelectorAll('.thread-line').forEach((e) => e.remove());
     this.container.querySelectorAll('.bullet.thread').forEach((e) => e.classList.remove('thread'));
+    // "Always show": a faint line from every block to its parent.
+    const all = !!getSetting('threadAlways');
+    this.container.classList.toggle('thread-all', all);
+    if (all) {
+      const lines = []; // measure everything first, then add (one layout pass)
+      for (const box of this.container.querySelectorAll('.children')) {
+        const top = box.getBoundingClientRect().top;
+        for (const child of box.children) {
+          const row = child.classList.contains('block') && child.querySelector(':scope > .block-row');
+          if (row) lines.push([box, row.getBoundingClientRect().top - top + 14]);
+        }
+      }
+      for (const [box, height] of lines) {
+        if (height <= 0) continue;
+        const line = el('div', 'thread-line dim');
+        line.style.height = `${height}px`;
+        box.append(line);
+      }
+    }
     const node = this.editing || this.codeEdit?.node;
     if (!node || !node.el || !getSetting('threading')) return;
     const bulletOf = (n) => n.el?.querySelector(':scope > .block-row > .bullet');
@@ -1128,6 +1157,7 @@ export class PageEditor {
 
   dispose() {
     this.disposed = true;
+    this.resizeObs?.disconnect();
     this.closeCodeEditor();
     this.stopEdit();
     if (this.dirty) this.save(); else editors.delete(this);

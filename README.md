@@ -171,6 +171,7 @@ the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.d
 | Ctrl+Enter           | Cycle TODO → DONE → none                   |
 | Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) | Undo / redo                   |
 | Esc                  | Stop editing                               |
+| Ctrl+\\               | Show / hide the sidebar (or the ☰ button)  |
 | `[[` / `((`          | Page / block autocomplete                  |
 | `/`                  | Command menu (link, code, table, TODO, headings, numbered list, dates) |
 | Ctrl+K               | Search                                     |
@@ -212,9 +213,27 @@ access on plain HTTP.
 Click a day to open its journal; if none exists, it's created. ‹ › change month,
 and clicking the month name returns to today. Hidden on narrow (phone) screens.
 
+**Journals:** *+ New journal* in the sidebar picks a date and creates that
+journal on the server (or opens it if it exists). *Open journal…* lists every
+journal with a filter. Delete a journal from its ⋯ menu (next to the title on
+the Journals page, or top right when it's open); this removes it and its
+Markdown file from the server.
+
+**Favorites:** click ☆ next to a page title to star it. Starred pages are listed
+in the sidebar. They are stored on the server, so every computer shows the same list.
+
+**All pages** is a table of page name, tags, created and updated time. Click a
+column heading to sort. The filter matches names and tags.
+
 **Settings** (bottom of the sidebar) are saved per browser:
-bullet threading on/off, syntax colours while editing code blocks, and
-wrapping long code lines (otherwise they scroll sideways).
+- theme (Automatic, Light, Dark, Sepia, Solarized Light/Dark, Catppuccin
+  Latte/Mocha, Nord, Gruvbox, Dracula, Tokyo Night)
+- full window width
+- favorites in the sidebar
+- a colour per tag
+- bullet threading, and showing it all the time
+- syntax colours while editing code
+- wrapping long code lines (otherwise they scroll sideways)
 
 Code highlighting is built in, with no third-party library. It covers bash/shell,
 ini/conf/toml/systemd, YAML, JSON, Python, JavaScript/TypeScript, Rust, Go,

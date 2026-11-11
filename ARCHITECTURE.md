@@ -51,10 +51,11 @@ pages                         blocks                          refs
 id          TEXT PK  ◄──┐     id         TEXT PK (UUID) ◄──   block_id     FK
 name        TEXT        └──── page_id    FK, cascade          target_lower TEXT
 name_lower  TEXT UNIQUE       parent_id  TEXT (null=top)      target_name  TEXT
-journal_day INT (yyyymmdd)    position   INT (doc order)
+journal_day INT (yyyymmdd)    position   INT (doc order)      tag          INT (1=#tag)
 version     INT               content    TEXT (raw markdown)
 created_at  INT (ms)          collapsed  INT
 updated_at  INT (ms)          created_at / updated_at
+favorite    INT (0/1)
 ```
 
 - **Pages are found by lowercase name.** Links are stored by name, not by id,
@@ -69,7 +70,10 @@ updated_at  INT (ms)          created_at / updated_at
 - **`refs` is a derived index.** It is rebuilt from block text on every save
   (`md::extract_refs`) and drives backlinks and autocomplete. `target_name`
   keeps the name as first written, so pages that are only linked can be
-  suggested with their proper case.
+  suggested with their proper case. `tag` is 1 for `#tag`, `#[[tag]]` and
+  `tags::` (from `md::extract_tags`), which gives All pages its Tags column.
+- **Favourites** are a `favorite` flag on the page row, so every device sees
+  the same list. Starring a page that doesn't exist yet creates its row.
 - **Linking creates pages.** When a save links or tags a name that has no
   page, an empty page row (version 0) is created, so it shows in All pages and
   search. Empty pages get no Markdown file, and the journals view skips
@@ -84,7 +88,10 @@ updated_at  INT (ms)          created_at / updated_at
   loading (`splitProps`) and puts them back when saving (`joinProps`): after
   the first line, or at the end if the block starts with code or a table. They
   never appear in the editor.
-- `PRAGMA user_version = 1` marks the schema version for future migrations.
+- **Migrations.** `PRAGMA user_version` holds the schema version. `db::migrate`
+  runs at startup and upgrades older databases step by step. v2 added
+  `pages.favorite` and `refs.tag`, and marks existing tag refs by re-reading
+  every block's text.
 
 ### Markdown mirror
 
@@ -174,7 +181,8 @@ CRDTs (conflict-free merge structures):
   | `POST /api/page/ensure?name=` | `ensure_page` | create an empty page if missing (calendar) |
   | `POST /api/assets` | `upload_asset` | raw image bytes; `X-Filename` optional; returns `../assets/<name>` |
   | `GET /assets/<name>` | `get_asset` | uploaded image, cached forever, `nosniff` + `default-src 'none'` |
-  | `GET /api/pages` | `list_pages` | name, journal day, updated, block count |
+  | `POST /api/page/favorite?name=&on=` | `set_favorite` | star / unstar, event `favorite` |
+  | `GET /api/pages` | `list_pages` | name, journal day, created, updated, block count, favorite, tags |
   | `GET /api/names` | `names` | page names plus linked-only names |
   | `GET /api/journals?before=&limit=` | `journals` | newest first, with blocks |
   | `GET /api/search?q=&limit=` | `search` | pages by name, blocks containing all words |
@@ -198,6 +206,22 @@ CRDTs (conflict-free merge structures):
   (its full-text search module) is the upgrade path if ranking or speed matters.
 
 ## Client details
+
+- **Settings and themes** (`settings.js`). Settings live in `localStorage`, so
+  each device has its own. `app.js applySettings()` turns them into classes or
+  attributes on `<html>` (`data-theme`, `wide`, `code-wrap`, `tag-colors`,
+  `no-favorites`, `sidebar-hidden`) and CSS does the rest. Each theme is one
+  `:root[data-theme="…"]` block of colour variables in `app.css`. Without a
+  theme, the light colours apply, plus the dark set under
+  `prefers-color-scheme: dark`. A small inline script in `index.html` applies the
+  theme and sidebar state before first paint.
+- **Tag colours.** `render.tagHue(name)` hashes the tag name to one of 12
+  hues and sets `--tag-h` on the tag link. Each theme supplies `--tag-s` and
+  `--tag-l`, so the colours fit light and dark themes.
+- **Always-on threading.** `updateThread` adds a faint `.thread-line.dim` elbow
+  for every child block (measured first, then added, so the browser lays out
+  the page once). A `ResizeObserver` on the outline redraws the lines when
+  images load or blocks collapse.
 
 - **No build step.** Native ES modules, no frameworks and no npm. The browser
   loads `js/app.js` directly.
@@ -319,7 +343,7 @@ keeps your data and env file.
 | Unused-image cleanup | Scan block text for `../assets/` references; list or delete files nobody uses |
 | Better search | FTS5 virtual table kept in step with `blocks` inside `save_page` |
 | Version history | Before replacing blocks in `save_page`, copy the old page into a history table |
-| Schema changes | Check `PRAGMA user_version` in `db::open` and run step-by-step migrations |
+| Schema changes | Add a step to `db::migrate` and bump `SCHEMA_VERSION` |
 
 ## Testing
 

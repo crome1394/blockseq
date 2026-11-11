@@ -121,6 +121,25 @@ pub async fn ensure_page(State(s): Shared, Query(q): Query<NameQuery>) -> ApiRes
     Ok(Json(json!({ "page": db::get_page(&conn, name)? })).into_response())
 }
 
+#[derive(Deserialize)]
+pub struct FavoriteQuery {
+    name: String,
+    on: bool,
+}
+
+/// Marks or unmarks a page as a favourite. Favourites live on the server so
+/// every computer shows the same list.
+pub async fn set_favorite(State(s): Shared, Query(q): Query<FavoriteQuery>, headers: HeaderMap) -> ApiResult {
+    let name = q.name.trim();
+    if name.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "page name is empty".into()));
+    }
+    db::set_favorite(&s.db.lock().unwrap(), name, q.on)?;
+    let client = headers.get("x-client-id").and_then(|v| v.to_str().ok()).unwrap_or("");
+    s.notify(json!({ "type": "favorite", "name": name, "client": client }));
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 pub async fn list_pages(State(s): Shared) -> ApiResult {
     let pages = db::list_pages(&s.db.lock().unwrap())?;
     Ok(Json(pages).into_response())

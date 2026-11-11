@@ -41,9 +41,20 @@ const INLINE = [
   '(?<![^\\s(])#(?<tag>[^\\s#,.!?;:()\\[\\]"\'`]+)',
 ].join('|');
 
+// Hues that stay distinct from each other in light and dark themes.
+const TAG_HUES = [355, 22, 42, 95, 145, 172, 195, 215, 240, 265, 290, 322];
+
+// A stable hue for a tag name, so each tag keeps its own colour everywhere.
+export function tagHue(name) {
+  let h = 2166136261;
+  for (const c of name.toLowerCase()) h = Math.imul(h ^ c.codePointAt(0), 16777619);
+  h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12; // mix the bits
+  return TAG_HUES[(h >>> 0) % TAG_HUES.length];
+}
+
 export function pageLink(name, tag = false) {
   const href = `#/page/${encodeURIComponent(name)}`;
-  if (tag) return `<a class="page-ref tag" data-page="${esc(name)}" href="${href}">#${esc(name)}</a>`;
+  if (tag) return `<a class="page-ref tag" style="--tag-h:${tagHue(name)}" data-page="${esc(name)}" href="${href}">#${esc(name)}</a>`;
   return `<a class="page-ref" data-page="${esc(name)}" href="${href}"><span class="brackets">[[</span>${esc(name)}<span class="brackets">]]</span></a>`;
 }
 

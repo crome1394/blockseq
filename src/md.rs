@@ -45,9 +45,26 @@ pub fn parse_journal_name(name: &str) -> Option<i64> {
 /// `tags:: a, b`), keyed by lowercase name, with the name as first written.
 pub fn extract_refs(content: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let mut add = |name: &str| {
+    scan_refs(content, |name, _| {
         out.entry(name.to_lowercase()).or_insert_with(|| name.to_string());
-    };
+    });
+    out
+}
+
+/// Lowercase names used as tags (`#tag`, `#[[tag]]`, `tags::`) rather than
+/// plain `[[links]]`.
+pub fn extract_tags(content: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    scan_refs(content, |name, tag| {
+        if tag {
+            out.insert(name.to_lowercase());
+        }
+    });
+    out
+}
+
+/// Calls `add(name, is_tag)` for every link or tag in a block.
+fn scan_refs(content: &str, mut add: impl FnMut(&str, bool)) {
     // Ignore anything inside inline code or code fences.
     let mut text = String::with_capacity(content.len());
     for (i, part) in content.split('`').enumerate() {
@@ -64,7 +81,7 @@ pub fn extract_refs(content: &str) -> BTreeMap<String, String> {
             Some(end) => {
                 let name = after[..end].trim();
                 if !name.is_empty() && !name.contains('\n') {
-                    add(name);
+                    add(name, rest[..start].ends_with('#'));
                 }
                 rest = &after[end + 2..];
             }
@@ -82,7 +99,7 @@ pub fn extract_refs(content: &str) -> BTreeMap<String, String> {
             .take_while(|c| !c.is_whitespace() && !",.!?;:()[]\"'`#".contains(**c))
             .collect();
         if !tag.is_empty() {
-            add(&tag);
+            add(&tag, true);
         }
     }
 
@@ -92,12 +109,11 @@ pub fn extract_refs(content: &str) -> BTreeMap<String, String> {
                 let t = t.trim().trim_start_matches('#');
                 let t = t.trim_start_matches("[[").trim_end_matches("]]").trim();
                 if !t.is_empty() {
-                    add(t);
+                    add(t, true);
                 }
             }
         }
     }
-    out
 }
 
 /// Renders blocks (pre-order, with parent ids) as a Logseq Markdown file.
@@ -181,6 +197,8 @@ mod tests {
         let names: Vec<&str> = refs.values().map(String::as_str).collect();
         assert_eq!(names, ["Alice Smith", "Big Plans", "home", "rust", "work"]);
         assert!(extract_refs("# Heading and a#b").is_empty());
+        let tags: Vec<String> = extract_tags("Met [[Alice Smith]] about #rust and #[[Big Plans]]\ntags:: work").into_iter().collect();
+        assert_eq!(tags, ["big plans", "rust", "work"]);
     }
 
     #[test]

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS pages (
     journal_day INTEGER,
     version     INTEGER NOT NULL,
     created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    updated_at  INTEGER NOT NULL,
+    favorite    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS pages_journal ON pages(journal_day);
 
@@ -40,13 +41,15 @@ CREATE INDEX IF NOT EXISTS blocks_page ON blocks(page_id, position);
 CREATE TABLE IF NOT EXISTS refs (
     block_id     TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
     target_lower TEXT NOT NULL,
-    target_name  TEXT NOT NULL
+    target_name  TEXT NOT NULL,
+    tag          INTEGER NOT NULL DEFAULT 0  -- 1 for #tag / tags::, 0 for [[link]]
 );
 CREATE INDEX IF NOT EXISTS refs_target ON refs(target_lower);
 CREATE INDEX IF NOT EXISTS refs_block ON refs(block_id);
-
-PRAGMA user_version = 1;
 "#;
+
+/// Current schema version, stored in `PRAGMA user_version`.
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
@@ -65,14 +68,19 @@ pub struct PageMeta {
     pub version: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    pub favorite: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PageSummary {
     pub name: String,
     pub journal_day: Option<i64>,
+    pub created_at: i64,
     pub updated_at: i64,
     pub block_count: i64,
+    pub favorite: bool,
+    /// Tags used in the page's blocks, sorted by name.
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +124,7 @@ pub fn open(path: &Path) -> Result<Connection> {
         "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;",
     )?;
     conn.execute_batch(SCHEMA)?;
+    migrate(&conn)?;
     // Pages that are linked or tagged but have no row yet (older databases).
     let missing: Vec<String> = conn
         .prepare("SELECT MIN(target_name) FROM refs WHERE target_lower NOT IN (SELECT name_lower FROM pages) GROUP BY target_lower")?
@@ -125,6 +134,54 @@ pub fn open(path: &Path) -> Result<Connection> {
         ensure_page(&conn, &name, now_ms())?;
     }
     Ok(conn)
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names.iter().any(|n| n == column))
+}
+
+/// Upgrades databases made by older versions. Each step runs once.
+fn migrate(conn: &Connection) -> Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    // v2: favourite pages, and tags told apart from plain links.
+    if !has_column(conn, "pages", "favorite")? {
+        conn.execute_batch("ALTER TABLE pages ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")?;
+    }
+    if !has_column(conn, "refs", "tag")? {
+        conn.execute_batch("ALTER TABLE refs ADD COLUMN tag INTEGER NOT NULL DEFAULT 0")?;
+    }
+    // Work out which existing refs are tags from the block text.
+    {
+        let mut blocks = conn.prepare("SELECT id, content FROM blocks")?;
+        let rows = blocks
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut set = conn.prepare("UPDATE refs SET tag = 1 WHERE block_id = ?1 AND target_lower = ?2")?;
+        for (id, content) in rows {
+            for lower in md::extract_tags(&content) {
+                set.execute(params![id, lower])?;
+            }
+        }
+    }
+    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    Ok(())
+}
+
+/// Marks or unmarks a page as a favourite, creating the page if needed.
+pub fn set_favorite(conn: &Connection, name: &str, on: bool) -> Result<()> {
+    ensure_page(conn, name, now_ms())?;
+    conn.execute(
+        "UPDATE pages SET favorite = ?1 WHERE name_lower = ?2",
+        params![on, name.trim().to_lowercase()],
+    )?;
+    Ok(())
 }
 
 /// Creates an empty page row for a linked or tagged name, if none exists.
@@ -152,10 +209,11 @@ fn page_from_row(r: &rusqlite::Row) -> rusqlite::Result<PageMeta> {
         version: r.get(3)?,
         created_at: r.get(4)?,
         updated_at: r.get(5)?,
+        favorite: r.get(6)?,
     })
 }
 
-const PAGE_COLS: &str = "id, name, journal_day, version, created_at, updated_at";
+const PAGE_COLS: &str = "id, name, journal_day, version, created_at, updated_at, favorite";
 
 pub fn get_page(conn: &Connection, name: &str) -> Result<Option<PageMeta>> {
     Ok(conn
@@ -233,6 +291,7 @@ pub fn save_page(
                 version: 0,
                 created_at: now,
                 updated_at: now,
+                favorite: false,
             };
             tx.execute(
                 "INSERT INTO pages (id, name, name_lower, journal_day, version, created_at, updated_at)
@@ -267,7 +326,9 @@ pub fn save_page(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         let mut clear_refs = tx.prepare("DELETE FROM refs WHERE block_id = ?1")?;
-        let mut insert_ref = tx.prepare("INSERT INTO refs (block_id, target_lower, target_name) VALUES (?1, ?2, ?3)")?;
+        let mut insert_ref = tx.prepare(
+            "INSERT INTO refs (block_id, target_lower, target_name, tag) VALUES (?1, ?2, ?3, ?4)",
+        )?;
         for (pos, b) in blocks.iter().enumerate() {
             let (created, updated) = match old.get(&b.id) {
                 Some((content, c, u)) if *content == b.content => (*c, *u),
@@ -279,8 +340,9 @@ pub fn save_page(
             insert.execute(params![
                 b.id, page.id, b.parent_id, pos as i64, b.content, b.collapsed, created, updated
             ])?;
+            let tags = md::extract_tags(&b.content);
             for (lower, name) in md::extract_refs(&b.content) {
-                insert_ref.execute(params![b.id, lower, name])?;
+                insert_ref.execute(params![b.id, lower, name, tags.contains(&lower)])?;
                 linked.entry(lower).or_insert(name);
             }
         }
@@ -313,17 +375,37 @@ pub fn delete_page(conn: &Connection, name: &str) -> Result<Option<PageMeta>> {
 }
 
 pub fn list_pages(conn: &Connection) -> Result<Vec<PageSummary>> {
+    // Tags per page: one row per (page, tag), spelled as first written.
+    let mut tags: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT b.page_id, MIN(r.target_name) FROM refs r
+             JOIN blocks b ON b.id = r.block_id
+             WHERE r.tag = 1
+             GROUP BY b.page_id, r.target_lower
+             ORDER BY r.target_lower",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (page, tag) = row?;
+            tags.entry(page).or_default().push(tag);
+        }
+    }
     let mut stmt = conn.prepare(
-        "SELECT p.name, p.journal_day, p.updated_at,
-                (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id)
+        "SELECT p.id, p.name, p.journal_day, p.created_at, p.updated_at,
+                (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id), p.favorite
          FROM pages p ORDER BY p.updated_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
+        let id: String = r.get(0)?;
         Ok(PageSummary {
-            name: r.get(0)?,
-            journal_day: r.get(1)?,
-            updated_at: r.get(2)?,
-            block_count: r.get(3)?,
+            tags: tags.remove(&id).unwrap_or_default(),
+            name: r.get(1)?,
+            journal_day: r.get(2)?,
+            created_at: r.get(3)?,
+            updated_at: r.get(4)?,
+            block_count: r.get(5)?,
+            favorite: r.get(6)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
