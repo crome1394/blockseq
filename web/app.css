@@ -379,7 +379,7 @@ html.wide main { max-width: none; }
 .favorites:not(.hidden) ~ .calendar { margin-top: 0; }
 .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .cal-head button { border: none; background: none; color: var(--text); padding: 2px 6px; }
-.cal-title { font-weight: 600; font-size: 13px; }
+.cal-title { font-weight: 600; font-size: 13px; flex: 1; text-align: center; }
 .cal-nav { font-size: 16px; color: var(--muted) !important; }
 .cal-head button:hover { background: var(--border); }
 .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
@@ -395,6 +395,7 @@ html.wide main { max-width: none; }
   font-variant-numeric: tabular-nums;
 }
 .cal-day:hover { background: var(--border); }
+.cal-day.other-month { color: var(--muted); opacity: 0.55; }
 .cal-day.today { color: var(--accent); font-weight: 700; }
 .cal-day.selected { background: var(--accent); color: var(--bg); }
 .cal-day.has-journal::after {

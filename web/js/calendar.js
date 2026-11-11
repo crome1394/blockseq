@@ -55,7 +55,6 @@ export class Calendar {
   render() {
     const today = journalDay(new Date());
     const first = new Date(this.year, this.month, 1);
-    const daysInMonth = new Date(this.year, this.month + 1, 0).getDate();
     const label = first.toLocaleDateString([], { month: 'long', year: 'numeric' });
 
     const head = document.createElement('div');
@@ -73,11 +72,14 @@ export class Calendar {
       c.textContent = w;
       grid.append(c);
     }
-    for (let i = 0; i < first.getDay(); i++) grid.append(document.createElement('div'));
-    for (let d = 1; d <= daysInMonth; d++) {
-      const day = this.year * 10000 + (this.month + 1) * 100 + d;
-      const date = new Date(this.year, this.month, d);
-      const cell = button('cal-day', String(d), date.toDateString(), () => this.onPick(date));
+    // Always six weeks, so the calendar keeps the same height (and its header
+    // stays put) from month to month. Days of the months before and after
+    // fill the gaps, faded.
+    for (let i = 0; i < 42; i++) {
+      const date = new Date(this.year, this.month, 1 - first.getDay() + i);
+      const day = journalDay(date);
+      const cell = button('cal-day', String(date.getDate()), date.toDateString(), () => this.onPick(date));
+      if (date.getMonth() !== this.month) cell.classList.add('other-month');
       if (day === today) cell.classList.add('today');
       if (day === this.selected) cell.classList.add('selected');
       if (this.days.has(day)) cell.classList.add('has-journal');
