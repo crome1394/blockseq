@@ -33,6 +33,41 @@ function legacyCopy(text) {
   active?.focus?.();
 }
 
+// A simple dialog. `body` is a DOM node; buttons are [label, fn, cls] and
+// close the dialog unless fn returns false.
+export function openModal(title, body, buttons = [['Close']]) {
+  closeModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.setAttribute('role', 'dialog');
+  const h = document.createElement('h2');
+  h.textContent = title;
+  const foot = document.createElement('div');
+  foot.className = 'modal-actions';
+  for (const [label, fn, cls] of buttons) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', () => { if (fn?.() !== false) closeModal(); });
+    foot.append(b);
+  }
+  box.append(h, body, foot);
+  overlay.append(box);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
+  document.body.append(overlay);
+  return box;
+}
+
+export function closeModal() {
+  document.querySelector('.modal-overlay')?.remove();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.querySelector('.modal-overlay')) closeModal();
+});
+
 let connected = true;
 export function setConnected(value) {
   connected = value;

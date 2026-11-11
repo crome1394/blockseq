@@ -33,6 +33,8 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/api.js` | API client, UUID generator, per-tab client id, page-name cache |
 | `web/js/ui.js` | Toast, clipboard fallback, save-status indicator |
 | `web/js/dates.js` | Journal page names (`Nov 11th, 2026`) and day numbers |
+| `web/js/code.js` | Built-in syntax highlighter, code block decoration (line numbers, copy), live-edit backdrop |
+| `web/js/settings.js` | Per-browser preferences (localStorage) and the settings form |
 | `deploy/` | systemd unit and install/upgrade script |
 
 ## Data model
@@ -72,9 +74,10 @@ updated_at  INT (ms)          created_at / updated_at
 - **`journal_day`** is set when a page name parses as a journal date. The
   journals view sorts by it.
 - **Managed properties.** Some block settings are stored in the block text the
-  way Logseq writes them, so the Markdown mirror stays compatible. Today that's
-  `logseq.order-list-type:: number` for numbered lists; colors and headings
-  will use the same mechanism. The client strips them into `node.props` when
+  way Logseq writes them, so the Markdown mirror stays compatible:
+  `logseq.order-list-type:: number` (numbered list), `background-color:: red`
+  (block colour) and `heading:: true` (auto heading by depth). Fixed headings
+  H1–H6 are plain Markdown `#` prefixes. The client strips them into `node.props` when
   loading (`splitProps`) and puts them back when saving (`joinProps`): after
   the first line, or at the end if the block starts with code or a table. They
   never appear in the editor.
@@ -214,6 +217,23 @@ CRDTs (conflict-free merge structures):
 - **Slash commands** share the autocomplete popup with `[[` and `((`. A `/`
   at the start of a line or after a space opens it, unless the cursor is in a
   code block.
+- **Code blocks** (`code.js`): each language is an ordered list of
+  `[class, sticky regex]` rules tried at each position, and the first match
+  wins. Words are consumed whole, so keywords never match inside identifiers.
+  `decorateCode` runs after rendering and adds the highlighted HTML, a
+  line-number gutter (a separate column, so highlighted spans never need to
+  be split by line) and the copy button. While editing, code blocks use a
+  monospace textarea. With the *live* setting on, the textarea's text is
+  transparent over a `<pre>` backdrop showing the same text highlighted. Both
+  share identical font, padding and wrapping rules, so the caret lines up.
+- **Bullet threading** (`updateThread`): on every edit, for each ancestor link
+  an absolutely positioned `.thread-line` is added to the parent's
+  `.children` box. It runs from the top of the box down to the child's bullet,
+  with a rounded corner. It is recalculated on edit, stop-edit, resize and
+  settings changes.
+- **Block links**: `#/page/<name>?b=<block id>` opens a page with that block
+  revealed (parents expanded), scrolled into view and briefly highlighted.
+  Block refs, search results and linked references all use it.
 - **Rendering** (`render.js`): HTML is escaped first, then one combined regex
   turns inline syntax into tags: code, images, links, `[[page]]`, `#tag`,
   `((ref))`, bold, italic, strike, highlight and URLs. Lines are handled

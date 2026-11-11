@@ -6,7 +6,9 @@
 import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
 import { renderContent, parseOutline, esc, splitProps, joinProps } from './render.js';
 import { journalName } from './dates.js';
-import { toast, copyText, updateStatus } from './ui.js';
+import { toast, copyText, updateStatus, openModal } from './ui.js';
+import { decorateCode, highlightForEditor } from './code.js';
+import { getSetting } from './settings.js';
 
 export const editors = new Set();
 
@@ -14,6 +16,9 @@ const SAVE_DELAY = 600;
 const HISTORY_LIMIT = 200;
 const MARKER = /^(TODO|DOING|DONE|LATER|NOW|CANCELED) /;
 const NUMBERED = 'logseq.order-list-type';
+const COLOR = 'background-color';
+const HEADING = 'heading';
+const COLORS = ['yellow', 'red', 'pink', 'green', 'blue', 'purple', 'gray'];
 
 // The editor the user touched last; keyboard undo outside a block goes here.
 let lastEditor = null;
@@ -185,6 +190,7 @@ export class PageEditor {
     this.rendering = true;
     this.editing = null;
     this.ta = null;
+    this.mirror = null;
     const frag = document.createDocumentFragment();
     if (this.conflict) frag.append(this.renderConflict());
     this.appendNodes(frag, this.root.children);
@@ -228,7 +234,9 @@ export class PageEditor {
     bullet.addEventListener('click', (e) => this.showBlockMenu(node, e));
     bullet.addEventListener('contextmenu', (e) => { e.preventDefault(); this.showBlockMenu(node, e); });
     const content = el('div', 'content');
+    this.styleContent(node, content);
     content.innerHTML = renderContent(node.content);
+    decorateCode(content);
     content.addEventListener('click', (e) => this.onContentClick(node, e));
     row.append(toggle, bullet, content);
     wrap.append(row);
@@ -266,15 +274,29 @@ export class PageEditor {
 
   rerenderContent(node) {
     if (!node.contentEl) return;
+    this.styleContent(node, node.contentEl);
     node.contentEl.innerHTML = renderContent(node.content);
+    decorateCode(node.contentEl);
     hydrateRefs(node.contentEl);
+  }
+
+  // Block colour and "auto heading" (size by depth) live on the content box.
+  styleContent(node, content) {
+    const color = node.props[COLOR];
+    if (color) content.dataset.color = color; else delete content.dataset.color;
+    content.className = content.className.replace(/\bah\d\b/g, '').trim();
+    if (node.props[HEADING] === 'true') {
+      let depth = 0;
+      for (let n = node.parent; n && n !== this.root; n = n.parent) depth++;
+      content.classList.add(`ah${Math.min(depth + 1, 6)}`);
+    }
   }
 
   // ---- editing -----------------------------------------------------------
 
   onContentClick(node, e) {
     const t = e.target;
-    if (t.closest('a')) return; // links navigate (hash router / new tab)
+    if (t.closest('a') || t.closest('.code-copy')) return; // links navigate (hash router / new tab)
     if (t.classList.contains('todo')) {
       e.preventDefault();
       this.beginOp();
@@ -283,7 +305,7 @@ export class PageEditor {
     }
     const ref = t.closest('.block-ref');
     if (ref && ref.dataset.page) {
-      location.hash = `#/page/${encodeURIComponent(ref.dataset.page)}`;
+      location.hash = `#/page/${encodeURIComponent(ref.dataset.page)}?b=${ref.dataset.ref}`;
       return;
     }
     if (this.editing !== node) this.edit(node, 'end');
@@ -299,10 +321,28 @@ export class PageEditor {
     ta.value = node.content;
     ta.rows = 1;
     ta.spellcheck = true;
-    node.contentEl.replaceChildren(ta);
+    this.mirror = null;
+    const isCode = /^```/m.test(node.content);
+    if (isCode) {
+      ta.classList.add('code-edit');
+      ta.spellcheck = false;
+    }
+    if (isCode && getSetting('liveCode')) {
+      // Live mode: transparent text over a highlighted copy of itself.
+      const wrap = el('div', 'live-wrap');
+      this.mirror = el('pre', 'live-mirror');
+      this.mirror.setAttribute('aria-hidden', 'true');
+      this.mirror.innerHTML = highlightForEditor(ta.value);
+      ta.classList.add('live');
+      wrap.append(this.mirror, ta);
+      node.contentEl.replaceChildren(wrap);
+    } else {
+      node.contentEl.replaceChildren(ta);
+    }
     node.el.classList.add('editing');
     this.ta = ta;
     autosize(ta);
+    this.updateThread();
     ta.focus({ preventScroll: false });
     const pos = caret === 'end' ? ta.value.length : caret === 'start' ? 0 : Math.min(caret, ta.value.length);
     ta.setSelectionRange(pos, pos);
@@ -312,7 +352,9 @@ export class PageEditor {
     ta.addEventListener('blur', () => {
       if (this.rendering || this.editing !== node) return;
       // Clicking the autocomplete list must not end editing.
-      setTimeout(() => { if (this.editing === node && document.activeElement !== ta) this.stopEdit(); }, 0);
+      setTimeout(() => {
+        if (this.editing === node && this.ta === ta && document.activeElement !== ta) this.stopEdit();
+      }, 0);
     });
   }
 
@@ -321,14 +363,17 @@ export class PageEditor {
     if (!node) return;
     this.editing = null;
     this.ta = null;
+    this.mirror = null;
     this.burst = false;
     closeAutocomplete();
     node.el?.classList.remove('editing');
     this.rerenderContent(node);
+    this.updateThread();
     if (this.pendingReload && !this.dirty) this.reload();
   }
 
   setContent(node, value) {
+    if (this.mirror && this.editing === node) this.mirror.innerHTML = highlightForEditor(value);
     if (node.content === value) return;
     node.content = value;
     this.markDirty();
@@ -383,7 +428,10 @@ export class PageEditor {
     }
 
     if (k === 'Enter' && plain) {
-      if (inFence(v, start)) return; // newline inside code
+      if (inFence(v, start)) {
+        if (this.expandFence(node, ta)) e.preventDefault();
+        return; // otherwise a plain newline inside code
+      }
       const { start: ls, end: le, line } = lineAt(v, start);
       if (/^\s*\|/.test(line)) {
         e.preventDefault();
@@ -399,6 +447,7 @@ export class PageEditor {
       this.setMarker(node, cur === 'TODO' || cur === 'DOING' || cur === 'LATER' || cur === 'NOW' ? 'DONE' : cur === 'DONE' ? null : 'TODO');
     } else if (k === 'Tab' && !mod && !e.altKey) {
       e.preventDefault();
+      if (!e.shiftKey && this.expandFence(node, ta)) return;
       if (inFence(v, start)) this.codeIndent(node, ta, e.shiftKey);
       else if (e.shiftKey) this.outdent(node, start);
       else this.indent(node, start);
@@ -408,6 +457,9 @@ export class PageEditor {
       const vis = this.visible();
       const next = vis[vis.indexOf(node) + 1];
       if (next) { e.preventDefault(); this.mergeUp(next); }
+    } else if ((k === 'ArrowUp' || k === 'ArrowDown') && mod && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if (node.children.length) this.setCollapsedDeep(node, k === 'ArrowUp');
     } else if ((k === 'ArrowUp' || k === 'ArrowDown') && e.altKey && e.shiftKey) {
       e.preventDefault();
       this.move(node, k === 'ArrowUp' ? -1 : 1, start);
@@ -439,6 +491,25 @@ export class PageEditor {
     }
     const row = '\n' + '|  '.repeat(cols) + '|';
     this.replaceText(node, ta, le, le, row, 3);
+  }
+
+  // Tab or Enter at the end of an opening fence ("```" or "```bash") that has
+  // no closing fence yet: add the closing fence and put the cursor inside.
+  expandFence(node, ta) {
+    const v = ta.value;
+    const pos = ta.selectionStart;
+    if (pos !== ta.selectionEnd) return false;
+    const { start, end, line } = lineAt(v, pos);
+    if (pos !== end || !/^```[^`\s]*\s*$/.test(line)) return false;
+    const before = (v.slice(0, start).match(/^```/gm) || []).length;
+    const total = (v.match(/^```/gm) || []).length;
+    if (before % 2 !== 0 || total % 2 !== 1) return false;
+    this.beginOp();
+    const open = line.trimEnd();
+    this.replaceText(node, ta, start, end, `${open}\n\n\`\`\``, open.length + 1);
+    // Re-open the editor so it switches to code mode (monospace / live colours).
+    this.edit(node, start + open.length + 1);
+    return true;
   }
 
   // Tab / Shift+Tab inside a code fence indents the current line.
@@ -555,15 +626,7 @@ export class PageEditor {
   setMarker(node, marker) {
     const body = node.content.replace(MARKER, '');
     const value = marker ? `${marker} ${body}` : body;
-    const delta = value.length - node.content.length;
-    this.setContent(node, value);
-    if (this.editing === node && this.ta) {
-      const pos = Math.max(0, this.ta.selectionStart + delta);
-      this.ta.value = value;
-      this.ta.setSelectionRange(pos, pos);
-    } else {
-      this.rerenderContent(node);
-    }
+    this.applyValue(node, value);
   }
 
   // Sets "# " .. "###### " on the first line (level 0 removes it).
@@ -571,14 +634,124 @@ export class PageEditor {
     const marker = MARKER.exec(node.content)?.[0] || '';
     const rest = node.content.slice(marker.length).replace(/^#{1,6} /, '');
     const value = marker + (level ? '#'.repeat(level) + ' ' : '') + rest;
+    this.applyValue(node, value);
+  }
+
+  // Sets a block's whole text, keeping the cursor in place while editing.
+  applyValue(node, value) {
     const delta = value.length - node.content.length;
-    this.setContent(node, value);
     if (this.editing === node && this.ta) {
       const pos = Math.max(0, this.ta.selectionStart + delta);
       this.ta.value = value;
       this.ta.setSelectionRange(pos, pos);
+      this.setContent(node, value);
+      autosize(this.ta);
     } else {
+      this.setContent(node, value);
       this.rerenderContent(node);
+    }
+  }
+
+  // Sets or clears a managed property (colour, heading, list type).
+  setProp(node, key, value) {
+    this.beginOp();
+    if (value === null || value === undefined) delete node.props[key];
+    else node.props[key] = value;
+    const keep = this.editing;
+    const caret = this.ta?.selectionStart;
+    this.refresh(keep, caret);
+  }
+
+  // level: 1-6 sets a Markdown heading, 'auto' sizes by depth, 0 clears both.
+  setHeadingStyle(node, level) {
+    this.beginOp();
+    if (level === 'auto') {
+      this.setHeading(node, 0);
+      node.props[HEADING] = 'true';
+    } else {
+      delete node.props[HEADING];
+      this.setHeading(node, level);
+    }
+    const keep = this.editing;
+    const caret = this.ta?.selectionStart;
+    this.refresh(keep, caret);
+  }
+
+  // Expands or collapses a block and everything under it.
+  setCollapsedDeep(node, collapsed) {
+    const walk = (n) => { if (n.children.length) n.collapsed = collapsed; n.children.forEach(walk); };
+    walk(node);
+    let keep = this.editing;
+    const caret = this.ta?.selectionStart;
+    if (keep && collapsed && isInside(keep, node)) keep = node;
+    this.refresh(keep, keep === this.editing ? caret : 'end');
+  }
+
+  cut(node) {
+    copyText(subtreeMarkdown(node, { ids: true }));
+    this.removeNode(node);
+    toast('Block cut. Paste it anywhere to move it.');
+  }
+
+  blockUrl(node) {
+    return `${location.origin}${location.pathname}#/page/${encodeURIComponent(this.name)}?b=${node.id}`;
+  }
+
+  // Scrolls to a block (opening collapsed parents) and flashes it.
+  reveal(id) {
+    const node = this.findNode(id);
+    if (!node) return toast('That block is no longer on this page');
+    for (let n = node.parent; n && n !== this.root; n = n.parent) n.collapsed = false;
+    this.render();
+    node.el.scrollIntoView({ block: 'center' });
+    node.el.classList.add('flash');
+    setTimeout(() => node.el?.classList.remove('flash'), 2000);
+  }
+
+  exportBlock(node) {
+    const body = el('div', 'export');
+    const tabs = el('div', 'tabs');
+    const out = el('textarea', 'export-text');
+    out.readOnly = true;
+    const formats = [['Markdown', () => subtreeMarkdown(node)], ['Plain text', () => subtreeMarkdown(node, { plain: true })]];
+    let current = 0;
+    const show = (i) => {
+      current = i;
+      [...tabs.children].forEach((b, j) => b.classList.toggle('active', i === j));
+      out.value = formats[i][1]();
+    };
+    formats.forEach(([label], i) => {
+      const b = el('button', 'tab', label);
+      b.addEventListener('click', () => show(i));
+      tabs.append(b);
+    });
+    body.append(tabs, out);
+    openModal('Copy / Export', body, [
+      ['Close'],
+      ['Copy', () => { copyText(out.value); toast('Copied'); }, 'primary'],
+    ]);
+    show(current);
+    out.focus();
+    out.select();
+  }
+
+  // Bullet threading: draws the path from the edited block up to the top.
+  updateThread() {
+    this.container.querySelectorAll('.thread-line').forEach((e) => e.remove());
+    this.container.querySelectorAll('.bullet.thread').forEach((e) => e.classList.remove('thread'));
+    const node = this.editing;
+    if (!node || !node.el || !getSetting('threading')) return;
+    const bulletOf = (n) => n.el?.querySelector(':scope > .block-row > .bullet');
+    bulletOf(node)?.classList.add('thread');
+    for (let n = node; n.parent && n.parent !== this.root; n = n.parent) {
+      const box = n.parent.el?.querySelector(':scope > .children');
+      const row = n.el?.querySelector(':scope > .block-row');
+      if (!box || !row) break;
+      const height = row.getBoundingClientRect().top - box.getBoundingClientRect().top + 14;
+      const line = el('div', 'thread-line');
+      line.style.height = `${height}px`;
+      box.append(line);
+      bulletOf(n.parent)?.classList.add('thread');
     }
   }
 
@@ -642,14 +815,50 @@ export class PageEditor {
 
   showBlockMenu(node, e) {
     lastEditor = this;
-    const items = [
-      ['Copy block ref', () => { copyText(`((${node.id}))`); toast('Block ref copied'); }],
-      ['Copy as Markdown', () => { copyText(subtreeMarkdown(node)); toast('Copied'); }],
-      [node.props[NUMBERED] === 'number' ? 'Remove number list' : 'Toggle number list', () => this.toggleNumbered(node)],
+    const colors = el('div', 'menu-swatches');
+    for (const c of COLORS) {
+      const sw = el('button', `swatch sw-${c}`);
+      sw.title = c;
+      if (node.props[COLOR] === c) sw.classList.add('active');
+      sw.addEventListener('click', () => { closeMenu(); this.setProp(node, COLOR, c); });
+      colors.append(sw);
+    }
+    const none = el('button', 'swatch sw-none');
+    none.title = 'No colour';
+    none.addEventListener('click', () => { closeMenu(); this.setProp(node, COLOR, null); });
+    colors.append(none);
+
+    const heads = el('div', 'menu-headings');
+    const current = /^(?:(?:TODO|DOING|DONE|LATER|NOW|CANCELED) )?(#{1,6}) /.exec(node.content)?.[1].length || 0;
+    const headBtn = (label, title, level, active) => {
+      const b = el('button', 'head-btn' + (active ? ' active' : ''), label);
+      b.title = title;
+      b.addEventListener('click', () => { closeMenu(); this.setHeadingStyle(node, level); });
+      heads.append(b);
+    };
+    for (let i = 1; i <= 6; i++) headBtn(`H${i}`, `Heading ${i}`, i, current === i);
+    headBtn('HA', 'Auto heading (size by depth)', 'auto', node.props[HEADING] === 'true');
+    headBtn('H', 'Remove heading', 0, false);
+    heads.lastChild.classList.add('no-head');
+
+    const entries = [
+      { element: colors },
+      { element: heads },
+      '-',
+      { label: 'Copy block ref', fn: () => { copyText(`((${node.id}))`); toast('Block ref copied'); } },
+      { label: 'Copy block URL', fn: () => { copyText(this.blockUrl(node)); toast('Block URL copied'); } },
+      { label: 'Copy / Export as…', fn: () => this.exportBlock(node) },
+      { label: 'Cut', fn: () => this.cut(node) },
+      { label: 'Delete block', fn: () => this.removeNode(node), danger: true },
+      '-',
+      { label: node.props[NUMBERED] === 'number' ? 'Remove number list' : 'Toggle number list', fn: () => this.toggleNumbered(node) },
     ];
-    if (node.children.length) items.push([node.collapsed ? 'Expand' : 'Collapse', () => this.toggleCollapse(node)]);
-    items.push(['Delete block', () => this.removeNode(node), 'danger']);
-    showMenu(e.clientX, e.clientY, items);
+    if (node.children.length) {
+      entries.push('-',
+        { label: 'Expand all', shortcut: 'Ctrl ↓', fn: () => this.setCollapsedDeep(node, false) },
+        { label: 'Collapse all', shortcut: 'Ctrl ↑', fn: () => this.setCollapsedDeep(node, true) });
+    }
+    showMenu(e.clientX, e.clientY, entries);
   }
 
   // ---- saving and sync ---------------------------------------------------
@@ -745,13 +954,20 @@ function autosize(ta) {
   ta.style.height = ta.scrollHeight + 'px';
 }
 
-function subtreeMarkdown(node) {
+// opts.ids adds id:: lines (so a cut block keeps its refs when pasted);
+// opts.plain gives indented text without bullets or properties.
+function subtreeMarkdown(node, opts = {}) {
   const lines = [];
   const walk = (n, depth) => {
     const ind = '\t'.repeat(depth);
-    const [first, ...rest] = joinProps(n.content, n.props).split('\n');
-    lines.push(`${ind}- ${first}`);
-    rest.forEach((l) => lines.push(`${ind}  ${l}`));
+    if (opts.plain) {
+      n.content.split('\n').forEach((l) => lines.push(ind + l));
+    } else {
+      const [first, ...rest] = joinProps(n.content, n.props).split('\n');
+      lines.push(`${ind}- ${first}`);
+      if (opts.ids) lines.push(`${ind}  id:: ${n.id}`);
+      rest.forEach((l) => lines.push(`${ind}  ${l}`));
+    }
     n.children.forEach((c) => walk(c, depth + 1));
   };
   walk(node, 0);
@@ -973,17 +1189,38 @@ function acceptAutocomplete() {
 
 // ---- small popup menu --------------------------------------------------------
 
-export function showMenu(x, y, items) {
-  document.querySelector('.menu')?.remove();
+// entries: [label, fn, cls] arrays, {label, fn, shortcut, danger} objects,
+// {element} for custom rows, or '-' for a separator.
+export function showMenu(x, y, entries) {
+  closeMenu();
   const menu = el('div', 'popup menu');
-  for (const [label, fn, cls] of items) {
-    const item = el('div', 'item' + (cls ? ` ${cls}` : ''), label);
-    item.addEventListener('click', () => { menu.remove(); fn(); });
+  for (const entry of entries) {
+    if (entry === '-') { menu.append(el('div', 'menu-sep')); continue; }
+    if (entry.element) { menu.append(entry.element); continue; }
+    const [label, fn, cls] = Array.isArray(entry) ? entry : [entry.label, entry.fn, entry.danger ? 'danger' : ''];
+    const item = el('div', 'item' + (cls ? ` ${cls}` : ''));
+    item.append(el('span', '', label));
+    if (entry.shortcut) item.append(el('kbd', '', entry.shortcut));
+    item.addEventListener('click', () => { closeMenu(); fn(); });
     menu.append(item);
   }
+  menu.style.position = 'fixed';
   document.body.append(menu);
   const w = menu.offsetWidth;
-  menu.style.left = `${Math.min(x, window.innerWidth - w - 8) + window.scrollX}px`;
-  menu.style.top = `${y + window.scrollY + 6}px`;
-  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  const h = menu.offsetHeight;
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - w - 8))}px`;
+  menu.style.top = `${y + h + 14 > window.innerHeight ? Math.max(8, y - h - 6) : y + 6}px`;
+  setTimeout(() => {
+    document.addEventListener('mousedown', onOutside);
+    window.addEventListener('scroll', closeMenu, { once: true, capture: true });
+  }, 0);
+}
+
+function onOutside(e) {
+  if (!e.target.closest('.menu')) closeMenu();
+}
+
+export function closeMenu() {
+  document.querySelector('.menu')?.remove();
+  document.removeEventListener('mousedown', onOutside);
 }

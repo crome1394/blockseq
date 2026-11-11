@@ -4,7 +4,9 @@ import { api, clientId, invalidatePageNames } from './api.js';
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, activeEditor } from './editor.js';
-import { toast, updateStatus, setConnected } from './ui.js';
+import { toast, updateStatus, setConnected, openModal } from './ui.js';
+import { decorateCode } from './code.js';
+import { settingsForm, onSettingChange } from './settings.js';
 
 const main = document.getElementById('main');
 let view = null; // { refresh?() }
@@ -41,7 +43,14 @@ async function route() {
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', hash === `/${a.dataset.nav}`));
   window.scrollTo(0, 0);
   try {
-    if (hash.startsWith('/page/')) await pageView(decodeURIComponent(hash.slice(6)), seq);
+    if (hash.startsWith('/page/')) {
+      // #/page/<name>?b=<block id> opens a page scrolled to one block.
+      const rest = hash.slice(6);
+      const q = rest.indexOf('?');
+      const name = decodeURIComponent(q === -1 ? rest : rest.slice(0, q));
+      const block = q === -1 ? null : new URLSearchParams(rest.slice(q + 1)).get('b');
+      await pageView(name, seq, block);
+    }
     else if (hash === '/all') await allPagesView(seq);
     else await journalsView(seq);
   } catch (e) {
@@ -89,7 +98,7 @@ async function journalsView(seq) {
 
 // ---- single page -----------------------------------------------------------
 
-async function pageView(name, seq) {
+async function pageView(name, seq, blockId) {
   const data = await api.page(name);
   if (seq !== routeSeq) return;
   const header = el('div', 'page-header');
@@ -106,8 +115,9 @@ async function pageView(name, seq) {
   const body = el('div');
   const refs = el('section', 'backlinks');
   main.replaceChildren(header, body, refs);
-  new PageEditor(body, data);
+  const editor = new PageEditor(body, data);
   renderBacklinks(refs, data.backlinks);
+  if (blockId) editor.reveal(blockId);
   view = {
     refresh: async () => {
       try { renderBacklinks(refs, (await api.page(name)).backlinks); } catch { /* offline */ }
@@ -129,8 +139,9 @@ function renderBacklinks(container, groups) {
       const item = el('div', 'ref-block');
       item.innerHTML = `<span class="bullet"><span class="dot"></span></span><div class="content">${renderContent(b.content)}</div>`;
       item.addEventListener('click', (e) => {
-        if (!e.target.closest('a')) location.hash = pageHref(g.page_name);
+        if (!e.target.closest('a') && !e.target.closest('.code-copy')) location.hash = `${pageHref(g.page_name)}?b=${b.id}`;
       });
+      decorateCode(item);
       hydrateRefs(item);
       group.append(item);
     }
@@ -221,6 +232,7 @@ async function runSearch() {
   res.blocks.forEach((b) => searchItems.push({
     html: `<div class="snippet">${esc(b.content.slice(0, 140))}</div><small>${esc(b.page_name)}</small>`,
     go: b.page_name,
+    block: b.id,
   }));
   searchIndex = 0;
   searchBox.replaceChildren(...searchItems.map((it, i) => {
@@ -241,7 +253,7 @@ function markSearch() {
 function acceptSearch() {
   const it = searchItems[searchIndex];
   if (!it) return;
-  location.hash = pageHref(it.go);
+  location.hash = pageHref(it.go) + (it.block ? `?b=${it.block}` : '');
   searchInput.value = '';
   closeSearch();
   searchInput.blur();
@@ -331,6 +343,18 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (e.key.toLowerCase() === 'y' || e.shiftKey) ed.redo(); else ed.undo();
   }
+});
+
+document.getElementById('open-settings').addEventListener('click', () => {
+  openModal('Settings', settingsForm());
+});
+
+// Redraw things that depend on settings or layout.
+onSettingChange(() => { for (const ed of editors) { ed.updateThread(); } });
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { for (const ed of editors) ed.updateThread(); }, 100);
 });
 
 window.addEventListener('hashchange', route);

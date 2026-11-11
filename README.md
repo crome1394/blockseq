@@ -8,6 +8,8 @@ and you use them from any browser on your LAN or tailnet.
 - `TODO` / `DONE` checkboxes, Markdown formatting, code blocks, tables,
   numbered lists
 - `/` commands, undo/redo, tags at the end of a line shown on the right
+- Code blocks with syntax colours, line numbers and a copy button
+- Bullet menu with block colours, headings, block links, export; bullet threading
 - Autosave, live refresh on other devices, and a prompt if two devices edit
   the same page at once
 - Every page is also written as a Logseq-format `.md` file, so your notes are
@@ -157,6 +159,7 @@ the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.d
 | Tab / Shift+Tab      | Indent / outdent                           |
 | Backspace at start   | Merge with the block above                 |
 | Alt+Shift+Up/Down    | Move block among its siblings              |
+| Ctrl+Up / Ctrl+Down  | Collapse / expand the block and everything under it |
 | Up / Down            | Move between blocks                        |
 | Ctrl+Enter           | Cycle TODO → DONE → none                   |
 | Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) | Undo / redo                   |
@@ -165,11 +168,23 @@ the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.d
 | `/`                  | Command menu (link, code, table, TODO, headings, numbered list, dates) |
 | Ctrl+K               | Search                                     |
 
-Inside a code block (```` ```lang ````), Enter adds a new line and Tab indents.
+Type ```` ``` ```` (optionally with a language, e.g. ```` ```bash ````) and press Tab or Enter to create
+a code block with the cursor inside. In a code block, Enter adds a new line and Tab indents.
 Inside a table, Enter adds a row; Enter on an empty row ends the table.
 Enter on an empty numbered item ends the list.
 
-Click or right-click a bullet for block actions, such as copying a block ref.
+Click or right-click a bullet for the block menu: colours, headings (H1–H6, or
+auto-sized by depth), copy block ref, copy block URL (opens the page scrolled to
+that block), copy/export as Markdown or plain text, cut, delete, number list,
+and expand/collapse all.
+
+**Settings** (bottom of the sidebar) are saved per browser:
+bullet threading on/off, and syntax colours while editing code blocks.
+
+Code highlighting is built in, with no third-party library. It covers bash/shell,
+ini/conf/toml/systemd, YAML, JSON, Python, JavaScript/TypeScript, Rust, Go,
+C-family (C, C++, C#, Java, Kotlin, Swift, PHP), SQL, HTML/XML, CSS, Dockerfile
+and diff. Other languages get basic colouring of comments, strings and numbers.
 Pasting a Logseq outline (`- item` lines) creates the matching blocks and keeps
 their `id::` values, so block refs carry over.
 
