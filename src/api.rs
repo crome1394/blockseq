@@ -4,8 +4,9 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -15,6 +16,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::AppState;
+use crate::assets;
 use crate::db::{self, Block, SaveOutcome};
 
 type Shared = State<Arc<AppState>>;
@@ -107,6 +109,18 @@ pub async fn delete_page(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// Creates an empty page if it doesn't exist (used by the calendar to create
+/// a journal day). Returns the page either way.
+pub async fn ensure_page(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
+    let name = q.name.trim();
+    if name.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "page name is empty".into()));
+    }
+    let conn = s.db.lock().unwrap();
+    db::ensure_page(&conn, name, db::now_ms())?;
+    Ok(Json(json!({ "page": db::get_page(&conn, name)? })).into_response())
+}
+
 pub async fn list_pages(State(s): Shared) -> ApiResult {
     let pages = db::list_pages(&s.db.lock().unwrap())?;
     Ok(Json(pages).into_response())
@@ -161,4 +175,51 @@ pub async fn events(State(s): Shared) -> Sse<impl Stream<Item = Result<Event, In
         Ok(Event::default().data(data))
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Stores an uploaded image (raw bytes in the body). The original file name
+/// may be given in `X-Filename`. Returns the path to put in the block text.
+pub async fn upload_asset(State(s): Shared, headers: HeaderMap, body: Bytes) -> ApiResult {
+    if body.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "empty upload".into()));
+    }
+    let original = headers
+        .get("x-filename")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image")
+        .to_string();
+    let dir = s.data_dir.join("assets");
+    let name = tokio::task::spawn_blocking(move || assets::save(&dir, &body, &original, db::now_ms()))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?
+        .map_err(|e| ApiError(StatusCode::UNSUPPORTED_MEDIA_TYPE, format!("{e:#}")))?;
+    Ok(Json(json!({
+        "name": name,
+        "path": format!("../assets/{name}"),
+        "url": format!("/assets/{name}"),
+    }))
+    .into_response())
+}
+
+/// Serves an uploaded image. Names never change, so browsers may cache forever.
+pub async fn get_asset(State(s): Shared, Path(name): Path<String>) -> Response {
+    if !assets::valid_name(&name) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(s.data_dir.join("assets").join(&name)).await {
+        Ok(bytes) => {
+            let mime = mime_guess::from_path(&name).first_or_octet_stream();
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                    (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string()),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (header::CONTENT_SECURITY_POLICY, "default-src 'none'".to_string()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }

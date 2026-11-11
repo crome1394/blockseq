@@ -7,8 +7,22 @@ import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, activeEditor
 import { toast, updateStatus, setConnected, openModal } from './ui.js';
 import { decorateCode } from './code.js';
 import { settingsForm, onSettingChange } from './settings.js';
+import { Calendar } from './calendar.js';
 
 const main = document.getElementById('main');
+
+// Sidebar calendar: picking a day opens that journal, creating it if needed.
+const calendar = new Calendar(document.getElementById('calendar'), async (date) => {
+  const name = journalName(date);
+  try { await api.ensurePage(name); } catch { /* offline: it's created on first save */ }
+  invalidatePageNames();
+  location.hash = pageHref(name);
+});
+let calendarTimer = null;
+function refreshCalendar() {
+  clearTimeout(calendarTimer);
+  calendarTimer = setTimeout(() => calendar.refresh(), 1000);
+}
 let view = null; // { refresh?() }
 let routeSeq = 0;
 
@@ -51,8 +65,8 @@ async function route() {
       const block = q === -1 ? null : new URLSearchParams(rest.slice(q + 1)).get('b');
       await pageView(name, seq, block);
     }
-    else if (hash === '/all') await allPagesView(seq);
-    else await journalsView(seq);
+    else if (hash === '/all') { calendar.select(null); await allPagesView(seq); }
+    else { calendar.select(null); calendar.goToday(); await journalsView(seq); }
   } catch (e) {
     if (seq === routeSeq) main.replaceChildren(el('p', 'error', `Could not load: ${e.message}`));
   }
@@ -101,6 +115,7 @@ async function journalsView(seq) {
 async function pageView(name, seq, blockId) {
   const data = await api.page(name);
   if (seq !== routeSeq) return;
+  calendar.select(data.page?.journal_day ?? null);
   const header = el('div', 'page-header');
   const title = el('h1', 'page-title', data.name);
   const actions = el('button', 'icon-button', '⋯');
@@ -286,6 +301,7 @@ function refreshView() {
 }
 
 function resyncAll() {
+  refreshCalendar();
   clearRefCache();
   invalidatePageNames();
   for (const ed of editors) ed.remoteChanged();
@@ -305,6 +321,7 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     if (ev.type === 'resync') return resyncAll();
+    refreshCalendar(); // our own saves can add a journal dot too
     if (ev.client === clientId) return;
     clearRefCache();
     invalidatePageNames();

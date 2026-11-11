@@ -129,7 +129,7 @@ pub fn open(path: &Path) -> Result<Connection> {
 
 /// Creates an empty page row for a linked or tagged name, if none exists.
 /// Its version stays 0, so the first real save from a browser still works.
-fn ensure_page(conn: &Connection, name: &str, now: i64) -> Result<()> {
+pub fn ensure_page(conn: &Connection, name: &str, now: i64) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO pages (id, name, name_lower, journal_day, version, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",

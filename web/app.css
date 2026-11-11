@@ -104,6 +104,7 @@ input[type="search"]:focus, input.filter:focus { border-color: var(--accent); }
   display: flex;
   flex-direction: column;
   gap: 14px;
+  overflow-y: auto;
 }
 
 .brand { font-weight: 700; font-size: 18px; color: var(--text); padding: 0 6px; }
@@ -116,9 +117,45 @@ input[type="search"]:focus, input.filter:focus { border-color: var(--accent); }
 .search-wrap { position: relative; }
 #search-results { position: absolute; left: 0; top: calc(100% + 4px); width: min(420px, 90vw); max-height: 70vh; overflow-y: auto; }
 
-.sidebar-button { margin-top: auto; align-self: flex-start; border: none; background: none; color: var(--muted); padding: 4px 6px; }
+.sidebar-button { align-self: flex-start; border: none; background: none; color: var(--muted); padding: 4px 6px; }
 .sidebar-button:hover { color: var(--text); }
 .status { font-size: 13px; padding: 0 6px; }
+
+/* ---- sidebar calendar ---- */
+
+.calendar { margin-top: auto; font-size: 12px; user-select: none; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.cal-head button { border: none; background: none; color: var(--text); padding: 2px 6px; }
+.cal-title { font-weight: 600; font-size: 13px; }
+.cal-nav { font-size: 16px; color: var(--muted) !important; }
+.cal-head button:hover { background: var(--border); }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
+.cal-wd { color: var(--muted); font-size: 11px; padding: 2px 0; }
+.cal-day {
+  position: relative;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 0 5px;
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.cal-day:hover { background: var(--border); }
+.cal-day.today { color: var(--accent); font-weight: 700; }
+.cal-day.selected { background: var(--accent); color: var(--bg); }
+.cal-day.has-journal::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.cal-day.selected.has-journal::after { background: var(--bg); }
 .status::before { content: "●"; margin-right: 6px; }
 .status.ok { color: var(--muted); }
 .status.ok::before { color: var(--ok); }
@@ -153,6 +190,7 @@ main {
   .search-wrap { order: 3; flex-basis: 100%; }
   #sidebar nav { flex-direction: row; }
   .sidebar-button { margin: 0 0 0 auto; order: 2; }
+  .calendar { display: none; }
   .status { margin: 0; order: 2; }
   main { padding: 20px 16px 40vh; }
 }
@@ -337,7 +375,82 @@ pre.code:hover .code-copy, .code-copy:focus { opacity: 1; }
 .c-del { color: var(--c-del); }
 .c-punct { color: var(--c-keyword); }
 
-/* Editing a code block: monospace, and optionally live colours. */
+/* ---- in-block code editor ---- */
+
+.code-editor {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 4px 0;
+  background: var(--code-bg);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--accent);
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 21px;
+}
+.ce-gutter {
+  padding: 8px 10px 8px 12px;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+.ce-gutter > div { opacity: 0.6; }
+.ce-gutter > div.current { opacity: 1; color: var(--text); }
+.ce-main { position: relative; min-width: 0; }
+.ce-line { position: absolute; left: 0; right: 0; background: rgba(127, 127, 127, 0.16); pointer-events: none; }
+/* .code-editor prefix beats the general ".rendered pre" rules. */
+.code-editor .ce-mirror, .code-editor .ce-input {
+  margin: 0;
+  padding: 8px 12px;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: normal;
+  tab-size: 4;
+  white-space: pre;
+}
+.code-editor .ce-mirror { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--text); background: none; border-radius: 0; display: none; }
+.code-editor.live .ce-mirror { display: block; }
+.ce-mirror * { font-weight: inherit !important; font-style: inherit !important; }
+.code-editor .ce-input {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 37px;
+  border: none;
+  outline: none;
+  resize: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: transparent;
+  color: var(--text);
+  caret-color: var(--text);
+}
+.code-editor.live .ce-input { color: transparent; }
+.code-editor.live .ce-input::selection { background: rgba(100, 150, 255, 0.35); color: transparent; }
+.ce-toolbar {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-family: system-ui, sans-serif;
+}
+.ce-toolbar select, .ce-toolbar button {
+  font: 12px system-ui, sans-serif;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+}
+.code-editor .code-copy { opacity: 1; }
+.block.editing > .block-row > .content:has(.code-editor) { background: none; }
+
+/* Editing a code block as text: monospace, and optionally live colours. */
 textarea.code-edit, .live-mirror {
   font-family: var(--mono);
   font-size: 13.5px;
@@ -384,7 +497,46 @@ textarea.code-edit.live::selection { background: rgba(100, 150, 255, 0.35); colo
 .block.flash > .block-row > .content { animation: flash 2s ease-out; }
 @keyframes flash { 0%, 30% { background: var(--mark); } 100% { background: transparent; } }
 .rendered mark { background: var(--mark); color: inherit; padding: 0 2px; border-radius: 3px; }
+/* ---- images ---- */
+
 .rendered img { max-width: 100%; border-radius: 6px; }
+.img-wrap { display: block; margin: 4px 0; }
+.img-wrap.align-center { text-align: center; }
+.img-wrap.align-right { text-align: right; }
+.img-box { position: relative; display: inline-block; max-width: 100%; vertical-align: top; }
+.img-box img { display: block; cursor: zoom-in; }
+.img-menu {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 6px;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.img-box:hover .img-menu, .img-menu:focus { opacity: 1; }
+@media (hover: none) { .img-menu { opacity: 0.8; } }
+.backlinks .img-menu, .block-ref .img-menu { display: none; }
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.8);
+  cursor: zoom-out;
+}
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: var(--shadow); }
 .rendered .prop { font-size: 0.9em; color: var(--muted); }
 .rendered .prop-key { font-weight: 600; }
 .rendered .prop-key::after { content: ":"; }

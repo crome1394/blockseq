@@ -8,8 +8,12 @@ and you use them from any browser on your LAN or tailnet.
 - `TODO` / `DONE` checkboxes, Markdown formatting, code blocks, tables,
   numbered lists
 - `/` commands, undo/redo, tags at the end of a line shown on the right
-- Code blocks with syntax colours, line numbers and a copy button
+- Code blocks with syntax colours, line numbers and a copy button, plus an
+  in-block code editor (current-line highlight, language picker, auto-indent)
 - Bullet menu with block colours, headings, block links, export; bullet threading
+- Paste or drop images (screenshots); click for a full-size preview, ⋮ menu to
+  align, copy, open, download or delete
+- Sidebar calendar: pick any date to open (or create) that day's journal
 - Autosave, live refresh on other devices, and a prompt if two devices edit
   the same page at once
 - Every page is also written as a Logseq-format `.md` file, so your notes are
@@ -28,7 +32,7 @@ Settings are environment variables:
 | Variable            | Default        | Meaning                                         |
 |---------------------|----------------|-------------------------------------------------|
 | `BLOCKSEQ_ADDR`     | `0.0.0.0:3030` | Listen address                                  |
-| `BLOCKSEQ_DATA`     | `./data`       | Database and Markdown mirror                    |
+| `BLOCKSEQ_DATA`     | `./data`       | Database, Markdown mirror and uploaded images   |
 | `BLOCKSEQ_PASSWORD` | unset          | If set, the browser asks for this password      |
 
 ## Deploy to a Proxmox LXC
@@ -146,6 +150,9 @@ lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
 - `blockseq.db` is the SQLite database and the source of truth.
 - `pages/*.md` and `journals/*.md` are Logseq-format copies, rewritten on every
   save. You can point Logseq at this folder (read-only) to compare the two apps.
+- `assets/` holds pasted and uploaded images, linked from blocks as
+  `![name](../assets/name.png)`, the same layout Logseq uses. Removing an image
+  from a block keeps the file, so undo still works.
 
 Back up the whole folder, or let Proxmox back up the container. To copy
 the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.db"`.
@@ -168,8 +175,22 @@ the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.d
 | `/`                  | Command menu (link, code, table, TODO, headings, numbered list, dates) |
 | Ctrl+K               | Search                                     |
 
-Type ```` ``` ```` (optionally with a language, e.g. ```` ```bash ````) and press Tab or Enter to create
-a code block with the cursor inside. In a code block, Enter adds a new line and Tab indents.
+**Code blocks:** type ```` ``` ```` (optionally with a language, e.g. ```` ```bash ````) and
+press Tab or Enter, or use `/code`. The code editor opens with the cursor inside.
+Click any code block to edit it again. In the code editor:
+
+| Key | Action |
+|-----|--------|
+| Arrow keys | Move around the code |
+| Up on the first line / Down on the last | Move to the block above / below |
+| Enter | New line, keeping the indentation |
+| Tab / Shift+Tab | Indent / outdent the line (or every selected line) |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
+| Esc | Close the editor |
+
+The top-right toolbar has the language picker, Copy, and **Edit as text**, which
+edits the whole block including the ```` ``` ```` lines. Use that to add text or a tag
+around the code.
 Inside a table, Enter adds a row; Enter on an empty row ends the table.
 Enter on an empty numbered item ends the list.
 
@@ -177,6 +198,17 @@ Click or right-click a bullet for the block menu: colours, headings (H1–H6, or
 auto-sized by depth), copy block ref, copy block URL (opens the page scrolled to
 that block), copy/export as Markdown or plain text, cut, delete, number list,
 and expand/collapse all.
+
+**Images:** paste a screenshot, drag an image onto a block, or use `/image`.
+PNG, JPEG, GIF, WebP and AVIF are accepted (checked by file content, not name).
+Click an image for a full-size preview. Its ⋮ button offers align
+left/center/right, copy image, open in new tab, download, and delete. *Copy image*
+needs HTTPS (your Caddy address), because browsers block image clipboard
+access on plain HTTP.
+
+**Calendar** (bottom of the sidebar): dots mark days with journal entries.
+Click a day to open its journal; if none exists, it's created. ‹ › change month,
+and clicking the month name returns to today. Hidden on narrow (phone) screens.
 
 **Settings** (bottom of the sidebar) are saved per browser:
 bullet threading on/off, and syntax colours while editing code blocks.
@@ -196,4 +228,5 @@ sync work, the API, and where future features would go.
 ## Not done yet
 
 Page rename, zooming into a block, editing inside linked references,
-unlinked references, queries, image uploads and full-text ranking.
+unlinked references, queries, image resizing, cleanup of unused images, and
+full-text ranking.

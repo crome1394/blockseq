@@ -1,0 +1,98 @@
+// Month calendar in the sidebar. Clicking a day opens (and if needed creates)
+// that day's journal page. Days that have journal entries get a dot.
+
+import { api } from './api.js';
+import { journalDay } from './dates.js';
+
+const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+export class Calendar {
+  constructor(container, onPick) {
+    this.container = container;
+    this.onPick = onPick;
+    const now = new Date();
+    this.year = now.getFullYear();
+    this.month = now.getMonth();
+    this.selected = null; // yyyymmdd of the journal being viewed
+    this.days = new Set(); // yyyymmdd of journals with content
+    this.render();
+    this.refresh();
+  }
+
+  // Reloads which days have journal entries.
+  async refresh() {
+    try {
+      const pages = await api.pages();
+      this.days = new Set(pages.filter((p) => p.journal_day && p.block_count > 0).map((p) => p.journal_day));
+      this.render();
+    } catch { /* offline: keep the old dots */ }
+  }
+
+  // Highlights the day being viewed and shows its month.
+  select(day) {
+    this.selected = day || null;
+    if (day) {
+      this.year = Math.floor(day / 10000);
+      this.month = Math.floor(day / 100) % 100 - 1;
+    }
+    this.render();
+  }
+
+  goToday() {
+    const now = new Date();
+    this.year = now.getFullYear();
+    this.month = now.getMonth();
+    this.render();
+  }
+
+  shift(months) {
+    const d = new Date(this.year, this.month + months, 1);
+    this.year = d.getFullYear();
+    this.month = d.getMonth();
+    this.render();
+  }
+
+  render() {
+    const today = journalDay(new Date());
+    const first = new Date(this.year, this.month, 1);
+    const daysInMonth = new Date(this.year, this.month + 1, 0).getDate();
+    const label = first.toLocaleDateString([], { month: 'long', year: 'numeric' });
+
+    const head = document.createElement('div');
+    head.className = 'cal-head';
+    const prev = button('cal-nav', '‹', 'Previous month', () => this.shift(-1));
+    const title = button('cal-title', label, 'Go to this month', () => this.goToday());
+    const next = button('cal-nav', '›', 'Next month', () => this.shift(1));
+    head.append(prev, title, next);
+
+    const grid = document.createElement('div');
+    grid.className = 'cal-grid';
+    for (const w of WEEKDAYS) {
+      const c = document.createElement('div');
+      c.className = 'cal-wd';
+      c.textContent = w;
+      grid.append(c);
+    }
+    for (let i = 0; i < first.getDay(); i++) grid.append(document.createElement('div'));
+    for (let d = 1; d <= daysInMonth; d++) {
+      const day = this.year * 10000 + (this.month + 1) * 100 + d;
+      const date = new Date(this.year, this.month, d);
+      const cell = button('cal-day', String(d), date.toDateString(), () => this.onPick(date));
+      if (day === today) cell.classList.add('today');
+      if (day === this.selected) cell.classList.add('selected');
+      if (this.days.has(day)) cell.classList.add('has-journal');
+      grid.append(cell);
+    }
+    this.container.replaceChildren(head, grid);
+  }
+}
+
+function button(cls, text, title, fn) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = cls;
+  b.textContent = text;
+  b.title = title;
+  b.addEventListener('click', fn);
+  return b;
+}

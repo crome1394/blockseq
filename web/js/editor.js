@@ -4,10 +4,14 @@
 // versioning (the server answers 409 if another device saved first).
 
 import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
-import { renderContent, parseOutline, esc, splitProps, joinProps } from './render.js';
+import { renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, findFences, isPureCode } from './render.js';
+import {
+  imageFiles, uploadImage, pickImages, imageAt, withAlign, withoutImage,
+  openLightbox, copyImage, downloadImage,
+} from './images.js';
 import { journalName } from './dates.js';
 import { toast, copyText, updateStatus, openModal } from './ui.js';
-import { decorateCode, highlightForEditor } from './code.js';
+import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
 import { getSetting } from './settings.js';
 
 export const editors = new Set();
@@ -145,10 +149,10 @@ export class PageEditor {
   // change anything; typing takes one at the start of each burst of keystrokes.
 
   snapshot() {
-    return {
-      blocks: this.flatten(),
-      focus: this.editing ? { id: this.editing.id, caret: this.ta?.selectionStart ?? 0 } : null,
-    };
+    let focus = null;
+    if (this.editing) focus = { id: this.editing.id, caret: this.ta?.selectionStart ?? 0 };
+    else if (this.codeEdit) focus = { id: this.codeEdit.node.id, code: this.codeEdit.idx, caret: this.codeEdit.ce.ta.selectionStart };
+    return { blocks: this.flatten(), focus };
   }
 
   checkpoint() {
@@ -181,7 +185,8 @@ export class PageEditor {
     this.markDirty();
     this.render();
     const n = snap.focus && this.findNode(snap.focus.id);
-    if (n) this.edit(n, snap.focus.caret);
+    if (n && snap.focus.code !== undefined) this.openCodeEditor(n, snap.focus.code, snap.focus.caret);
+    else if (n) this.edit(n, snap.focus.caret);
   }
 
   // ---- rendering ---------------------------------------------------------
@@ -191,6 +196,8 @@ export class PageEditor {
     this.editing = null;
     this.ta = null;
     this.mirror = null;
+    this.codeEdit?.ce.close();
+    this.codeEdit = null;
     const frag = document.createDocumentFragment();
     if (this.conflict) frag.append(this.renderConflict());
     this.appendNodes(frag, this.root.children);
@@ -238,6 +245,13 @@ export class PageEditor {
     content.innerHTML = renderContent(node.content);
     decorateCode(content);
     content.addEventListener('click', (e) => this.onContentClick(node, e));
+    content.addEventListener('dragover', (e) => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+    content.addEventListener('drop', (e) => {
+      const files = imageFiles(e.dataTransfer);
+      if (!files.length || this.editing === node) return;
+      e.preventDefault();
+      this.insertImages(node, files, node.content.length);
+    });
     row.append(toggle, bullet, content);
     wrap.append(row);
     node.el = wrap;
@@ -296,7 +310,24 @@ export class PageEditor {
 
   onContentClick(node, e) {
     const t = e.target;
+    if (t.closest('.code-editor')) return; // the code editor handles its own clicks
     if (t.closest('a') || t.closest('.code-copy')) return; // links navigate (hash router / new tab)
+    const pre = t.closest('pre.code');
+    if (pre && this.editing !== node) {
+      this.openCodeEditor(node, Number(pre.dataset.fence), this.caretFromClick(node, pre, e));
+      return;
+    }
+    const imgMenu = t.closest('.img-menu');
+    if (imgMenu) {
+      e.stopPropagation();
+      this.showImageMenu(node, Number(imgMenu.closest('.img-wrap').dataset.index), e);
+      return;
+    }
+    const img = t.closest('.img-box img');
+    if (img) {
+      openLightbox(img.src, img.alt);
+      return;
+    }
     if (t.classList.contains('todo')) {
       e.preventDefault();
       this.beginOp();
@@ -311,7 +342,16 @@ export class PageEditor {
     if (this.editing !== node) this.edit(node, 'end');
   }
 
-  edit(node, caret = 'end') {
+  edit(node, caret = 'end', opts = {}) {
+    this.closeCodeEditor();
+    const raw = opts.raw || this.rawId === node.id;
+    if (!raw && isPureCode(node.content)) {
+      if (this.editing) this.stopEdit();
+      const f = findFences(node.content)[0];
+      const c = caret === 'end' ? f.code.length : caret === 'start' ? 0 : caret - f.codeStart;
+      return this.openCodeEditor(node, 0, Math.max(0, Math.min(c, f.code.length)));
+    }
+    this.rawId = raw ? node.id : null;
     if (this.editing && this.editing !== node) this.stopEdit();
     if (!node.contentEl) return;
     lastEditor = this;
@@ -349,6 +389,12 @@ export class PageEditor {
     ta.addEventListener('input', (e) => this.onInput(node, ta, e));
     ta.addEventListener('keydown', (e) => this.onKey(node, ta, e));
     ta.addEventListener('paste', (e) => this.onPaste(node, ta, e));
+    ta.addEventListener('drop', (e) => {
+      const files = imageFiles(e.dataTransfer);
+      if (!files.length) return;
+      e.preventDefault();
+      this.insertImages(node, files);
+    });
     ta.addEventListener('blur', () => {
       if (this.rendering || this.editing !== node) return;
       // Clicking the autocomplete list must not end editing.
@@ -364,6 +410,7 @@ export class PageEditor {
     this.editing = null;
     this.ta = null;
     this.mirror = null;
+    this.rawId = null;
     this.burst = false;
     closeAutocomplete();
     node.el?.classList.remove('editing');
@@ -507,9 +554,92 @@ export class PageEditor {
     this.beginOp();
     const open = line.trimEnd();
     this.replaceText(node, ta, start, end, `${open}\n\n\`\`\``, open.length + 1);
-    // Re-open the editor so it switches to code mode (monospace / live colours).
-    this.edit(node, start + open.length + 1);
+    const idx = findFences(node.content).findIndex((f) => f.start === start);
+    this.openCodeEditor(node, Math.max(0, idx), 0);
     return true;
+  }
+
+  // ---- code editor ---------------------------------------------------------
+
+  // Opens the code editor on the idx-th code fence of a block.
+  openCodeEditor(node, idx, caret = 0) {
+    if (this.editing) this.stopEdit();
+    this.closeCodeEditor();
+    if (!node.contentEl) return;
+    const f = findFences(node.content)[idx];
+    const pre = node.contentEl.querySelector(`pre.code[data-fence="${idx}"]`);
+    if (!f || !pre) return;
+    lastEditor = this;
+    this.burst = false;
+    const ce = new CodeEditor({
+      code: f.code,
+      lang: f.lang,
+      live: getSetting('liveCode'),
+      onChange: (code) => this.codeChanged(node, idx, code),
+      onLang: (lang) => this.codeLang(node, idx, lang),
+      onExit: () => this.closeCodeEditor(),
+      onNavigate: (dir) => {
+        const vis = this.visible();
+        const target = vis[vis.indexOf(node) + dir];
+        if (!target) return;
+        this.closeCodeEditor();
+        this.edit(target, dir < 0 ? 'end' : 'start');
+      },
+      onUndo: () => this.undo(),
+      onRedo: () => this.redo(),
+      onRaw: () => {
+        this.closeCodeEditor();
+        this.edit(node, 'end', { raw: true });
+      },
+    });
+    pre.replaceWith(ce.el);
+    node.el.classList.add('editing');
+    this.codeEdit = { node, idx, ce };
+    ce.focus(caret);
+    this.updateThread();
+  }
+
+  closeCodeEditor() {
+    const c = this.codeEdit;
+    if (!c) return;
+    this.codeEdit = null;
+    c.ce.close();
+    this.burst = false;
+    c.node.el?.classList.remove('editing');
+    this.rerenderContent(c.node);
+    this.updateThread();
+    if (this.pendingReload && !this.dirty) this.reload();
+  }
+
+  codeChanged(node, idx, code) {
+    if (!this.burst) {
+      this.checkpoint();
+      this.burst = true;
+    }
+    clearTimeout(this.burstTimer);
+    this.burstTimer = setTimeout(() => { this.burst = false; }, 1000);
+    const f = findFences(node.content)[idx];
+    if (f) this.setContent(node, node.content.slice(0, f.codeStart) + code + node.content.slice(f.codeEnd));
+  }
+
+  codeLang(node, idx, lang) {
+    this.beginOp();
+    const f = findFences(node.content)[idx];
+    if (f) this.setContent(node, node.content.slice(0, f.langStart) + lang + node.content.slice(f.langEnd));
+  }
+
+  // Maps a click on a rendered code block to a cursor position in its code
+  // (end of the clicked line).
+  caretFromClick(node, pre, e) {
+    const f = findFences(node.content)[Number(pre.dataset.fence)];
+    if (!f) return 0;
+    const body = pre.querySelector('.code-body') || pre;
+    const style = getComputedStyle(body);
+    const lh = parseFloat(style.lineHeight) || 21;
+    const line = Math.floor((e.clientY - body.getBoundingClientRect().top - (parseFloat(style.paddingTop) || 0)) / lh);
+    const lines = f.code.split('\n');
+    const l = Math.max(0, Math.min(line, lines.length - 1));
+    return lines.slice(0, l + 1).join('\n').length;
   }
 
   // Tab / Shift+Tab inside a code fence indents the current line.
@@ -739,7 +869,7 @@ export class PageEditor {
   updateThread() {
     this.container.querySelectorAll('.thread-line').forEach((e) => e.remove());
     this.container.querySelectorAll('.bullet.thread').forEach((e) => e.classList.remove('thread'));
-    const node = this.editing;
+    const node = this.editing || this.codeEdit?.node;
     if (!node || !node.el || !getSetting('threading')) return;
     const bulletOf = (n) => n.el?.querySelector(':scope > .block-row > .bullet');
     bulletOf(node)?.classList.add('thread');
@@ -779,6 +909,12 @@ export class PageEditor {
   }
 
   onPaste(node, ta, e) {
+    const files = imageFiles(e.clipboardData);
+    if (files.length) {
+      e.preventDefault();
+      this.insertImages(node, files);
+      return;
+    }
     const text = e.clipboardData?.getData('text/plain');
     if (!text || !text.includes('\n') || inFence(ta.value, ta.selectionStart)) return;
     const existing = new Set(this.flatten().map((b) => b.id));
@@ -811,6 +947,64 @@ export class PageEditor {
     });
     while (lastNode.children.length && !lastNode.collapsed) lastNode = lastNode.children[lastNode.children.length - 1];
     this.refresh(lastNode, 'end');
+  }
+
+  // Uploads images and inserts their Markdown at `at` (default: the cursor,
+  // or the end of the block when it isn't being edited).
+  async insertImages(node, files, at) {
+    const editingNow = () => this.editing === node && this.ta;
+    let start = at ?? (editingNow() ? this.ta.selectionStart : node.content.length);
+    let end = at ?? (editingNow() ? this.ta.selectionEnd : node.content.length);
+    toast(files.length > 1 ? `Uploading ${files.length} images…` : 'Uploading image…');
+    const parts = [];
+    for (const f of files) {
+      try { parts.push(await uploadImage(f)); } catch (err) { toast(`Upload failed: ${err.message}`); }
+    }
+    if (!parts.length || this.disposed) return;
+    this.beginOp();
+    const v = node.content;
+    start = Math.min(start, v.length);
+    end = Math.min(Math.max(end, start), v.length);
+    // Put an image on its own line unless the block is empty, dropping any
+    // spaces left at the end of the line before it.
+    while (start > 0 && (v[start - 1] === ' ' || v[start - 1] === '\t')) start--;
+    const sep = start > 0 && v[start - 1] !== '\n' ? '\n' : '';
+    const md = sep + parts.join('\n');
+    if (editingNow()) {
+      this.replaceText(node, this.ta, start, end, md);
+    } else {
+      this.setContent(node, v.slice(0, start) + md + v.slice(end));
+      this.rerenderContent(node);
+    }
+    toast(parts.length > 1 ? 'Images added' : 'Image added');
+  }
+
+  showImageMenu(node, index, e) {
+    lastEditor = this;
+    const info = imageAt(node.content, index);
+    if (!info) return;
+    const align = imageAlign(info.meta);
+    const alignItem = (a, label) => ({
+      label: `${label}${align === a ? '  ✓' : ''}`,
+      fn: () => this.changeText(node, withAlign(node.content, index, a)),
+    });
+    showMenu(e.clientX, e.clientY, [
+      alignItem('left', 'Align left'),
+      alignItem('center', 'Align center'),
+      alignItem('right', 'Align right'),
+      '-',
+      { label: 'Copy image', fn: () => copyImage(info.url) },
+      { label: 'Open in new tab', fn: () => window.open(info.url, '_blank', 'noopener') },
+      { label: 'Download', fn: () => downloadImage(info.url) },
+      '-',
+      { label: 'Delete image', danger: true, fn: () => this.changeText(node, withoutImage(node.content, index)) },
+    ]);
+  }
+
+  // A text change made from a menu: undoable, cursor kept if editing.
+  changeText(node, value) {
+    this.beginOp();
+    this.applyValue(node, value);
   }
 
   showBlockMenu(node, e) {
@@ -918,7 +1112,7 @@ export class PageEditor {
     if (this.disposed) return;
     if (version !== undefined && version <= this.version) return;
     if (this.dirty || this.saving) return; // the next save reports the conflict
-    if (this.editing) { this.pendingReload = true; return; }
+    if (this.editing || this.codeEdit) { this.pendingReload = true; return; }
     this.reload();
   }
 
@@ -926,13 +1120,14 @@ export class PageEditor {
     this.pendingReload = false;
     try {
       const data = await api.page(this.name);
-      if (this.dirty || this.editing) return;
+      if (this.dirty || this.editing || this.codeEdit) return;
       this.load(data);
     } catch { /* offline; try again on the next event */ }
   }
 
   dispose() {
     this.disposed = true;
+    this.closeCodeEditor();
     this.stopEdit();
     if (this.dirty) this.save(); else editors.delete(this);
   }
@@ -1021,6 +1216,7 @@ const SLASH_COMMANDS = [
   { id: 'h2', label: 'Heading 2', hint: '##' },
   { id: 'h3', label: 'Heading 3', hint: '###' },
   { id: 'quote', label: 'Quote', hint: '>' },
+  { id: 'image', label: 'Upload image', hint: 'png, jpg, gif, webp' },
   { id: 'today', label: 'Today', hint: "today's journal" },
   { id: 'tomorrow', label: 'Tomorrow' },
   { id: 'yesterday', label: 'Yesterday' },
@@ -1045,7 +1241,9 @@ function runSlash(editor, node, ta, cmd, at) {
       return updateAutocomplete(editor, node, ta);
     case 'code': {
       const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
-      return editor.replaceText(node, ta, at, at, `${lead}\`\`\`\n\`\`\``, lead.length + 3);
+      editor.replaceText(node, ta, at, at, `${lead}\`\`\`\n\n\`\`\``, lead.length + 4);
+      const idx = findFences(node.content).findIndex((f) => f.start === at + lead.length);
+      return editor.openCodeEditor(node, Math.max(0, idx), 0);
     }
     case 'table': {
       const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
@@ -1060,6 +1258,8 @@ function runSlash(editor, node, ta, cmd, at) {
       const { start } = lineAt(ta.value, at);
       return editor.replaceText(node, ta, start, start, '> ', ta.selectionStart - start + 2);
     }
+    case 'image':
+      return pickImages().then((files) => { if (files.length) editor.insertImages(node, files, at); });
     case 'today': return editor.replaceText(node, ta, at, at, day(0));
     case 'tomorrow': return editor.replaceText(node, ta, at, at, day(1));
     case 'yesterday': return editor.replaceText(node, ta, at, at, day(-1));

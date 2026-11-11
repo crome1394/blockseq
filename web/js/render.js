@@ -8,9 +8,26 @@ function safeUrl(url) {
   return /^(https?:|mailto:|\/|#|\.)/i.test(url) ? url : '#';
 }
 
+// Images are stored Logseq-style as ../assets/<name>; the server serves them
+// at /assets/<name>.
+export function assetUrl(url) {
+  return url.startsWith('../assets/') ? '/assets/' + url.slice('../assets/'.length) : safeUrl(url);
+}
+
+// ![alt](url){:align "center"} — the {...} part is Logseq's image metadata.
+export const IMAGE_SRC = '!\\[([^\\]\\n]*)\\]\\(([^)\\s]+)\\)(?:\\{([^}\\n]*)\\})?';
+
+export function imageAlign(meta) {
+  return /:align\s+"?(center|right|left)"?/.exec(meta || '')?.[1] || 'left';
+}
+
+// Counts images while rendering one block, so each image knows its position
+// (the image menu uses it to find the image in the block text).
+let imageIndex = 0;
+
 const INLINE = [
   '`(?<code>[^`\\n]+)`',
-  '!\\[(?<imgAlt>[^\\]]*)\\]\\((?<imgUrl>[^)\\s]+)\\)',
+  '!\\[(?<imgAlt>[^\\]\\n]*)\\]\\((?<imgUrl>[^)\\s]+)\\)(?:\\{(?<imgMeta>[^}\\n]*)\\})?',
   '\\[(?<linkText>[^\\]]+)\\]\\((?<linkUrl>[^)\\s]+)\\)',
   '#\\[\\[(?<tagb>[^\\]\\n]+)\\]\\]',
   '\\[\\[(?<page>[^\\]\\n]+)\\]\\]',
@@ -39,7 +56,12 @@ export function inline(text) {
     out += esc(text.slice(last, m.index));
     const g = m.groups;
     if (g.code !== undefined) out += `<code>${esc(g.code)}</code>`;
-    else if (g.imgUrl !== undefined) out += `<img src="${esc(safeUrl(g.imgUrl))}" alt="${esc(g.imgAlt)}" loading="lazy">`;
+    else if (g.imgUrl !== undefined) {
+      const align = imageAlign(g.imgMeta);
+      out += `<span class="img-wrap align-${align}" data-index="${imageIndex++}"><span class="img-box">`
+        + `<img src="${esc(assetUrl(g.imgUrl))}" alt="${esc(g.imgAlt)}" loading="lazy">`
+        + '<button class="img-menu" type="button" title="Image options">⋮</button></span></span>';
+    }
     else if (g.linkUrl !== undefined) out += `<a class="ext" href="${esc(safeUrl(g.linkUrl))}" target="_blank" rel="noopener">${inline(g.linkText)}</a>`;
     else if (g.tagb !== undefined) out += pageLink(g.tagb, true);
     else if (g.page !== undefined) out += pageLink(g.page);
@@ -85,6 +107,41 @@ export function joinProps(content, props) {
   // A block that starts with code or a table keeps them intact: props go last.
   if (first.startsWith('```') || /^\s*\|/.test(first)) return [content, ...lines].join('\n');
   return [first, ...lines, ...rest].join('\n');
+}
+
+// A ``` code fence: group 1 is the language, group 2 the code.
+const FENCE_SRC = '^```([^\\n`]*)\\n([\\s\\S]*?)(?:\\n```[ \\t]*(?=\\n|(?![\\s\\S]))|(?![\\s\\S]))';
+
+// Finds the code fences in a block's raw text, in the same order the renderer
+// numbers them (data-fence). Positions are offsets into `text`.
+export function findFences(text) {
+  const offset = MARKER.exec(text)?.[0].length || 0;
+  const body = text.slice(offset);
+  const re = new RegExp(FENCE_SRC, 'gm');
+  const out = [];
+  let m;
+  while ((m = re.exec(body))) {
+    const start = offset + m.index;
+    const langStart = start + 3;
+    const codeStart = langStart + m[1].length + 1;
+    out.push({
+      start,
+      end: start + m[0].length,
+      lang: m[1].trim(),
+      langStart,
+      langEnd: langStart + m[1].length,
+      code: m[2],
+      codeStart,
+      codeEnd: codeStart + m[2].length,
+    });
+  }
+  return out;
+}
+
+// True when the block is nothing but one code fence.
+export function isPureCode(text) {
+  const f = findFences(text);
+  return f.length === 1 && f[0].start === 0 && text.slice(f[0].end).trim() === '';
 }
 
 const isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l);
@@ -159,6 +216,7 @@ function pullTrailingTags(src) {
 // (used for block refs shown inside other text).
 export function renderContent(src, opts = {}) {
   if (!src.trim()) return '<span class="empty"></span>';
+  imageIndex = 0;
   let prefix = '';
   let cls = '';
   const marker = MARKER.exec(src);
@@ -172,14 +230,15 @@ export function renderContent(src, opts = {}) {
   let tags = [];
   if (!opts.inlineTags) ({ src, tags } = pullTrailingTags(src));
   let html = '';
-  const fence = /^```([^\n`]*)\n([\s\S]*?)(?:\n```[ \t]*(?=\n|(?![\s\S]))|(?![\s\S]))/gm;
+  const fence = new RegExp(FENCE_SRC, 'gm');
+  let fenceIndex = 0;
   let last = 0;
   let m;
   while ((m = fence.exec(src))) {
     const before = src.slice(last, m.index).replace(/\n$/, '');
     if (before || (last === 0 && prefix)) html += renderLines(before, last === 0 ? prefix : '');
     const lang = m[1].trim();
-    html += `<pre class="code"${lang ? ` data-lang="${esc(lang)}"` : ''}><code>${esc(m[2])}</code></pre>`;
+    html += `<pre class="code" data-fence="${fenceIndex++}"${lang ? ` data-lang="${esc(lang)}"` : ''}><code>${esc(m[2])}</code></pre>`;
     last = fence.lastIndex;
     if (src[last] === '\n') last++;
   }

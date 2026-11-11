@@ -42,6 +42,7 @@ export const api = {
   savePage: (name, baseVersion, blocks, opts) =>
     request('PUT', `/api/page?name=${enc(name)}`, { base_version: baseVersion, blocks }, opts),
   deletePage: (name) => request('DELETE', `/api/page?name=${enc(name)}`),
+  ensurePage: (name) => request('POST', `/api/page/ensure?name=${enc(name)}`),
   pages: () => getJson('/api/pages'),
   names: () => getJson('/api/names'),
   journals: (before, limit = 10) =>

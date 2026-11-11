@@ -2,10 +2,12 @@
 //!
 //! Configuration (environment variables):
 //!   BLOCKSEQ_ADDR      listen address            (default 0.0.0.0:3030)
-//!   BLOCKSEQ_DATA      data directory            (default ./data)
+//!   BLOCKSEQ_DATA      data directory            (default ./data); holds the
+//!                      database, Markdown mirror and uploaded images (assets/)
 //!   BLOCKSEQ_PASSWORD  require this password via HTTP basic auth (optional)
 
 mod api;
+mod assets;
 mod db;
 mod md;
 
@@ -18,7 +20,7 @@ use axum::extract::{Request, State};
 use axum::http::{StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use base64::Engine;
 use rusqlite::Connection;
 use tokio::sync::broadcast;
@@ -186,15 +188,18 @@ async fn main() -> Result<()> {
             "/page",
             get(api::get_page).put(api::put_page).delete(api::delete_page),
         )
+        .route("/page/ensure", post(api::ensure_page))
         .route("/pages", get(api::list_pages))
         .route("/names", get(api::names))
         .route("/journals", get(api::journals))
         .route("/search", get(api::search))
         .route("/block", get(api::get_block))
+        .route("/assets", post(api::upload_asset))
         .route("/events", get(api::events));
 
     let app = Router::new()
         .nest("/api", api)
+        .route("/assets/{name}", get(api::get_asset))
         .fallback(static_file)
         .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), require_password))

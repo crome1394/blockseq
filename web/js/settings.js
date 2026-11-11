@@ -3,7 +3,7 @@
 const KEY = 'blockseq.settings';
 const DEFAULTS = {
   threading: true, // highlight the path from the edited block up to its parents
-  liveCode: false, // syntax colours while editing code blocks
+  liveCode: true, // syntax colours while editing code blocks
 };
 
 const listeners = new Set();

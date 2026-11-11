@@ -339,3 +339,203 @@ export function highlightForEditor(text) {
   // A trailing newline needs a character after it to take up a line.
   return text.endsWith('\n') ? out + ' ' : out;
 }
+
+// ---- the in-block code editor ------------------------------------------------
+
+// Languages offered in the editor's dropdown: [value written after ```, label].
+export const LANG_CHOICES = [
+  ['', 'Plain text'], ['bash', 'Shell'], ['python', 'Python'], ['javascript', 'JavaScript'],
+  ['typescript', 'TypeScript'], ['rust', 'Rust'], ['go', 'Go'], ['c', 'C'], ['cpp', 'C++'],
+  ['csharp', 'C#'], ['java', 'Java'], ['json', 'JSON'], ['yaml', 'YAML'], ['toml', 'TOML'],
+  ['ini', 'INI / Config'], ['sql', 'SQL'], ['html', 'HTML'], ['xml', 'XML'], ['css', 'CSS'],
+  ['dockerfile', 'Dockerfile'], ['diff', 'Diff'], ['markdown', 'Markdown'],
+];
+
+const INDENT = '  ';
+
+// A small code editor: line numbers, current-line highlight, syntax colours
+// (a transparent textarea over a highlighted copy), language picker and copy.
+// It edits only the code inside one fence; the owner applies the changes.
+export class CodeEditor {
+  // opts: { code, lang, live, onChange(code), onLang(lang), onExit(),
+  //         onNavigate(dir), onUndo(), onRedo(), onRaw() }
+  constructor(opts) {
+    this.o = opts;
+    this.lang = opts.lang || '';
+    const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
+
+    this.el = el('div', 'code-editor' + (opts.live ? ' live' : ''));
+    this.gutter = el('div', 'ce-gutter');
+    const main = el('div', 'ce-main');
+    this.band = el('div', 'ce-line');
+    this.mirror = el('pre', 'ce-mirror');
+    this.mirror.setAttribute('aria-hidden', 'true');
+    this.ta = el('textarea', 'ce-input');
+    this.ta.spellcheck = false;
+    this.ta.wrap = 'off';
+    this.ta.setAttribute('autocapitalize', 'off');
+    this.ta.setAttribute('autocomplete', 'off');
+    this.ta.value = opts.code;
+    main.append(this.band, this.mirror, this.ta);
+
+    const bar = el('div', 'ce-toolbar');
+    this.select = el('select', 'ce-lang');
+    this.select.title = 'Language';
+    const known = LANG_CHOICES.some(([v]) => v === this.lang);
+    for (const [value, label] of known ? LANG_CHOICES : [[this.lang, this.lang], ...LANG_CHOICES]) {
+      const opt = el('option');
+      opt.value = value;
+      opt.textContent = label;
+      this.select.append(opt);
+    }
+    this.select.value = this.lang;
+    const copy = el('button', 'code-copy');
+    copy.type = 'button';
+    copy.textContent = 'Copy';
+    const raw = el('button', 'ce-raw');
+    raw.type = 'button';
+    raw.textContent = 'Edit as text';
+    raw.title = 'Edit the whole block as plain text';
+    bar.append(this.select, copy, raw);
+    this.el.append(this.gutter, main, bar);
+
+    this.ta.addEventListener('input', () => this.changed());
+    this.ta.addEventListener('keydown', (e) => this.onKey(e));
+    for (const ev of ['keyup', 'click', 'select', 'focus']) this.ta.addEventListener(ev, () => this.updateLine());
+    this.ta.addEventListener('scroll', () => { this.mirror.scrollLeft = this.ta.scrollLeft; });
+    this.select.addEventListener('change', () => {
+      this.lang = this.select.value;
+      this.o.onLang(this.lang);
+      this.refresh();
+      this.ta.focus();
+    });
+    copy.addEventListener('click', () => {
+      copyText(this.ta.value);
+      copy.textContent = 'Copied';
+      setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
+      this.ta.focus();
+    });
+    raw.addEventListener('mousedown', (e) => e.preventDefault());
+    raw.addEventListener('click', () => this.o.onRaw());
+    // Leaving the editor (focus moves outside it) closes it.
+    this.el.addEventListener('focusout', () => {
+      setTimeout(() => { if (!this.closed && !this.el.contains(document.activeElement)) this.o.onExit(); }, 0);
+    });
+    this.refresh();
+  }
+
+  focus(caret = 0) {
+    this.ta.focus({ preventScroll: true });
+    const pos = Math.max(0, Math.min(caret, this.ta.value.length));
+    this.ta.setSelectionRange(pos, pos);
+    this.el.scrollIntoView({ block: 'nearest' });
+    this.updateLine();
+  }
+
+  close() { this.closed = true; }
+
+  changed() {
+    this.refresh();
+    this.o.onChange(this.ta.value);
+  }
+
+  refresh() {
+    const v = this.ta.value;
+    if (this.o.live) this.mirror.innerHTML = highlight(v, this.lang) + (v.endsWith('\n') || !v ? ' ' : '');
+    const lines = v.split('\n').length;
+    if (this.gutter.childElementCount !== lines) {
+      this.gutter.replaceChildren(...Array.from({ length: lines }, (_, i) => {
+        const n = document.createElement('div');
+        n.textContent = String(i + 1);
+        return n;
+      }));
+    }
+    this.ta.style.height = 'auto';
+    this.ta.style.height = this.ta.scrollHeight + 'px';
+    this.updateLine();
+  }
+
+  currentLine() {
+    return this.ta.value.slice(0, this.ta.selectionStart).split('\n').length - 1;
+  }
+
+  updateLine() {
+    const line = this.currentLine();
+    const lh = parseFloat(getComputedStyle(this.ta).lineHeight) || 21;
+    const pad = parseFloat(getComputedStyle(this.ta).paddingTop) || 0;
+    this.band.style.top = `${pad + line * lh}px`;
+    this.band.style.height = `${lh}px`;
+    [...this.gutter.children].forEach((n, i) => n.classList.toggle('current', i === line));
+  }
+
+  // Replaces [start, end) and puts the cursor at `caret`.
+  splice(start, end, text, caret = start + text.length, caretEnd = caret) {
+    const v = this.ta.value;
+    this.ta.value = v.slice(0, start) + text + v.slice(end);
+    this.ta.setSelectionRange(caret, caretEnd);
+    this.changed();
+  }
+
+  onKey(e) {
+    const ta = this.ta;
+    const v = ta.value;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const mod = e.ctrlKey || e.metaKey;
+    const plain = !mod && !e.altKey && !e.shiftKey;
+    if (e.isComposing) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      this.o.onExit();
+    } else if (mod && !e.altKey && ['z', 'Z', 'y'].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === 'y' || e.shiftKey) this.o.onRedo(); else this.o.onUndo();
+    } else if (e.key === 'Enter' && plain) {
+      // New line keeps the current line's indentation.
+      e.preventDefault();
+      const lineStart = v.lastIndexOf('\n', start - 1) + 1;
+      const indent = /^[ \t]*/.exec(v.slice(lineStart))[0];
+      this.splice(start, end, '\n' + indent);
+    } else if (e.key === 'Tab' && !mod && !e.altKey) {
+      e.preventDefault();
+      this.indent(e.shiftKey);
+    } else if (e.key === 'ArrowUp' && plain && start === end && !v.slice(0, start).includes('\n')) {
+      e.preventDefault();
+      this.o.onNavigate(-1);
+    } else if (e.key === 'ArrowDown' && plain && start === end && !v.slice(end).includes('\n')) {
+      e.preventDefault();
+      this.o.onNavigate(1);
+    }
+  }
+
+  // Tab indents (Shift+Tab outdents) the current line, or every selected line.
+  indent(out) {
+    const ta = this.ta;
+    const v = ta.value;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    if (!out && start === end) return this.splice(start, end, INDENT);
+    const first = v.lastIndexOf('\n', start - 1) + 1;
+    const lastEnd = v.indexOf('\n', end > start && v[end - 1] === '\n' ? end - 1 : end);
+    const stop = lastEnd === -1 ? v.length : lastEnd;
+    const lines = v.slice(first, stop).split('\n');
+    let delta0 = 0;
+    let total = 0;
+    const changed = lines.map((l, i) => {
+      if (out) {
+        const n = /^( {1,2}|\t)/.exec(l)?.[0].length || 0;
+        if (i === 0) delta0 = -n;
+        total -= n;
+        return l.slice(n);
+      }
+      if (i === 0) delta0 = INDENT.length;
+      total += INDENT.length;
+      return INDENT + l;
+    });
+    const text = changed.join('\n');
+    const newStart = Math.max(first, start + delta0);
+    const newEnd = start === end ? newStart : end + total;
+    this.splice(first, stop, text, newStart, newEnd);
+  }
+}

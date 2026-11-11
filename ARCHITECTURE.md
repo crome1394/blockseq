@@ -26,6 +26,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream |
 | `src/db.rs` | Schema, all SQL, save transaction with version check, search, backlinks |
 | `src/md.rs` | Journal name parsing, link/tag extraction, Logseq Markdown export |
+| `src/assets.rs` | Image uploads: type detection from file bytes, safe names, saving |
 | `web/index.html`, `web/app.css` | Page shell and styles (light/dark via `prefers-color-scheme`) |
 | `web/js/app.js` | Hash router, views (journals, page, all pages), search box, live updates, unload handling |
 | `web/js/editor.js` | `PageEditor` outliner, `[[`/`((` autocomplete, block-ref loading, popup menu |
@@ -35,6 +36,8 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/dates.js` | Journal page names (`Nov 11th, 2026`) and day numbers |
 | `web/js/code.js` | Built-in syntax highlighter, code block decoration (line numbers, copy), live-edit backdrop |
 | `web/js/settings.js` | Per-browser preferences (localStorage) and the settings form |
+| `web/js/images.js` | Image upload, preview (lightbox), copy/download, editing one image's Markdown |
+| `web/js/calendar.js` | Sidebar month calendar for opening/creating journal days |
 | `deploy/` | systemd unit and install/upgrade script |
 
 ## Data model
@@ -168,6 +171,9 @@ CRDTs (conflict-free merge structures):
   | `GET /api/page?name=` | `get_page` | page meta (or null), blocks, backlinks |
   | `PUT /api/page?name=` | `put_page` | save; 200 or 409 |
   | `DELETE /api/page?name=` | `delete_page` | 204 / 404 |
+  | `POST /api/page/ensure?name=` | `ensure_page` | create an empty page if missing (calendar) |
+  | `POST /api/assets` | `upload_asset` | raw image bytes; `X-Filename` optional; returns `../assets/<name>` |
+  | `GET /assets/<name>` | `get_asset` | uploaded image, cached forever, `nosniff` + `default-src 'none'` |
   | `GET /api/pages` | `list_pages` | name, journal day, updated, block count |
   | `GET /api/names` | `names` | page names plus linked-only names |
   | `GET /api/journals?before=&limit=` | `journals` | newest first, with blocks |
@@ -226,11 +232,34 @@ CRDTs (conflict-free merge structures):
   monospace textarea. With the *live* setting on, the textarea's text is
   transparent over a `<pre>` backdrop showing the same text highlighted. Both
   share identical font, padding and wrapping rules, so the caret lines up.
+- **Code editor** (`CodeEditor` in `code.js`): clicking a rendered code
+  block, or creating one, replaces that `<pre>` with an editor for **only the
+  code inside that fence**. It has a line-number gutter, a current-line band,
+  a highlighted backdrop under a transparent no-wrap textarea, a language
+  `<select>`, Copy and "Edit as text". `render.findFences()` finds fences in
+  the raw text in the same order the renderer numbers them (`data-fence`), so
+  `PageEditor.codeChanged()` can splice the new code (or language) back into
+  the block text. A block that is only a code fence (`isPureCode`) always
+  opens in the code editor. "Edit as text" sets `rawId` to use the plain
+  textarea instead. Undo snapshots record which fence was open and the
+  cursor, so undo/redo reopen the code editor in place.
 - **Bullet threading** (`updateThread`): on every edit, for each ancestor link
   an absolutely positioned `.thread-line` is added to the parent's
   `.children` box. It runs from the top of the box down to the child's bullet,
   with a rounded corner. It is recalculated on edit, stop-edit, resize and
   settings changes.
+- **Images**: pasting, dropping or `/image` uploads each file (`images.js`)
+  and inserts `![alt](../assets/<name>)` on its own line. The server picks the
+  extension from the file's magic bytes (PNG/JPEG/GIF/WebP/AVIF; SVG is refused
+  because it can carry scripts), never overwrites a file, and serves names that
+  pass a strict whitelist. Alignment is stored in Logseq's image-metadata
+  syntax: `{:align "center"}`. The renderer numbers images within a block
+  (`data-index`), and the ⋮ menu uses that number to find and rewrite the
+  right image in the block text. Removing an image from a block doesn't delete
+  the file, which keeps undo working.
+- **Calendar**: `calendar.js` marks days that have non-empty journal pages
+  (from `/api/pages`) and refreshes on change events. Picking a day calls
+  `/api/page/ensure` for that journal name, then navigates to it.
 - **Block links**: `#/page/<name>?b=<block id>` opens a page with that block
   revealed (parents expanded), scrolled into view and briefly highlighted.
   Block refs, search results and linked references all use it.
@@ -275,7 +304,8 @@ keeps your data and env file.
 | Zoom into a block | `PageEditor` option to render from a given node as root; a `#/block/<id>` route |
 | Editable linked references | Render backlink blocks with a `PageEditor` scoped to the source page's subtree |
 | Queries (`{{query}}`) | A server endpoint over `refs` + `blocks`; rendered in `render.js` |
-| Images/attachments | `POST /api/assets` writing into `BLOCKSEQ_DATA/assets/`; served statically |
+| Image resizing | Store `:width` in the existing `{...}` image metadata; drag handle in `.img-box` |
+| Unused-image cleanup | Scan block text for `../assets/` references; list or delete files nobody uses |
 | Better search | FTS5 virtual table kept in step with `blocks` inside `save_page` |
 | Version history | Before replacing blocks in `save_page`, copy the old page into a history table |
 | Schema changes | Check `PRAGMA user_version` in `db::open` and run step-by-step migrations |
