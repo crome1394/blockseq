@@ -4,6 +4,7 @@ const KEY = 'blockseq.settings';
 const DEFAULTS = {
   threading: true, // highlight the path from the edited block up to its parents
   liveCode: true, // syntax colours while editing code blocks
+  codeWrap: false, // wrap long lines in code blocks instead of scrolling sideways
 };
 
 const listeners = new Set();
@@ -35,6 +36,7 @@ export function onSettingChange(fn) {
 const OPTIONS = [
   ['threading', 'Bullet threading', 'Highlight the line from the block you are editing up through its parents.'],
   ['liveCode', 'Highlight code while editing', 'Show syntax colours while you type in a code block. When off, code is plain text until you click away.'],
+  ['codeWrap', 'Wrap long lines in code', 'Wrap long lines onto the next row. When off, long lines scroll sideways.'],
 ];
 
 export function settingsForm() {

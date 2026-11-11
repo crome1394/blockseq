@@ -575,6 +575,7 @@ export class PageEditor {
       code: f.code,
       lang: f.lang,
       live: getSetting('liveCode'),
+      wrap: getSetting('codeWrap'),
       onChange: (code) => this.codeChanged(node, idx, code),
       onLang: (lang) => this.codeLang(node, idx, lang),
       onExit: () => this.closeCodeEditor(),
@@ -633,10 +634,10 @@ export class PageEditor {
   caretFromClick(node, pre, e) {
     const f = findFences(node.content)[Number(pre.dataset.fence)];
     if (!f) return 0;
-    const body = pre.querySelector('.code-body') || pre;
-    const style = getComputedStyle(body);
-    const lh = parseFloat(style.lineHeight) || 21;
-    const line = Math.floor((e.clientY - body.getBoundingClientRect().top - (parseFloat(style.paddingTop) || 0)) / lh);
+    // Find the clicked line's row (rows can be taller when lines wrap).
+    const rows = [...pre.querySelectorAll('.lc')];
+    let line = rows.findIndex((r) => e.clientY < r.getBoundingClientRect().bottom);
+    if (line < 0) line = rows.length - 1;
     const lines = f.code.split('\n');
     const l = Math.max(0, Math.min(line, lines.length - 1));
     return lines.slice(0, l + 1).join('\n').length;

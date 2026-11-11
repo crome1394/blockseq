@@ -6,7 +6,7 @@ import { esc, renderContent } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, activeEditor } from './editor.js';
 import { toast, updateStatus, setConnected, openModal } from './ui.js';
 import { decorateCode } from './code.js';
-import { settingsForm, onSettingChange } from './settings.js';
+import { settingsForm, onSettingChange, getSetting } from './settings.js';
 import { Calendar } from './calendar.js';
 
 const main = document.getElementById('main');
@@ -367,7 +367,13 @@ document.getElementById('open-settings').addEventListener('click', () => {
 });
 
 // Redraw things that depend on settings or layout.
-onSettingChange(() => { for (const ed of editors) { ed.updateThread(); } });
+// Code wrapping is a page-wide class; rendered code blocks follow it in CSS.
+const applyCodeWrap = () => document.documentElement.classList.toggle('code-wrap', !!getSetting('codeWrap'));
+applyCodeWrap();
+onSettingChange(() => {
+  applyCodeWrap();
+  for (const ed of editors) { ed.updateThread(); }
+});
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);

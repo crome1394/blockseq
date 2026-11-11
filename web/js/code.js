@@ -244,8 +244,8 @@ for (const [name, def] of Object.entries(LANGS)) {
 
 export function highlight(code, lang) {
   const name = (lang || '').toLowerCase().trim();
-  if (!name || name === 'text' || name === 'plain' || name === 'txt') return esc(code);
-  const rules = BY_NAME.get(name) || BY_NAME.get('generic');
+  if (name === 'text' || name === 'plain' || name === 'txt') return esc(code);
+  const rules = BY_NAME.get(name || guessLang(code)) || BY_NAME.get('generic');
   let out = '';
   let plain = '';
   let i = 0;
@@ -265,21 +265,68 @@ export function highlight(code, lang) {
   return out + esc(plain);
 }
 
+// Guesses the language of code that has none written after ```.
+// Returns a highlighter name; 'generic' when nothing fits.
+export function guessLang(code) {
+  const t = code.trim();
+  if (!t) return 'generic';
+  if (/^[[{]/.test(t)) { try { JSON.parse(t); return 'json'; } catch { /* not JSON */ } }
+  if (/^#!.*\bpython/.test(t)) return 'python';
+  if (/^#!.*sh\b/.test(t)) return 'bash';
+  if (/^\s*FROM\s/m.test(t) && /^\s*(RUN|COPY|CMD|ENTRYPOINT)\s/m.test(t)) return 'dockerfile';
+  if (/^(diff --git|@@ .* @@)/m.test(t)) return 'diff';
+  if (/^\s*<(!doctype|html|[a-z][\w-]*[\s/>])/i.test(t)) return 'html';
+  if (/\b(fn\s+\w+\s*[(<]|let\s+mut\b|impl\b.*\{|use\s+\w+::)/.test(t)) return 'rust';
+  if (/^\s*(def\s+\w+\(|from\s+[\w.]+\s+import\b|class\s+\w+.*:\s*$)/m.test(t)) return 'python';
+  if (/^\s*package\s+\w+\s*$|\bfunc\s+\w+\(/m.test(t)) return 'go';
+  if (/^\s*#include\b/m.test(t)) return 'c';
+  if (/\b(function\s*\w*\(|const\s+\w+\s*=|console\.log)|=>/.test(t)) return 'javascript';
+  if (/^\s*(select|insert|update|delete|create\s+table|alter\s+table)\b/im.test(t)
+    && /\b(from|into|set|table|where)\b/i.test(t)) return 'sql';
+  const lines = t.split('\n').filter((l) => l.trim() && !/^\s*#/.test(l));
+  const share = (re) => lines.filter((l) => re.test(l)).length / Math.max(1, lines.length);
+  const SH = /^\s*(\$\s|sudo|cd|ls|mkdir|echo|export|apt(-get)?|pacman|yay|paru|dnf|yum|brew|flatpak|systemctl|journalctl|curl|wget|git|ssh|scp|rsync|docker|podman|kubectl|cat|cp|mv|rm|chmod|chown|ln|tar|source|make|cargo|npm|pip3?|python3?|openssl|ssh-keygen|if|for|while|fi|done|then)\b/;
+  if ((lines.length && SH.test(lines[0])) || share(SH) >= 0.3) return 'bash';
+  if (share(/^\s*\[[^\]]+\]\s*$|^\s*[\w.-]+\s*=/) >= 0.6) return 'ini';
+  if (share(/^\s*(- |[\w.-]+:(\s|$))/) >= 0.6) return 'yaml';
+  if (/^\s*[.#]?[\w-][^{]*\{[^}]*:[^}]*;/m.test(t)) return 'css';
+  return 'generic';
+}
+
+// Splits highlighted HTML into lines, closing and reopening a colour span
+// that crosses a line break (the highlighter never nests spans).
+export function htmlLines(html) {
+  const lines = [''];
+  let open = null;
+  for (const tok of html.split(/(<span class="[^"]*">|<\/span>|\n)/)) {
+    if (!tok) continue;
+    if (tok === '\n') {
+      if (open) lines[lines.length - 1] += '</span>';
+      lines.push(open || '');
+    } else {
+      if (tok.startsWith('<span')) open = tok;
+      else if (tok === '</span>') open = null;
+      lines[lines.length - 1] += tok;
+    }
+  }
+  return lines;
+}
+
 // Adds highlighting, line numbers and a copy button to rendered code blocks.
+// Each line is a row of a grid (number | code), so numbers stay next to their
+// line when long lines wrap.
 export function decorateCode(container) {
   container.querySelectorAll('pre.code:not(.decorated)').forEach((pre) => {
     pre.classList.add('decorated');
     const codeEl = pre.querySelector('code');
     const text = codeEl.textContent;
     const lang = pre.dataset.lang || '';
-    codeEl.innerHTML = highlight(text, lang);
 
-    const gutter = document.createElement('div');
-    gutter.className = 'gutter';
-    gutter.textContent = text.split('\n').map((_, i) => i + 1).join('\n');
     const body = document.createElement('div');
     body.className = 'code-body';
-    body.append(codeEl);
+    body.innerHTML = htmlLines(highlight(text, lang))
+      .map((l, i) => `<span class="ln">${i + 1}</span><span class="lc" data-line="${i}">${l}\n</span>`)
+      .join('');
 
     const head = document.createElement('div');
     head.className = 'code-head';
@@ -302,7 +349,7 @@ export function decorateCode(container) {
       setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
     });
     head.append(btn);
-    pre.replaceChildren(gutter, body, head);
+    pre.replaceChildren(body, head);
   });
 }
 
@@ -344,7 +391,7 @@ export function highlightForEditor(text) {
 
 // Languages offered in the editor's dropdown: [value written after ```, label].
 export const LANG_CHOICES = [
-  ['', 'Plain text'], ['bash', 'Shell'], ['python', 'Python'], ['javascript', 'JavaScript'],
+  ['', 'Auto-detect'], ['text', 'Plain text'], ['bash', 'Shell'], ['python', 'Python'], ['javascript', 'JavaScript'],
   ['typescript', 'TypeScript'], ['rust', 'Rust'], ['go', 'Go'], ['c', 'C'], ['cpp', 'C++'],
   ['csharp', 'C#'], ['java', 'Java'], ['json', 'JSON'], ['yaml', 'YAML'], ['toml', 'TOML'],
   ['ini', 'INI / Config'], ['sql', 'SQL'], ['html', 'HTML'], ['xml', 'XML'], ['css', 'CSS'],
@@ -353,30 +400,36 @@ export const LANG_CHOICES = [
 
 const INDENT = '  ';
 
-// A small code editor: line numbers, current-line highlight, syntax colours
-// (a transparent textarea over a highlighted copy), language picker and copy.
+// A small code editor: line numbers, current-line highlight, syntax colours,
+// language picker and copy. A highlighted copy of the code (the mirror, one
+// div per line) sets the editor's size; a transparent textarea is laid exactly
+// over it, so the size is right without measuring the textarea. Long lines
+// either scroll sideways (the whole editor scrolls) or wrap.
 // It edits only the code inside one fence; the owner applies the changes.
 export class CodeEditor {
-  // opts: { code, lang, live, onChange(code), onLang(lang), onExit(),
+  // opts: { code, lang, live, wrap, onChange(code), onLang(lang), onExit(),
   //         onNavigate(dir), onUndo(), onRedo(), onRaw() }
   constructor(opts) {
     this.o = opts;
     this.lang = opts.lang || '';
     const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 
-    this.el = el('div', 'code-editor' + (opts.live ? ' live' : ''));
+    this.el = el('div', 'code-editor' + (opts.live ? ' live' : '') + (opts.wrap ? ' wrap' : ''));
     this.gutter = el('div', 'ce-gutter');
     const main = el('div', 'ce-main');
+    this.main = main;
+    const inner = el('div', 'ce-inner');
     this.band = el('div', 'ce-line');
     this.mirror = el('pre', 'ce-mirror');
     this.mirror.setAttribute('aria-hidden', 'true');
     this.ta = el('textarea', 'ce-input');
     this.ta.spellcheck = false;
-    this.ta.wrap = 'off';
+    this.ta.wrap = opts.wrap ? 'soft' : 'off';
     this.ta.setAttribute('autocapitalize', 'off');
     this.ta.setAttribute('autocomplete', 'off');
     this.ta.value = opts.code;
-    main.append(this.band, this.mirror, this.ta);
+    inner.append(this.band, this.mirror, this.ta);
+    main.append(inner);
 
     const bar = el('div', 'ce-toolbar');
     this.select = el('select', 'ce-lang');
@@ -397,12 +450,19 @@ export class CodeEditor {
     raw.textContent = 'Edit as text';
     raw.title = 'Edit the whole block as plain text';
     bar.append(this.select, copy, raw);
-    this.el.append(this.gutter, main, bar);
+    this.el.append(bar, this.gutter, main);
 
     this.ta.addEventListener('input', () => this.changed());
     this.ta.addEventListener('keydown', (e) => this.onKey(e));
     for (const ev of ['keyup', 'click', 'select', 'focus']) this.ta.addEventListener(ev, () => this.updateLine());
-    this.ta.addEventListener('scroll', () => { this.mirror.scrollLeft = this.ta.scrollLeft; });
+    // The textarea is exactly as big as its text, so it should never scroll
+    // itself; the editor around it scrolls instead.
+    this.ta.addEventListener('scroll', () => { this.ta.scrollTop = 0; this.ta.scrollLeft = 0; });
+    // Wrapped line heights change with the editor's width.
+    if (opts.wrap && typeof ResizeObserver === 'function') {
+      this.resizer = new ResizeObserver(() => this.updateLine());
+      this.resizer.observe(main);
+    }
     this.select.addEventListener('change', () => {
       this.lang = this.select.value;
       this.o.onLang(this.lang);
@@ -432,7 +492,10 @@ export class CodeEditor {
     this.updateLine();
   }
 
-  close() { this.closed = true; }
+  close() {
+    this.closed = true;
+    this.resizer?.disconnect();
+  }
 
   changed() {
     this.refresh();
@@ -441,8 +504,11 @@ export class CodeEditor {
 
   refresh() {
     const v = this.ta.value;
-    if (this.o.live) this.mirror.innerHTML = highlight(v, this.lang) + (v.endsWith('\n') || !v ? ' ' : '');
-    const lines = v.split('\n').length;
+    // The mirror always holds the text (it sets the size); it is only
+    // visible when live colours are on.
+    const html = this.o.live ? highlight(v, this.lang) : esc(v);
+    this.mirror.innerHTML = htmlLines(html).map((l) => `<div>${l || ' '}</div>`).join('');
+    const lines = this.mirror.childElementCount;
     if (this.gutter.childElementCount !== lines) {
       this.gutter.replaceChildren(...Array.from({ length: lines }, (_, i) => {
         const n = document.createElement('div');
@@ -450,8 +516,6 @@ export class CodeEditor {
         return n;
       }));
     }
-    this.ta.style.height = 'auto';
-    this.ta.style.height = this.ta.scrollHeight + 'px';
     this.updateLine();
   }
 
@@ -461,11 +525,31 @@ export class CodeEditor {
 
   updateLine() {
     const line = this.currentLine();
-    const lh = parseFloat(getComputedStyle(this.ta).lineHeight) || 21;
-    const pad = parseFloat(getComputedStyle(this.ta).paddingTop) || 0;
-    this.band.style.top = `${pad + line * lh}px`;
-    this.band.style.height = `${lh}px`;
-    [...this.gutter.children].forEach((n, i) => n.classList.toggle('current', i === line));
+    const rows = this.mirror.children;
+    const row = rows[line];
+    if (!row || !row.offsetHeight) return; // not on the page yet
+    this.band.style.top = `${row.offsetTop}px`;
+    this.band.style.height = `${row.offsetHeight}px`;
+    [...this.gutter.children].forEach((n, i) => {
+      n.classList.toggle('current', i === line);
+      // A wrapped line is several rows tall; its number takes the same height.
+      if (this.o.wrap) n.style.height = `${rows[i]?.offsetHeight || 0}px`;
+    });
+    if (!this.o.wrap) this.followCaret(line);
+  }
+
+  // Scrolls the editor sideways so the cursor stays visible.
+  followCaret(line) {
+    const v = this.ta.value;
+    const lineStart = v.lastIndexOf('\n', this.ta.selectionStart - 1) + 1;
+    const before = v.slice(lineStart, this.ta.selectionStart).replace(/\t/g, '    ');
+    const style = getComputedStyle(this.ta);
+    this.ctx ??= document.createElement('canvas').getContext('2d');
+    this.ctx.font = `${style.fontSize} ${style.fontFamily}`;
+    const x = (parseFloat(style.paddingLeft) || 0) + this.ctx.measureText(before).width;
+    const m = this.main;
+    if (x > m.scrollLeft + m.clientWidth - 24) m.scrollLeft = x - m.clientWidth + 48;
+    else if (x < m.scrollLeft + 24) m.scrollLeft = Math.max(0, x - 48);
   }
 
   // Replaces [start, end) and puts the cursor at `caret`.

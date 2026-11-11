@@ -226,23 +226,34 @@ CRDTs (conflict-free merge structures):
 - **Code blocks** (`code.js`): each language is an ordered list of
   `[class, sticky regex]` rules tried at each position, and the first match
   wins. Words are consumed whole, so keywords never match inside identifiers.
-  `decorateCode` runs after rendering and adds the highlighted HTML, a
-  line-number gutter (a separate column, so highlighted spans never need to
-  be split by line) and the copy button. While editing, code blocks use a
+  Code with no language uses `guessLang()` (simple line-pattern heuristics,
+  falling back to the generic rules); `text`/`plain` turns colours off.
+  `decorateCode` runs after rendering: `htmlLines()` splits the highlighted
+  HTML into lines (closing and reopening a span that crosses a newline) and
+  each line becomes a grid row `number | code`, so numbers stay beside their
+  line when the *wrap* setting (`html.code-wrap`) wraps long lines. Without
+  wrap the grid scrolls sideways and the numbers are `position: sticky`. While editing, code blocks use a
   monospace textarea. With the *live* setting on, the textarea's text is
   transparent over a `<pre>` backdrop showing the same text highlighted. Both
   share identical font, padding and wrapping rules, so the caret lines up.
 - **Code editor** (`CodeEditor` in `code.js`): clicking a rendered code
   block, or creating one, replaces that `<pre>` with an editor for **only the
   code inside that fence**. It has a line-number gutter, a current-line band,
-  a highlighted backdrop under a transparent no-wrap textarea, a language
+  a highlighted mirror (one div per line) and a transparent textarea laid
+  exactly over it, and a language
   `<select>`, Copy and "Edit as text". `render.findFences()` finds fences in
   the raw text in the same order the renderer numbers them (`data-fence`), so
   `PageEditor.codeChanged()` can splice the new code (or language) back into
   the block text. A block that is only a code fence (`isPureCode`) always
   opens in the code editor. "Edit as text" sets `rawId` to use the plain
   textarea instead. Undo snapshots record which fence was open and the
-  cursor, so undo/redo reopen the code editor in place.
+  cursor, so undo/redo reopen the code editor in place. The mirror is in
+  normal flow and sets the editor's size (as wide as the longest line, or the
+  editor's width when wrapping); the textarea is absolutely positioned over
+  it and never scrolls itself. This avoids measuring the textarea, which
+  gives wrong results before the editor is on the page. Without wrap the
+  `.ce-main` box scrolls sideways and `followCaret()` keeps the cursor in
+  view; with wrap the gutter numbers copy each mirror line's height.
 - **Bullet threading** (`updateThread`): on every edit, for each ancestor link
   an absolutely positioned `.thread-line` is added to the parent's
   `.children` box. It runs from the top of the box down to the child's bullet,

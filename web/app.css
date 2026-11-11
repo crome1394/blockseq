@@ -322,24 +322,32 @@ textarea.editor {
 
 .rendered pre.code {
   position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
   padding: 0;
+  overflow: hidden;
   font-family: var(--mono);
   font-size: 13.5px;
   line-height: 1.6;
 }
-.rendered pre.code .gutter {
-  padding: 8px 10px 8px 12px;
+/* One grid row per line: number | code. */
+.rendered pre.code .code-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+.rendered pre.code .ln {
+  position: sticky;
+  left: 0;
+  padding: 0 10px 0 12px;
   text-align: right;
-  white-space: pre;
   color: var(--muted);
-  opacity: 0.6;
+  background: var(--code-bg);
   user-select: none;
   border-right: 1px solid var(--border);
 }
-.rendered pre.code .code-body { overflow-x: auto; padding: 8px 12px; }
-.rendered pre.code code { font-size: inherit; white-space: pre; display: block; }
+.rendered pre.code .lc { padding: 0 12px; white-space: pre; }
+html.code-wrap .rendered pre.code .code-body { grid-template-columns: auto minmax(0, 1fr); }
+html.code-wrap .rendered pre.code .lc { white-space: pre-wrap; overflow-wrap: anywhere; }
 .code-head {
   position: absolute;
   top: 4px;
@@ -381,6 +389,7 @@ pre.code:hover .code-copy, .code-copy:focus { opacity: 1; }
   position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
   margin: 4px 0;
   background: var(--code-bg);
   border-radius: 6px;
@@ -398,7 +407,11 @@ pre.code:hover .code-copy, .code-copy:focus { opacity: 1; }
 }
 .ce-gutter > div { opacity: 0.6; }
 .ce-gutter > div.current { opacity: 1; color: var(--text); }
-.ce-main { position: relative; min-width: 0; }
+/* The editor scrolls sideways as a whole; .ce-inner is as wide as the
+   longest line, and the textarea covers it exactly. */
+.ce-main { min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.ce-inner { position: relative; width: max-content; min-width: 100%; }
+.code-editor.wrap .ce-inner { width: 100%; }
 .ce-line { position: absolute; left: 0; right: 0; background: rgba(127, 127, 127, 0.16); pointer-events: none; }
 /* .code-editor prefix beats the general ".rendered pre" rules. */
 .code-editor .ce-mirror, .code-editor .ce-input {
@@ -409,35 +422,46 @@ pre.code:hover .code-copy, .code-copy:focus { opacity: 1; }
   letter-spacing: normal;
   tab-size: 4;
   white-space: pre;
+  box-sizing: border-box;
 }
-.code-editor .ce-mirror { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--text); background: none; border-radius: 0; display: none; }
-.code-editor.live .ce-mirror { display: block; }
+.code-editor.wrap .ce-mirror, .code-editor.wrap .ce-input { white-space: pre-wrap; overflow-wrap: anywhere; }
+.code-editor .ce-mirror {
+  position: relative;
+  overflow: visible;
+  pointer-events: none;
+  color: var(--text);
+  background: none;
+  border-radius: 0;
+  visibility: hidden;
+}
+.code-editor.live .ce-mirror { visibility: visible; }
 .ce-mirror * { font-weight: inherit !important; font-style: inherit !important; }
 .code-editor .ce-input {
-  position: relative;
-  display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
-  min-height: 37px;
+  height: 100%;
   border: none;
   outline: none;
   resize: none;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   background: transparent;
   color: var(--text);
   caret-color: var(--text);
 }
 .code-editor.live .ce-input { color: transparent; }
 .code-editor.live .ce-input::selection { background: rgba(100, 150, 255, 0.35); color: transparent; }
+/* Toolbar strip across the top, so it never covers the first line. */
 .ce-toolbar {
-  position: absolute;
-  top: 4px;
-  right: 6px;
-  z-index: 2;
+  grid-column: 1 / -1;
   display: flex;
+  justify-content: flex-end;
   gap: 6px;
   align-items: center;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
   font-family: system-ui, sans-serif;
+  line-height: normal;
 }
 .ce-toolbar select, .ce-toolbar button {
   font: 12px system-ui, sans-serif;

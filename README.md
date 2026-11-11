@@ -177,7 +177,9 @@ the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.d
 
 **Code blocks:** type ```` ``` ```` (optionally with a language, e.g. ```` ```bash ````) and
 press Tab or Enter, or use `/code`. The code editor opens with the cursor inside.
-Click any code block to edit it again. In the code editor:
+Click any code block to edit it again. Blocks with no language get a guessed
+one (shown as "Auto-detect" in the language picker); pick "Plain text" for no
+colours. In the code editor:
 
 | Key | Action |
 |-----|--------|
@@ -211,7 +213,8 @@ Click a day to open its journal; if none exists, it's created. ‹ › change mo
 and clicking the month name returns to today. Hidden on narrow (phone) screens.
 
 **Settings** (bottom of the sidebar) are saved per browser:
-bullet threading on/off, and syntax colours while editing code blocks.
+bullet threading on/off, syntax colours while editing code blocks, and
+wrapping long code lines (otherwise they scroll sideways).
 
 Code highlighting is built in, with no third-party library. It covers bash/shell,
 ini/conf/toml/systemd, YAML, JSON, Python, JavaScript/TypeScript, Rust, Go,
