@@ -22,6 +22,9 @@
   </button>
   <aside id="sidebar">
     <a class="brand" href="#/journals">Blockseq</a>
+    <button id="workbook-switch" class="workbook-switch" type="button" title="Switch workbook">
+      <span class="wb-label">Workbook</span><span class="wb-name">Main</span><span class="wb-caret">▾</span>
+    </button>
     <div class="search-wrap">
       <input id="search" type="search" placeholder="Search  (Ctrl+K)" autocomplete="off" spellcheck="false">
       <div id="search-results" class="popup hidden"></div>
@@ -29,8 +32,9 @@
     <nav>
       <a href="#/journals" data-nav="journals">Journals</a>
       <a href="#/all" data-nav="all">All pages</a>
-      <button id="new-journal" class="nav-action" type="button">+ New journal</button>
-      <button id="open-journal" class="nav-action" type="button">Open journal…</button>
+      <a href="#/assets" data-nav="assets">Assets</a>
+      <button id="new-workbook" class="nav-action" type="button">+ New workbook</button>
+      <button id="open-workbook" class="nav-action" type="button">Open workbook…</button>
     </nav>
     <section id="favorites" class="favorites hidden">
       <div class="side-heading">Favorites</div>
@@ -41,6 +45,21 @@
     <div id="status" class="status ok">Saved</div>
   </aside>
   <main id="main"></main>
+  <div id="topbar" class="topbar">
+    <button id="tasks-toggle" type="button" title="Tasks (t)" aria-label="Tasks">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6.5l1.5 1.5L8.5 5M11 6.5h9M4 12.5l1.5 1.5 3-3M11 12.5h9M4 18.5h4.5M11 18.5h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="help-toggle" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+  </div>
+  <aside id="pane" class="pane hidden" aria-label="Side pane">
+    <div class="pane-grip" title="Drag to resize"></div>
+    <div class="pane-head">
+      <span class="pane-title"></span>
+      <span class="pane-actions"></span>
+      <button class="pane-close" type="button" title="Close (Esc)" aria-label="Close">✕</button>
+    </div>
+    <div class="pane-body"></div>
+  </aside>
   <div id="toast" class="toast hidden"></div>
 </body>
 </html>

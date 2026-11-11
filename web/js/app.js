@@ -2,12 +2,19 @@
 
 import { api, clientId, invalidatePageNames } from './api.js';
 import { journalName, journalDay, formatTime } from './dates.js';
-import { esc, renderContent, tagHue } from './render.js';
-import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, activeEditor } from './editor.js';
+import { esc, renderContent, tagHue, inline } from './render.js';
+import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
 import { toast, updateStatus, setConnected, openModal, closeModal } from './ui.js';
 import { decorateCode } from './code.js';
-import { settingsForm, onSettingChange, getSetting, setSetting } from './settings.js';
+import { onSettingChange, getSetting, setSetting } from './settings.js';
+import { settingsForm } from './settings-ui.js';
 import { Calendar } from './calendar.js';
+import { workbook, setWorkbook, withWb } from './workbook.js';
+import { loadStatuses, statusOf, stripStatus, withStatus, badgeHtml } from './tasks.js';
+import { ACTIONS, keyFor, comboOf, prettyKey } from './keys.js';
+import { openPane, closePane, isPaneShowing, paneKind } from './pane.js';
+import { openPdfPane } from './pdfview.js';
+import { downloadImage } from './images.js';
 
 const main = document.getElementById('main');
 
@@ -71,6 +78,7 @@ async function route() {
       await pageView(name, seq, block);
     }
     else if (hash === '/all') { calendar.select(null); await allPagesView(seq); }
+    else if (hash === '/assets') { calendar.select(null); await assetsView(seq); }
     else { calendar.select(null); calendar.goToday(); await journalsView(seq); }
   } catch (e) {
     if (seq === routeSeq) main.replaceChildren(el('p', 'error', `Could not load: ${e.message}`));
@@ -218,90 +226,6 @@ function journalNameDay(name) {
   return /^[A-Z][a-z]{2} \d{1,2}(st|nd|rd|th), \d{4}$/.test(name);
 }
 
-// ---- journals: new / open ----------------------------------------------------
-
-function dateInputValue(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-async function openJournalDate(date) {
-  const name = journalName(date);
-  try { await api.ensurePage(name); } catch { /* offline: created on first save */ }
-  invalidatePageNames();
-  refreshCalendar();
-  location.hash = pageHref(name);
-}
-
-function newJournalDialog() {
-  const body = el('div', 'dialog-form');
-  const label = el('label', 'field');
-  label.append(el('span', '', 'Date'));
-  const input = el('input');
-  input.type = 'date';
-  input.value = dateInputValue(new Date());
-  label.append(input);
-  body.append(label, el('p', 'muted small', 'Creates the journal for that day on the server and opens it. If it already exists, it just opens.'));
-  const create = () => {
-    if (!input.value) return false;
-    const [y, m, d] = input.value.split('-').map(Number);
-    openJournalDate(new Date(y, m - 1, d));
-  };
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); closeModal(); } });
-  openModal('New journal', body, [['Cancel'], ['Create', create, 'primary']]);
-  input.focus();
-}
-
-async function openJournalDialog() {
-  const body = el('div', 'dialog-form');
-  const filter = el('input', 'filter');
-  filter.type = 'search';
-  filter.placeholder = 'Filter journals (e.g. "Nov" or "2026")';
-  const list = el('div', 'journal-pick');
-  body.append(filter, list);
-  openModal('Open journal', body, [['Close']]);
-  filter.focus();
-  let journals = [];
-  try {
-    journals = (await api.pages())
-      .filter((p) => p.journal_day != null)
-      .sort((a, b) => b.journal_day - a.journal_day);
-  } catch (e) {
-    list.append(el('p', 'error', `Could not load journals: ${e.message}`));
-    return;
-  }
-  let index = 0;
-  let shown = [];
-  const go = (p) => { closeModal(); location.hash = pageHref(p.name); };
-  const draw = () => {
-    const q = filter.value.trim().toLowerCase();
-    shown = journals.filter((p) => p.name.toLowerCase().includes(q));
-    index = Math.min(index, Math.max(0, shown.length - 1));
-    list.replaceChildren(...shown.map((p, i) => {
-      const row = el('button', 'pick-row' + (i === index ? ' active' : ''));
-      row.type = 'button';
-      row.append(el('span', '', p.name), el('span', 'muted small', p.block_count ? `${p.block_count} block${p.block_count === 1 ? '' : 's'}` : 'empty'));
-      row.addEventListener('click', () => go(p));
-      return row;
-    }));
-    if (!shown.length) list.append(el('p', 'muted', journals.length ? 'No matching journals.' : 'No journals yet.'));
-    list.children[index]?.scrollIntoView?.({ block: 'nearest' });
-  };
-  filter.addEventListener('input', () => { index = 0; draw(); });
-  filter.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (shown.length) index = (index + (e.key === 'ArrowDown' ? 1 : -1) + shown.length) % shown.length;
-      draw();
-    } else if (e.key === 'Enter' && shown[index]) {
-      e.preventDefault();
-      go(shown[index]);
-    }
-  });
-  draw();
-}
-
-document.getElementById('new-journal').addEventListener('click', newJournalDialog);
-document.getElementById('open-journal').addEventListener('click', openJournalDialog);
 
 // ---- favorites ---------------------------------------------------------------
 
@@ -355,7 +279,7 @@ async function allPagesView(seq) {
   controls.append(filter, hideLabel, newBtn);
   const wrap = el('div', 'table-wrap');
   const table = el('table', 'page-table');
-  const COLS = [['name', 'Page name'], ['tags', 'Tags'], ['created_at', 'Created at'], ['updated_at', 'Updated at']];
+  const COLS = [['favorite', '★'], ['name', 'Page name'], ['tags', 'Tags'], ['created_at', 'Created at'], ['updated_at', 'Updated at']];
   let sortKey = 'updated_at';
   let sortDir = -1;
   const thead = el('thead');
@@ -368,6 +292,7 @@ async function allPagesView(seq) {
       th.addEventListener('click', () => {
         if (sortKey === key) sortDir = -sortDir;
         else { sortKey = key; sortDir = key === 'name' ? 1 : -1; }
+        if (key === 'favorite') th.title = 'Sort by favorites';
         draw();
       });
     }
@@ -389,7 +314,7 @@ async function allPagesView(seq) {
     rows.sort((a, b) => {
       const x = a[sortKey];
       const y = b[sortKey];
-      return (typeof x === 'string' ? x.localeCompare(y, undefined, { sensitivity: 'base' }) : x - y) * sortDir;
+      return (typeof x === 'string' ? x.localeCompare(y, undefined, { sensitivity: 'base' }) : Number(x) - Number(y)) * sortDir;
     });
     headRow.querySelectorAll('th').forEach((th) => {
       th.classList.toggle('sorted', th.dataset.key === sortKey);
@@ -397,11 +322,23 @@ async function allPagesView(seq) {
     });
     tbody.replaceChildren(...rows.map((p) => {
       const tr = el('tr');
+      const starCell = el('td', 'col-favorite');
+      const star = el('button', 'star-cell' + (p.favorite ? ' on' : ''), p.favorite ? '★' : '☆');
+      star.type = 'button';
+      star.title = p.favorite ? 'Remove from favorites' : 'Add to favorites';
+      star.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        p.favorite = !p.favorite;
+        const r = await api.setFavorite(p.name, p.favorite);
+        if (!r.ok) { p.favorite = !p.favorite; toast('Could not update favorites'); }
+        draw();
+        refreshFavorites(true);
+      });
+      starCell.append(star);
       const name = el('td', 'col-name');
       const link = el('a', '', p.name);
       link.href = pageHref(p.name);
       name.append(link);
-      if (p.favorite) name.append(el('span', 'fav-mark', ' ★'));
       const tags = el('td', 'col-tags');
       for (const t of p.tags) {
         const a = el('a', 'page-ref tag', `#${t}`);
@@ -413,7 +350,7 @@ async function allPagesView(seq) {
       created.title = fullTime(p.created_at);
       const updated = el('td', 'col-updated_at', formatTime(p.updated_at));
       updated.title = fullTime(p.updated_at);
-      tr.append(name, tags, created, updated);
+      tr.append(starCell, name, tags, created, updated);
       tr.addEventListener('click', (e) => { if (!e.target.closest('a')) location.hash = pageHref(p.name); });
       return tr;
     }));
@@ -527,7 +464,12 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     if (ev.type === 'resync') return resyncAll();
+    if (ev.type === 'workbooks') return;
+    if (ev.type === 'config') return reloadStatuses();
+    if (ev.wb && ev.wb !== workbook()) return; // another workbook
     refreshCalendar(); // our own saves can add a journal dot too
+    refreshTasks();
+    if (ev.type === 'assets') return refreshView();
     if (ev.type === 'favorite') return; // the sidebar list refreshes above
     if (ev.client === clientId) return;
     clearRefCache();
@@ -551,21 +493,51 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';
 });
 
+// ---- keyboard shortcuts --------------------------------------------------------
+
+const ACTION_FNS = {
+  search: () => { searchInput.focus(); searchInput.select(); },
+  toggleSidebar: () => toggleSidebar(),
+  toggleTasks: () => toggleTasks(),
+  goJournals: () => { location.hash = '#/journals'; },
+  goAllPages: () => { location.hash = '#/all'; },
+  goAssets: () => { location.hash = '#/assets'; },
+  switchWorkbook: () => openWorkbookDialog(),
+  help: () => openHelp(),
+};
+let pendingKey = null; // first key of a two-key sequence ("g" of "g j")
+let pendingTimer = null;
+
 document.addEventListener('keydown', (e) => {
-  const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key === '\\') {
-    e.preventDefault();
-    toggleSidebar();
-    return;
+  if (e.defaultPrevented || e.isComposing) return;
+  const combo = comboOf(e);
+  if (!combo) return;
+  const inField = !!e.target.closest?.('input, textarea, select, [contenteditable]');
+  const modal = document.querySelector('.modal-overlay');
+  // Esc outside a block closes the side pane.
+  if (e.key === 'Escape' && !inField && !modal && paneKind()) { closePane(); return; }
+  if (modal) return;
+  const seq = pendingKey ? `${pendingKey} ${combo}` : null;
+  pendingKey = null;
+  clearTimeout(pendingTimer);
+  for (const [id, , , , noField] of ACTIONS) {
+    const want = keyFor(id);
+    if (!ACTION_FNS[id] || !want) continue;
+    if ((noField || want.length === 1 || want.includes(' ')) && inField) continue;
+    if (want === combo || want === seq) {
+      e.preventDefault();
+      ACTION_FNS[id]();
+      return;
+    }
   }
-  if (mod && e.key.toLowerCase() === 'k') {
-    e.preventDefault();
-    searchInput.focus();
-    searchInput.select();
+  // Start of a sequence?
+  if (!inField && ACTIONS.some(([id]) => keyFor(id).startsWith(`${combo} `))) {
+    pendingKey = combo;
+    pendingTimer = setTimeout(() => { pendingKey = null; }, 1000);
     return;
   }
   // Undo/redo when no block is being edited (inside a block the editor handles it).
-  const inField = e.target.closest?.('input, textarea, [contenteditable]');
+  const mod = e.ctrlKey || e.metaKey;
   if (mod && !inField && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase())) {
     const ed = activeEditor();
     if (!ed) return;
@@ -574,9 +546,309 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-document.getElementById('open-settings').addEventListener('click', () => {
-  openModal('Settings', settingsForm());
+// Gmail-style help screen ("?" when not editing).
+const FIXED_KEYS = [
+  ['Editing', [
+    ['Enter', 'New block (splits at the cursor)'], ['Shift + Enter', 'New line in the block'],
+    ['Tab / Shift + Tab', 'Indent / outdent'], ['Backspace at start', 'Merge with the block above'],
+    ['Alt + Shift + ↑ / ↓', 'Move block'], ['Ctrl + ↑ / ↓', 'Collapse / expand'],
+    ['↑ / ↓', 'Previous / next block'], ['Esc', 'Stop editing'],
+    ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
+  ]],
+  ['Typing', [
+    ['[[', 'Link a page'], ['((', 'Reference a block'], ['/', 'Commands (link, code, admonitions, statuses…)'],
+    ['``` then Tab', 'Code block'], ['#quote', 'Quote block (block and children)'],
+  ]],
+];
+
+function openHelp() {
+  const body = el('div', 'help-grid');
+  const groups = {};
+  for (const [id, label, , group] of ACTIONS) (groups[group] ||= []).push([prettyKey(keyFor(id)), label]);
+  const section = (title, rows) => {
+    const s = el('section', 'help-section');
+    s.append(el('h3', '', title));
+    for (const [k, label] of rows) {
+      const r = el('div', 'help-row');
+      const keys = el('span', 'help-keys');
+      k.split(' then ').forEach((part, i) => {
+        if (i) keys.append(el('span', 'help-then', 'then'));
+        part.split(' / ').forEach((alt, j) => {
+          if (j) keys.append(el('span', 'help-then', '/'));
+          keys.append(el('kbd', '', alt));
+        });
+      });
+      r.append(keys, el('span', 'help-label', label));
+      s.append(r);
+    }
+    body.append(s);
+  };
+  Object.entries(groups).forEach(([g, rows]) => section(g, rows));
+  FIXED_KEYS.forEach(([g, rows]) => section(g, rows));
+  const box = openModal('Keyboard shortcuts', body, [['Change shortcuts', () => { openSettings('keyboard'); return false; }], ['Close']]);
+  box.classList.add('modal-wide');
+}
+
+function openSettings(category) {
+  const box = openModal('Settings', settingsForm(category));
+  box.classList.add('modal-wide');
+}
+document.getElementById('open-settings').addEventListener('click', () => openSettings());
+document.getElementById('help-toggle').addEventListener('click', () => openHelp());
+document.getElementById('tasks-toggle').addEventListener('click', () => toggleTasks());
+
+// ---- workbooks ----------------------------------------------------------------
+
+const wbButton = document.getElementById('workbook-switch');
+let workbookList = [];
+
+function workbookName(id) {
+  return workbookList.find((w) => w.id === id)?.name || (id === 'main' ? 'Main' : id);
+}
+
+function showWorkbookName() {
+  wbButton.querySelector('.wb-name').textContent = workbookName(workbook());
+  document.title = workbook() === 'main' ? 'Blockseq' : `${workbookName(workbook())} · Blockseq`;
+}
+
+async function loadWorkbooks() {
+  try { workbookList = await api.workbooks(); } catch { /* offline */ }
+  // A workbook removed from the server: fall back to Main.
+  if (workbookList.length && !workbookList.some((w) => w.id === workbook())) setWorkbook('main');
+  showWorkbookName();
+  return workbookList;
+}
+
+async function switchWorkbook(id) {
+  closeModal();
+  if (id === workbook()) return;
+  for (const ed of [...editors]) if (!ed.disposed) ed.dispose();
+  await settleSaves(); // finish saving into the old workbook first
+  setWorkbook(id);
+  clearRefCache();
+  invalidatePageNames();
+  showWorkbookName();
+  calendar.refresh();
+  refreshFavorites(true);
+  closePane();
+  toast(`Opened workbook ${workbookName(id)}`);
+  if (location.hash === '#/journals') route(); else location.hash = '#/journals';
+}
+
+function newWorkbookDialog() {
+  const body = el('div', 'dialog-form');
+  const label = el('label', 'field');
+  label.append(el('span', '', 'Name'));
+  const input = el('input');
+  input.placeholder = 'e.g. Home Lab';
+  input.maxLength = 64;
+  label.append(input);
+  const err = el('p', 'error small');
+  body.append(label, el('p', 'muted small', 'A workbook is a separate set of pages, journals and assets, stored in its own folder on the server.'), err);
+  const create = async () => {
+    const name = input.value.trim();
+    if (!name) return false;
+    const r = await api.createWorkbook(name);
+    if (!r.ok) { err.textContent = r.data?.error || 'Could not create it'; return false; }
+    await loadWorkbooks();
+    switchWorkbook(r.data.id);
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
+  openModal('New workbook', body, [['Cancel'], ['Create', () => { create(); return false; }, 'primary']]);
+  input.focus();
+}
+
+async function openWorkbookDialog() {
+  const body = el('div', 'dialog-form');
+  const list = el('div', 'journal-pick');
+  body.append(list, el('p', 'muted small',
+    'To add a workbook from another place, copy its folder into workbooks/ in the server\'s data folder (e.g. /var/lib/blockseq/workbooks/My Notes). A Logseq graph folder (with pages/ and journals/) is imported the first time you open it; its original files are kept in logseq-original/.'));
+  openModal('Open workbook', body, [['New workbook…', () => { newWorkbookDialog(); return false; }], ['Close']]);
+  list.append(el('p', 'muted', 'Loading…'));
+  await loadWorkbooks();
+  list.replaceChildren(...workbookList.map((w) => {
+    const row = el('button', 'pick-row' + (w.id === workbook() ? ' active' : ''));
+    row.type = 'button';
+    const note = w.id === workbook() ? 'open now' : w.kind === 'logseq' ? 'Logseq graph · imports on open' : w.kind === 'empty' ? 'new' : '';
+    row.append(el('span', '', w.name), el('span', 'muted small', note));
+    // The server opens (and, for a Logseq graph, imports) it on first use.
+    row.addEventListener('click', () => switchWorkbook(w.id));
+    return row;
+  }));
+}
+
+wbButton.addEventListener('click', () => openWorkbookDialog());
+document.getElementById('new-workbook').addEventListener('click', newWorkbookDialog);
+document.getElementById('open-workbook').addEventListener('click', openWorkbookDialog);
+
+// ---- assets --------------------------------------------------------------------
+
+function formatSize(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function assetsView(seq) {
+  const list = await api.assets();
+  if (seq !== routeSeq) return;
+  const header = el('div', 'page-header');
+  header.append(el('h1', 'page-title', 'Assets'));
+  const controls = el('div', 'list-controls');
+  const filter = el('input', 'filter');
+  filter.type = 'search';
+  filter.placeholder = 'Filter files';
+  const unused = el('label', 'check');
+  const unusedBox = el('input');
+  unusedBox.type = 'checkbox';
+  unused.append(unusedBox, ' Only unused');
+  const total = el('span', 'muted small');
+  total.textContent = `${list.length} file${list.length === 1 ? '' : 's'} · ${formatSize(list.reduce((n, a) => n + a.size, 0))}`;
+  controls.append(filter, unused, total);
+  const wrap = el('div', 'table-wrap');
+  const table = el('table', 'page-table asset-table');
+  table.innerHTML = '<thead><tr><th></th><th>File</th><th>Used on</th><th>Size</th><th>Added</th><th></th></tr></thead>';
+  const tbody = el('tbody');
+  table.append(tbody);
+  wrap.append(table);
+  const empty = el('p', 'muted');
+  main.replaceChildren(header, controls, wrap, empty);
+
+  const draw = () => {
+    const q = filter.value.trim().toLowerCase();
+    const rows = list.filter((a) => a.name.toLowerCase().includes(q) && (!unusedBox.checked || !a.pages.length));
+    tbody.replaceChildren(...rows.map((a) => {
+      const url = withWb(`/assets/${encodeURIComponent(a.name)}`);
+      const tr = el('tr');
+      const thumb = el('td', 'asset-thumb');
+      if (a.kind === 'image') {
+        const img = el('img');
+        img.src = url;
+        img.loading = 'lazy';
+        img.alt = '';
+        thumb.append(img);
+      } else {
+        thumb.append(el('span', 'asset-kind', a.kind === 'pdf' ? 'PDF' : 'FILE'));
+      }
+      const name = el('td', 'col-name asset-name', a.name);
+      const used = el('td', 'asset-used');
+      if (a.pages.length) {
+        a.pages.forEach((p) => { const l = el('a', '', p); l.href = pageHref(p); used.append(l); });
+      } else {
+        used.append(el('span', 'muted', 'not used'));
+      }
+      const size = el('td', 'col-updated_at', formatSize(a.size));
+      const added = el('td', 'col-updated_at', formatTime(a.modified));
+      const actions = el('td', 'asset-actions');
+      const btn = (label, fn, cls = '') => {
+        const b = el('button', `mini ${cls}`, label);
+        b.type = 'button';
+        b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+        actions.append(b);
+      };
+      btn('Open', () => (a.kind === 'pdf' ? openPdfPane(url, a.name) : window.open(url, '_blank', 'noopener')));
+      btn('Download', () => downloadImage(url));
+      btn('Delete', async () => {
+        const warn = a.pages.length ? `\n\nIt is used on: ${a.pages.join(', ')}. Those blocks will show a broken link.` : '';
+        if (!confirm(`Delete ${a.name} from the server? This cannot be undone.${warn}`)) return;
+        const r = await api.deleteAsset(a.name);
+        if (!r.ok && r.status !== 404) { toast(`Delete failed: ${r.data?.error || r.status}`); return; }
+        list.splice(list.indexOf(a), 1);
+        draw();
+        toast('File deleted');
+      }, 'danger');
+      tr.append(thumb, name, used, size, added, actions);
+      return tr;
+    }));
+    empty.textContent = rows.length ? '' : (list.length ? 'No matching files.' : 'No files yet. Paste or drop images and PDFs into a block.');
+  };
+  filter.addEventListener('input', draw);
+  unusedBox.addEventListener('change', draw);
+  draw();
+  view = { refresh: () => { if (location.hash === '#/assets') route(); } };
+}
+
+// ---- tasks pane ------------------------------------------------------------------
+
+let tasksTimer = null;
+function refreshTasks() {
+  if (!isPaneShowing('tasks')) return;
+  clearTimeout(tasksTimer);
+  tasksTimer = setTimeout(renderTasks, 300);
+}
+
+function toggleTasks() {
+  if (isPaneShowing('tasks')) { closePane(); return; }
+  const body = el('div', 'tasks-pane');
+  openPane({ kind: 'tasks', title: 'Tasks', body });
+  renderTasks();
+}
+
+async function renderTasks() {
+  const body = document.querySelector('.tasks-pane');
+  if (!body) return;
+  let tasks;
+  try { tasks = await api.tasks(); } catch (e) { body.replaceChildren(el('p', 'error', e.message)); return; }
+  const showDone = !!getSetting('tasksShowDone');
+  const controls = el('div', 'tasks-controls');
+  const label = el('label', 'check');
+  const box = el('input');
+  box.type = 'checkbox';
+  box.checked = showDone;
+  box.addEventListener('change', () => { setSetting('tasksShowDone', box.checked); renderTasks(); });
+  label.append(box, ' Show completed');
+  const items = tasks.map((t) => ({ ...t, st: statusOf(t.content) })).filter((t) => t.st);
+  const open = items.filter((t) => !t.st.done).length;
+  controls.append(el('span', 'muted small', `${open} open`), label);
+  const list = el('div', 'task-list');
+  let lastPage = null;
+  for (const t of items) {
+    if (t.st.done && !showDone) continue;
+    if (t.page_name !== lastPage) {
+      const h = el('a', 'task-page', t.page_name);
+      h.href = pageHref(t.page_name);
+      list.append(h);
+      lastPage = t.page_name;
+    }
+    const row = el('div', 'task-row' + (t.st.done ? ' done' : ''));
+    row.innerHTML = `${badgeHtml(t.st)}<span class="task-text">${inline(stripStatus(t.content).split('\n')[0])}</span>`;
+    row.querySelector('.status-badge').addEventListener('click', (e) => {
+      e.stopPropagation();
+      showStatusPicker(e.clientX, e.clientY, t.st.word, async (word) => {
+        const r = await api.putBlock(t.id, withStatus(t.content, word));
+        if (!r.ok) toast(r.data?.error || 'Could not change the status');
+        renderTasks();
+      });
+    });
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('a')) return;
+      location.hash = `${pageHref(t.page_name)}?b=${t.id}`;
+    });
+    list.append(row);
+  }
+  if (!list.children.length) list.append(el('p', 'muted', items.length ? 'No open tasks.' : 'No tasks yet. Start a block with TODO (or press Ctrl+Enter in a block).'));
+  body.replaceChildren(controls, list);
+}
+
+// ---- statuses --------------------------------------------------------------------
+
+async function reloadStatuses() {
+  await loadStatuses();
+  refreshTasks();
+  for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
+}
+document.addEventListener('blockseq:statuses', () => {
+  refreshTasks();
+  for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
 });
+
+// Image sizes ({:size "half"}) depend on the picture's real size, known once loaded.
+const SIZE_FACTORS = { original: 1, half: 0.5, quarter: 0.25 };
+document.addEventListener('load', (e) => {
+  const img = e.target;
+  if (img.tagName !== 'IMG' || !img.dataset.size) return;
+  img.style.width = img.dataset.size === 'small' ? '96px' : `${Math.max(16, Math.round(img.naturalWidth * SIZE_FACTORS[img.dataset.size]))}px`;
+}, true);
 
 // ---- sidebar toggle --------------------------------------------------------
 
@@ -608,7 +880,9 @@ function applySettings() {
 applySettings();
 refreshFavorites(true);
 onSettingChange((name) => {
+  if (['paneWidth', 'sidebar', 'tasksShowDone', 'keys'].includes(name)) return;
   applySettings();
+  if (name === 'linksNewTab') for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
   if (name === 'favorites') refreshFavorites(true);
   // Layout may have changed (width, theme fonts): redraw threading lines.
   requestAnimationFrame(() => { for (const ed of editors) ed.updateThread(); });
@@ -622,4 +896,6 @@ window.addEventListener('resize', () => {
 window.addEventListener('hashchange', route);
 connectEvents();
 updateStatus();
-route();
+showWorkbookName();
+// Statuses decide how blocks render, so load them before the first page.
+Promise.all([loadStatuses(), loadWorkbooks()]).finally(route);

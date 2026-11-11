@@ -1,11 +1,15 @@
 //! JSON API used by the web UI.
+//!
+//! Every request works on one workbook, chosen with `?wb=<id>` (default
+//! "main"). Change events go to all clients and carry the workbook id.
 
 use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -15,9 +19,11 @@ use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::AppState;
 use crate::assets;
+use crate::config::Config;
 use crate::db::{self, Block, SaveOutcome};
+use crate::workbooks::{MAIN, Workbook};
+use crate::AppState;
 
 type Shared = State<Arc<AppState>>;
 
@@ -38,13 +44,49 @@ impl IntoResponse for ApiError {
 
 type ApiResult = Result<Response, ApiError>;
 
+fn bad(msg: impl Into<String>) -> ApiError {
+    ApiError(StatusCode::BAD_REQUEST, msg.into())
+}
+
+fn client_id(headers: &HeaderMap) -> String {
+    headers.get("x-client-id").and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
+}
+
+/// The workbook a request is for, from `?wb=` (opened on first use).
+pub struct Wb(pub Arc<Workbook>);
+
+#[derive(Deserialize)]
+struct WbParam {
+    wb: Option<String>,
+}
+
+impl FromRequestParts<Arc<AppState>> for Wb {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, s: &Arc<AppState>) -> Result<Self, ApiError> {
+        let id = Query::<WbParam>::from_request_parts(parts, s)
+            .await
+            .ok()
+            .and_then(|q| q.0.wb)
+            .filter(|w| !w.is_empty())
+            .unwrap_or_else(|| MAIN.to_string());
+        let state = s.clone();
+        let words = s.task_words();
+        let lookup = id.clone();
+        let wb = tokio::task::spawn_blocking(move || state.workbooks.get(&lookup, &words))
+            .await
+            .map_err(|e| anyhow::anyhow!(e))??;
+        wb.map(Wb).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no workbook called {id}")))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct NameQuery {
     name: String,
 }
 
-pub async fn get_page(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
-    let conn = s.db.lock().unwrap();
+pub async fn get_page(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
+    let conn = wb.db.lock().unwrap();
     let page = db::get_page(&conn, &q.name)?;
     let blocks = match &page {
         Some(p) => db::get_blocks(&conn, &p.id)?,
@@ -64,25 +106,22 @@ pub struct SaveBody {
 
 pub async fn put_page(
     State(s): Shared,
+    Wb(wb): Wb,
     Query(q): Query<NameQuery>,
     headers: HeaderMap,
     Json(body): Json<SaveBody>,
 ) -> ApiResult {
-    let client = headers
-        .get("x-client-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let words = s.task_words();
     let outcome = {
-        let mut conn = s.db.lock().unwrap();
-        db::save_page(&mut conn, &q.name, body.base_version, &body.blocks)
-            .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?
+        let mut conn = wb.db.lock().unwrap();
+        db::save_page(&mut conn, &q.name, body.base_version, &body.blocks, &words)
+            .map_err(|e| bad(format!("{e:#}")))?
     };
     match outcome {
         SaveOutcome::Saved(page) => {
-            s.write_mirror(&page, &body.blocks);
-            s.notify(json!({
-                "type": "page", "name": page.name, "version": page.version, "client": client
+            wb.write_mirror(&page, &body.blocks);
+            s.notify(&wb, json!({
+                "type": "page", "name": page.name, "version": page.version, "client": client_id(&headers)
             }));
             Ok(Json(json!({ "page": page })).into_response())
         }
@@ -96,27 +135,27 @@ pub async fn put_page(
 
 pub async fn delete_page(
     State(s): Shared,
+    Wb(wb): Wb,
     Query(q): Query<NameQuery>,
     headers: HeaderMap,
 ) -> ApiResult {
-    let deleted = db::delete_page(&s.db.lock().unwrap(), &q.name)?;
+    let deleted = db::delete_page(&wb.db.lock().unwrap(), &q.name)?;
     let Some(page) = deleted else {
         return Ok(StatusCode::NOT_FOUND.into_response());
     };
-    s.remove_mirror(&page);
-    let client = headers.get("x-client-id").and_then(|v| v.to_str().ok()).unwrap_or("");
-    s.notify(json!({ "type": "deleted", "name": page.name, "client": client }));
+    wb.remove_mirror(&page);
+    s.notify(&wb, json!({ "type": "deleted", "name": page.name, "client": client_id(&headers) }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Creates an empty page if it doesn't exist (used by the calendar to create
 /// a journal day). Returns the page either way.
-pub async fn ensure_page(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
+pub async fn ensure_page(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
     let name = q.name.trim();
     if name.is_empty() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "page name is empty".into()));
+        return Err(bad("page name is empty"));
     }
-    let conn = s.db.lock().unwrap();
+    let conn = wb.db.lock().unwrap();
     db::ensure_page(&conn, name, db::now_ms())?;
     Ok(Json(json!({ "page": db::get_page(&conn, name)? })).into_response())
 }
@@ -129,24 +168,28 @@ pub struct FavoriteQuery {
 
 /// Marks or unmarks a page as a favourite. Favourites live on the server so
 /// every computer shows the same list.
-pub async fn set_favorite(State(s): Shared, Query(q): Query<FavoriteQuery>, headers: HeaderMap) -> ApiResult {
+pub async fn set_favorite(
+    State(s): Shared,
+    Wb(wb): Wb,
+    Query(q): Query<FavoriteQuery>,
+    headers: HeaderMap,
+) -> ApiResult {
     let name = q.name.trim();
     if name.is_empty() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "page name is empty".into()));
+        return Err(bad("page name is empty"));
     }
-    db::set_favorite(&s.db.lock().unwrap(), name, q.on)?;
-    let client = headers.get("x-client-id").and_then(|v| v.to_str().ok()).unwrap_or("");
-    s.notify(json!({ "type": "favorite", "name": name, "client": client }));
+    db::set_favorite(&wb.db.lock().unwrap(), name, q.on)?;
+    s.notify(&wb, json!({ "type": "favorite", "name": name, "client": client_id(&headers) }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-pub async fn list_pages(State(s): Shared) -> ApiResult {
-    let pages = db::list_pages(&s.db.lock().unwrap())?;
+pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
+    let pages = db::list_pages(&wb.db.lock().unwrap())?;
     Ok(Json(pages).into_response())
 }
 
-pub async fn names(State(s): Shared) -> ApiResult {
-    let names = db::all_names(&s.db.lock().unwrap())?;
+pub async fn names(Wb(wb): Wb) -> ApiResult {
+    let names = db::all_names(&wb.db.lock().unwrap())?;
     Ok(Json(names).into_response())
 }
 
@@ -156,9 +199,9 @@ pub struct JournalQuery {
     limit: Option<i64>,
 }
 
-pub async fn journals(State(s): Shared, Query(q): Query<JournalQuery>) -> ApiResult {
+pub async fn journals(Wb(wb): Wb, Query(q): Query<JournalQuery>) -> ApiResult {
     let limit = q.limit.unwrap_or(10).clamp(1, 100);
-    let pages = db::journals(&s.db.lock().unwrap(), q.before, limit)?;
+    let pages = db::journals(&wb.db.lock().unwrap(), q.before, limit)?;
     Ok(Json(pages).into_response())
 }
 
@@ -168,9 +211,9 @@ pub struct SearchQuery {
     limit: Option<i64>,
 }
 
-pub async fn search(State(s): Shared, Query(q): Query<SearchQuery>) -> ApiResult {
+pub async fn search(Wb(wb): Wb, Query(q): Query<SearchQuery>) -> ApiResult {
     let limit = q.limit.unwrap_or(30).clamp(1, 200);
-    let results = db::search(&s.db.lock().unwrap(), &q.q, limit)?;
+    let results = db::search(&wb.db.lock().unwrap(), &q.q, limit)?;
     Ok(Json(results).into_response())
 }
 
@@ -179,14 +222,44 @@ pub struct IdQuery {
     id: String,
 }
 
-pub async fn get_block(State(s): Shared, Query(q): Query<IdQuery>) -> ApiResult {
-    match db::get_block(&s.db.lock().unwrap(), &q.id)? {
+pub async fn get_block(Wb(wb): Wb, Query(q): Query<IdQuery>) -> ApiResult {
+    match db::get_block(&wb.db.lock().unwrap(), &q.id)? {
         Some(b) => Ok(Json(b).into_response()),
         None => Ok(StatusCode::NOT_FOUND.into_response()),
     }
 }
 
-/// Server-sent events: tells other open tabs/devices when a page changes.
+#[derive(Deserialize)]
+pub struct BlockBody {
+    content: String,
+}
+
+/// Changes one block's text, e.g. a status change from the task list.
+pub async fn put_block(
+    State(s): Shared,
+    Wb(wb): Wb,
+    Query(q): Query<IdQuery>,
+    headers: HeaderMap,
+    Json(body): Json<BlockBody>,
+) -> ApiResult {
+    let words = s.task_words();
+    let saved = db::update_block(&mut wb.db.lock().unwrap(), &q.id, &body.content, &words)?;
+    let Some((page, blocks)) = saved else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    wb.write_mirror(&page, &blocks);
+    s.notify(&wb, json!({
+        "type": "page", "name": page.name, "version": page.version, "client": client_id(&headers)
+    }));
+    Ok(Json(json!({ "page": page })).into_response())
+}
+
+/// Every block with a task status (the client filters open / finished).
+pub async fn tasks(Wb(wb): Wb) -> ApiResult {
+    Ok(Json(db::tasks(&wb.db.lock().unwrap())?).into_response())
+}
+
+/// Server-sent events: tells other open tabs/devices when something changes.
 pub async fn events(State(s): Shared) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     // A client that fell behind is told to reload everything it shows.
     let stream = BroadcastStream::new(s.events.subscribe()).map(|msg| {
@@ -196,49 +269,130 @@ pub async fn events(State(s): Shared) -> Sse<impl Stream<Item = Result<Event, In
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-/// Stores an uploaded image (raw bytes in the body). The original file name
-/// may be given in `X-Filename`. Returns the path to put in the block text.
-pub async fn upload_asset(State(s): Shared, headers: HeaderMap, body: Bytes) -> ApiResult {
+// ---- assets -------------------------------------------------------------------
+
+/// Stores an uploaded image or PDF (raw bytes in the body). The original file
+/// name may be given in `X-Filename`. Returns the path to put in the block text.
+pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body: Bytes) -> ApiResult {
     if body.is_empty() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "empty upload".into()));
+        return Err(bad("empty upload"));
     }
     let original = headers
         .get("x-filename")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("image")
+        .unwrap_or("file")
         .to_string();
-    let dir = s.data_dir.join("assets");
+    let dir = wb.assets_dir();
     let name = tokio::task::spawn_blocking(move || assets::save(&dir, &body, &original, db::now_ms()))
         .await
         .map_err(|e| anyhow::anyhow!(e))?
         .map_err(|e| ApiError(StatusCode::UNSUPPORTED_MEDIA_TYPE, format!("{e:#}")))?;
-    Ok(Json(json!({
-        "name": name,
-        "path": format!("../assets/{name}"),
-        "url": format!("/assets/{name}"),
-    }))
-    .into_response())
+    s.notify(&wb, json!({ "type": "assets", "name": name, "client": client_id(&headers) }));
+    Ok(Json(json!({ "name": name, "path": format!("../assets/{name}") })).into_response())
 }
 
-/// Serves an uploaded image. Names never change, so browsers may cache forever.
-pub async fn get_asset(State(s): Shared, Path(name): Path<String>) -> Response {
+/// Serves an uploaded file. Names never change, so browsers may cache forever.
+pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>) -> Response {
     if !assets::valid_name(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    match tokio::fs::read(s.data_dir.join("assets").join(&name)).await {
-        Ok(bytes) => {
-            let mime = mime_guess::from_path(&name).first_or_octet_stream();
-            (
-                [
-                    (header::CONTENT_TYPE, mime.as_ref().to_string()),
-                    (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string()),
-                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-                    (header::CONTENT_SECURITY_POLICY, "default-src 'none'".to_string()),
-                ],
-                bytes,
-            )
-                .into_response()
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    let Ok(bytes) = tokio::fs::read(wb.assets_dir().join(&name)).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mime = mime_guess::from_path(&name).first_or_octet_stream();
+    let mut headers = vec![
+        (header::CONTENT_TYPE, mime.as_ref().to_string()),
+        (header::CACHE_CONTROL, "private, max-age=31536000, immutable".to_string()),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        (header::CONTENT_DISPOSITION, format!("inline; filename=\"{name}\"")),
+    ];
+    // Images never need scripts or other resources. PDFs are shown by the
+    // browser's own viewer, which a strict policy would block.
+    if mime.type_() == mime_guess::mime::IMAGE {
+        headers.push((header::CONTENT_SECURITY_POLICY, "default-src 'none'".to_string()));
     }
+    let mut res = bytes.into_response();
+    for (k, v) in headers {
+        res.headers_mut().insert(k, v.parse().unwrap());
+    }
+    res
+}
+
+/// Files in the workbook's assets folder, newest first, with the pages that
+/// mention each one.
+pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
+    let usage = db::asset_usage(&wb.db.lock().unwrap())?;
+    let dir = wb.assets_dir();
+    let list = tokio::task::spawn_blocking(move || assets::list(&dir))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))??;
+    let out: Vec<_> = list
+        .into_iter()
+        .map(|a| {
+            let needle = format!("assets/{}", a.name);
+            let mut pages: Vec<&str> = usage
+                .iter()
+                .filter(|(_, content)| content.contains(&needle))
+                .map(|(page, _)| page.as_str())
+                .collect();
+            pages.sort_unstable();
+            pages.dedup();
+            json!({ "name": a.name, "size": a.size, "modified": a.modified, "kind": a.kind, "pages": pages })
+        })
+        .collect();
+    Ok(Json(out).into_response())
+}
+
+pub async fn delete_asset(
+    State(s): Shared,
+    Wb(wb): Wb,
+    Query(q): Query<NameQuery>,
+    headers: HeaderMap,
+) -> ApiResult {
+    if !assets::valid_name(&q.name) {
+        return Err(bad("invalid file name"));
+    }
+    match tokio::fs::remove_file(wb.assets_dir().join(&q.name)).await {
+        Ok(()) => {
+            s.notify(&wb, json!({ "type": "assets", "name": q.name, "client": client_id(&headers) }));
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        Err(_) => Ok(StatusCode::NOT_FOUND.into_response()),
+    }
+}
+
+// ---- workbooks and shared settings --------------------------------------------
+
+pub async fn list_workbooks(State(s): Shared) -> ApiResult {
+    Ok(Json(s.workbooks.list()).into_response())
+}
+
+pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
+    let info = s.workbooks.create(&q.name).map_err(|e| bad(format!("{e:#}")))?;
+    s.notify_all(json!({ "type": "workbooks" }));
+    Ok(Json(info).into_response())
+}
+
+pub async fn get_config(State(s): Shared) -> ApiResult {
+    Ok(Json(s.config.read().unwrap().clone()).into_response())
+}
+
+/// Saves the shared settings (task statuses) and recomputes which blocks are
+/// tasks in every open workbook.
+pub async fn put_config(State(s): Shared, Json(cfg): Json<Config>) -> ApiResult {
+    cfg.validate().map_err(|e| bad(format!("{e:#}")))?;
+    cfg.save(&s.root.join("config.json"))?;
+    let words = cfg.task_words();
+    *s.config.write().unwrap() = cfg;
+    let state = s.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        for wb in state.workbooks.open_workbooks() {
+            db::refresh_task_refs(&wb.db.lock().unwrap(), &words)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e))??;
+    s.notify_all(json!({ "type": "config" }));
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

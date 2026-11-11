@@ -22,11 +22,13 @@ in sync through autosave, versioned page saves and a live event stream.
 
 | Path | Purpose |
 |------|---------|
-| `src/main.rs` | Config from env, app state, router, optional password, static files, shutdown, mirror rebuild at startup |
-| `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream |
+| `src/main.rs` | Config from env, app state, router, optional password, static files, shutdown |
+| `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
+| `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import |
+| `src/config.rs` | Shared settings in `config.json` (task statuses) |
 | `src/db.rs` | Schema, all SQL, save transaction with version check, search, backlinks |
-| `src/md.rs` | Journal name parsing, link/tag extraction, Logseq Markdown export |
-| `src/assets.rs` | Image uploads: type detection from file bytes, safe names, saving |
+| `src/md.rs` | Journal names, link/tag extraction, task detection, Logseq Markdown export and import (`parse_outline`) |
+| `src/assets.rs` | Image and PDF uploads: type detection from file bytes, safe names, saving, listing |
 | `web/index.html`, `web/app.css` | Page shell and styles (light/dark via `prefers-color-scheme`) |
 | `web/js/app.js` | Hash router, views (journals, page, all pages), search box, live updates, unload handling |
 | `web/js/editor.js` | `PageEditor` outliner, `[[`/`((` autocomplete, block-ref loading, popup menu |
@@ -35,7 +37,12 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/ui.js` | Toast, clipboard fallback, save-status indicator |
 | `web/js/dates.js` | Journal page names (`Nov 11th, 2026`) and day numbers |
 | `web/js/code.js` | Built-in syntax highlighter, code block decoration (line numbers, copy), live-edit backdrop |
-| `web/js/settings.js` | Per-browser preferences (localStorage) and the settings form |
+| `web/js/settings.js` | Per-browser preferences (localStorage), setting categories |
+| `web/js/settings-ui.js` | Settings screen: categories, task-status editor, key-binding editor |
+| `web/js/keys.js` | Configurable shortcuts: defaults, matching key events, display |
+| `web/js/tasks.js` | Task statuses (loaded from the server): detect, set, cycle, badge |
+| `web/js/workbook.js` | Current workbook (per browser) and `?wb=` for API and asset URLs |
+| `web/js/pane.js`, `web/js/pdfview.js` | Resizable right-hand pane; PDF viewer in it |
 | `web/js/images.js` | Image upload, preview (lightbox), copy/download, editing one image's Markdown |
 | `web/js/calendar.js` | Sidebar month calendar for opening/creating journal days |
 | `deploy/` | systemd unit and install/upgrade script |
@@ -167,7 +174,29 @@ CRDTs (conflict-free merge structures):
 
 ## Server details
 
-- **One SQLite connection behind a `std::sync::Mutex`.** All queries are short
+- **Workbooks.** `workbooks::Registry` maps a workbook id to an open
+  `Workbook { dir, db }`. `main` is `BLOCKSEQ_DATA` itself (so older installs
+  keep working unchanged); any other id is a folder in `BLOCKSEQ_DATA/workbooks/`
+  whose name passes `valid_id` (no slashes or leading dots, so no path
+  traversal). Workbooks open lazily on first request (in `spawn_blocking`) and
+  stay open. Every API handler takes the `Wb` extractor, which reads `?wb=`
+  (default `main`), so the same handlers serve every workbook. Assets are
+  served from `/assets/<name>?wb=<id>`. Events carry `"wb"` and clients ignore
+  events for other workbooks.
+- **Logseq import.** A workbook folder with `pages/` or `journals/` but no
+  `blockseq.db` is imported when it opens: originals are copied to
+  `logseq-original/`, each `.md` file is parsed by `md::parse_outline` (tab or
+  space indentation, `id::` and `collapsed::` lines, code fences kept intact,
+  page properties as the first block), names come from file names (`___` → `/`,
+  `%XX` decoded, `2026_11_11` → journal, `title::` wins) and block ids are made
+  unique across the workbook. `:favorites` in `logseq/config.edn` become
+  favourites. Then the mirror rewrites the files in Blockseq's format.
+- **Tasks.** `config.json` lists the status words. A block whose first word is
+  one gets a `refs` row to `task` with `tag = 2` (implied, not in the text), so
+  the *task* page shows every task and `GET /api/tasks` can list them. When
+  the statuses change, `refresh_task_refs` recomputes these rows in every open
+  workbook; workbooks opened later do it on open.
+- **One SQLite connection per workbook behind a `std::sync::Mutex`.** All queries are short
   and the app has a single user, so a connection pool would add complexity for
   no gain. Handlers lock, run their queries, and release the lock before any
   `await`.
@@ -179,8 +208,14 @@ CRDTs (conflict-free merge structures):
   | `PUT /api/page?name=` | `put_page` | save; 200 or 409 |
   | `DELETE /api/page?name=` | `delete_page` | 204 / 404 |
   | `POST /api/page/ensure?name=` | `ensure_page` | create an empty page if missing (calendar) |
-  | `POST /api/assets` | `upload_asset` | raw image bytes; `X-Filename` optional; returns `../assets/<name>` |
-  | `GET /assets/<name>` | `get_asset` | uploaded image, cached forever, `nosniff` + `default-src 'none'` |
+  | `POST /api/assets` | `upload_asset` | raw image or PDF bytes; `X-Filename` optional; returns `../assets/<name>` |
+  | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them |
+  | `DELETE /api/assets?name=` | `delete_asset` | removes the file |
+  | `GET /assets/<name>` | `get_asset` | cached forever, `nosniff`; images also get `default-src 'none'` (PDFs can't, the browser viewer needs to run) |
+  | `PUT /api/block?id=` | `put_block` | change one block's text (task list status changes); saves the page |
+  | `GET /api/tasks` | `tasks` | every block linked to `task` |
+  | `GET/POST /api/workbooks` | `list_workbooks` / `create_workbook` | not workbook-scoped |
+  | `GET/PUT /api/config` | `get_config` / `put_config` | task statuses; event `config` |
   | `POST /api/page/favorite?name=&on=` | `set_favorite` | star / unstar, event `favorite` |
   | `GET /api/pages` | `list_pages` | name, journal day, created, updated, block count, favorite, tags |
   | `GET /api/names` | `names` | page names plus linked-only names |
@@ -206,6 +241,23 @@ CRDTs (conflict-free merge structures):
   (its full-text search module) is the upgrade path if ranking or speed matters.
 
 ## Client details
+
+- **Workbook switching** disposes the editors, waits for pending saves, then
+  changes `workbook.js`'s id (stored per browser), clears caches and reloads
+  the journals. Every request carries `?wb=`.
+- **Rendering additions.** Status words become coloured badges (`tasks.js`;
+  colours are a hue per status combined with the theme's `--tag-s/--tag-l`).
+  `#+BEGIN_<KIND> … #+END_<KIND>` becomes an admonition box (`renderBody`).
+  `![x](../assets/f.pdf)` renders as a PDF link or, with `{:view "preview"}`,
+  an inline `<iframe>`; images take `{:size "half"}` etc., applied once the image
+  loads (a capture-phase `load` listener in `app.js`). A `#quote` tag adds
+  `.quote-block` to the block element so its children sit inside the quote.
+- **Shortcuts.** `keys.js` holds the bindings (defaults + overrides in settings).
+  The global handler in `app.js` supports single keys (only outside text
+  fields), modifier combos and two-key sequences (`g j`). The editor checks
+  `cycleStatus` / `statusPicker` itself.
+- **Side pane** (`pane.js`) is a fixed right-hand panel. While it is open the
+  body gets `padding-right: var(--pane-w)` so pages re-centre beside it.
 
 - **Settings and themes** (`settings.js`). Settings live in `localStorage`, so
   each device has its own. `app.js applySettings()` turns them into classes or

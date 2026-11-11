@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS refs (
     block_id     TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
     target_lower TEXT NOT NULL,
     target_name  TEXT NOT NULL,
-    tag          INTEGER NOT NULL DEFAULT 0  -- 1 for #tag / tags::, 0 for [[link]]
+    tag          INTEGER NOT NULL DEFAULT 0  -- 0 [[link]], 1 #tag / tags::, 2 task status (implied #task)
 );
 CREATE INDEX IF NOT EXISTS refs_target ON refs(target_lower);
 CREATE INDEX IF NOT EXISTS refs_block ON refs(block_id);
@@ -174,6 +174,103 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Page that every task links to.
+pub const TASK_PAGE: &str = "task";
+
+/// Recomputes the implied "task" links from the current status words (they
+/// can change in Settings). Runs when a workbook opens and after a change.
+pub fn refresh_task_refs(conn: &Connection, words: &[String]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM refs WHERE tag = 2", [])?;
+    let rows: Vec<(String, String)> = tx
+        .prepare("SELECT id, content FROM blocks")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut any = false;
+    {
+        let mut ins = tx.prepare(
+            "INSERT INTO refs (block_id, target_lower, target_name, tag)
+             SELECT ?1, ?2, ?2, 2 WHERE NOT EXISTS
+               (SELECT 1 FROM refs WHERE block_id = ?1 AND target_lower = ?2)",
+        )?;
+        for (id, content) in rows {
+            if md::is_task(&content, words) {
+                ins.execute(params![id, TASK_PAGE])?;
+                any = true;
+            }
+        }
+    }
+    if any {
+        ensure_page(&tx, TASK_PAGE, now_ms())?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskHit {
+    pub id: String,
+    pub content: String,
+    pub page_name: String,
+    pub journal_day: Option<i64>,
+}
+
+/// Every block with a task status, newest pages first.
+pub fn tasks(conn: &Connection) -> Result<Vec<TaskHit>> {
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.content, p.name, p.journal_day FROM refs r
+         JOIN blocks b ON b.id = r.block_id
+         JOIN pages p ON p.id = b.page_id
+         WHERE r.target_lower = ?1 AND (r.tag = 2 OR r.tag = 1)
+         GROUP BY b.id
+         ORDER BY p.journal_day DESC NULLS LAST, p.updated_at DESC, b.position",
+    )?;
+    let rows = stmt.query_map([TASK_PAGE], |r| {
+        Ok(TaskHit { id: r.get(0)?, content: r.get(1)?, page_name: r.get(2)?, journal_day: r.get(3)? })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Changes one block's text (used by the task list). Saves the whole page so
+/// versions, refs and timestamps stay consistent. Returns the saved page and
+/// its blocks, or None if the block doesn't exist.
+pub fn update_block(
+    conn: &mut Connection,
+    id: &str,
+    content: &str,
+    task_words: &[String],
+) -> Result<Option<(PageMeta, Vec<Block>)>> {
+    let page_name: Option<String> = conn
+        .query_row(
+            "SELECT p.name FROM blocks b JOIN pages p ON p.id = b.page_id WHERE b.id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(name) = page_name else { return Ok(None) };
+    let page = get_page(conn, &name)?.expect("page of an existing block");
+    let mut blocks = get_blocks(conn, &page.id)?;
+    for b in &mut blocks {
+        if b.id == id {
+            b.content = content.to_string();
+        }
+    }
+    match save_page(conn, &name, page.version, &blocks, task_words)? {
+        SaveOutcome::Saved(meta) => Ok(Some((meta, blocks))),
+        SaveOutcome::Conflict(..) => bail!("page changed while updating"),
+    }
+}
+
+/// Pages whose blocks mention each asset file name.
+pub fn asset_usage(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.name, b.content FROM blocks b JOIN pages p ON p.id = b.page_id
+         WHERE b.content LIKE '%assets/%'",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Marks or unmarks a page as a favourite, creating the page if needed.
 pub fn set_favorite(conn: &Connection, name: &str, on: bool) -> Result<()> {
     ensure_page(conn, name, now_ms())?;
@@ -266,6 +363,7 @@ pub fn save_page(
     name: &str,
     base_version: i64,
     blocks: &[Block],
+    task_words: &[String],
 ) -> Result<SaveOutcome> {
     validate_blocks(blocks)?;
     let name = name.trim();
@@ -341,7 +439,14 @@ pub fn save_page(
                 b.id, page.id, b.parent_id, pos as i64, b.content, b.collapsed, created, updated
             ])?;
             let tags = md::extract_tags(&b.content);
-            for (lower, name) in md::extract_refs(&b.content) {
+            let refs = md::extract_refs(&b.content);
+            // A block with a status is a task: it links to "task" without
+            // the text having to say #task.
+            if md::is_task(&b.content, task_words) && !refs.contains_key(TASK_PAGE) {
+                insert_ref.execute(params![b.id, TASK_PAGE, TASK_PAGE, 2])?;
+                linked.entry(TASK_PAGE.to_string()).or_insert(TASK_PAGE.to_string());
+            }
+            for (lower, name) in refs {
                 insert_ref.execute(params![b.id, lower, name, tags.contains(&lower)])?;
                 linked.entry(lower).or_insert(name);
             }
@@ -562,14 +667,14 @@ mod tests {
     fn save_load_and_conflict() {
         let mut c = mem();
         let blocks = vec![block("a", None, "hello [[World]]"), block("b", Some("a"), "child")];
-        let SaveOutcome::Saved(p) = save_page(&mut c, "Test", 0, &blocks).unwrap() else {
+        let SaveOutcome::Saved(p) = save_page(&mut c, "Test", 0, &blocks, &[]).unwrap() else {
             panic!("expected save")
         };
         assert_eq!(p.version, 1);
         assert_eq!(get_blocks(&c, &p.id).unwrap(), blocks);
 
         // A second device still holding version 0 gets a conflict.
-        match save_page(&mut c, "test", 0, &[block("x", None, "stale")]).unwrap() {
+        match save_page(&mut c, "test", 0, &[block("x", None, "stale")], &[]).unwrap() {
             SaveOutcome::Conflict(p, current) => {
                 assert_eq!(p.version, 1);
                 assert_eq!(current, blocks);
@@ -585,7 +690,7 @@ mod tests {
         assert_eq!(bl.len(), 1);
         assert_eq!(bl[0].page_name, "Test");
 
-        let SaveOutcome::Saved(p) = save_page(&mut c, "Test", 1, &blocks[..1]).unwrap() else {
+        let SaveOutcome::Saved(p) = save_page(&mut c, "Test", 1, &blocks[..1], &[]).unwrap() else {
             panic!()
         };
         assert_eq!(p.version, 2);
@@ -604,15 +709,15 @@ mod tests {
     fn rejects_bad_order() {
         let mut c = mem();
         let bad = vec![block("b", Some("a"), ""), block("a", None, "")];
-        assert!(save_page(&mut c, "X", 0, &bad).is_err());
+        assert!(save_page(&mut c, "X", 0, &bad, &[]).is_err());
     }
 
     #[test]
     fn journal_pages_are_detected() {
         let mut c = mem();
-        save_page(&mut c, "Nov 11th, 2026", 0, &[block("a", None, "x")]).unwrap();
-        save_page(&mut c, "Nov 9th, 2026", 0, &[block("b", None, "y")]).unwrap();
-        save_page(&mut c, "Not a journal", 0, &[block("c", None, "z")]).unwrap();
+        save_page(&mut c, "Nov 11th, 2026", 0, &[block("a", None, "x")], &[]).unwrap();
+        save_page(&mut c, "Nov 9th, 2026", 0, &[block("b", None, "y")], &[]).unwrap();
+        save_page(&mut c, "Not a journal", 0, &[block("c", None, "z")], &[]).unwrap();
         let j = journals(&c, None, 10).unwrap();
         assert_eq!(j.len(), 2);
         assert_eq!(j[0].page.journal_day, Some(20261111));

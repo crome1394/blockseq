@@ -4,11 +4,16 @@
 // versioning (the server answers 409 if another device saved first).
 
 import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
-import { renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, findFences, isPureCode } from './render.js';
 import {
-  imageFiles, uploadImage, pickImages, imageAt, withAlign, withoutImage,
+  renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
+} from './render.js';
+import {
+  imageFiles, uploadImage, pickImages, imageAt, withAlign, withMeta, withoutImage,
   openLightbox, copyImage, downloadImage,
 } from './images.js';
+import { getStatuses, statusOf, statusPrefix, stripStatus, withStatus, nextStatus, statusStyle } from './tasks.js';
+import { matches } from './keys.js';
+import { openPdfPane } from './pdfview.js';
 import { journalName } from './dates.js';
 import { toast, copyText, updateStatus, openModal } from './ui.js';
 import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
@@ -18,7 +23,8 @@ export const editors = new Set();
 
 const SAVE_DELAY = 600;
 const HISTORY_LIMIT = 200;
-const MARKER = /^(TODO|DOING|DONE|LATER|NOW|CANCELED) /;
+// A #quote tag on a block shows it and its children as a quotation.
+const QUOTE_TAG = /(^|\s)#quote(?=\s|$)/i;
 const NUMBERED = 'logseq.order-list-type';
 const COLOR = 'background-color';
 const HEADING = 'heading';
@@ -57,6 +63,14 @@ function el(tag, cls, text) {
 }
 
 // True if the caret sits inside a ``` code fence (including its first line).
+// True when pos is inside a #+BEGIN_… / #+END_… admonition.
+function inAdmonition(text, pos) {
+  const before = text.slice(0, pos);
+  const begin = before.lastIndexOf('#+BEGIN_');
+  if (begin === -1 || (begin > 0 && before[begin - 1] !== '\n')) return false;
+  return !/\n#\+END_/i.test(before.slice(begin)) && /\n#\+END_/i.test(text.slice(pos - 1));
+}
+
 function inFence(text, pos) {
   return ((text.slice(0, pos).match(/^```/gm) || []).length) % 2 === 1;
 }
@@ -264,6 +278,7 @@ export class PageEditor {
     });
     row.append(toggle, bullet, content);
     wrap.append(row);
+    if (QUOTE_TAG.test(node.content)) wrap.classList.add('quote-block');
     node.el = wrap;
     node.contentEl = content;
     if (node.children.length && !node.collapsed) {
@@ -298,6 +313,7 @@ export class PageEditor {
 
   rerenderContent(node) {
     if (!node.contentEl) return;
+    node.el?.classList.toggle('quote-block', QUOTE_TAG.test(node.content));
     this.styleContent(node, node.contentEl);
     node.contentEl.innerHTML = renderContent(node.content);
     decorateCode(node.contentEl);
@@ -338,10 +354,22 @@ export class PageEditor {
       openLightbox(img.src, img.alt);
       return;
     }
-    if (t.classList.contains('todo')) {
+    const badge = t.closest('.status-badge');
+    if (badge) {
       e.preventDefault();
-      this.beginOp();
-      this.setMarker(node, MARKER.exec(node.content)?.[1] === 'DONE' ? 'TODO' : 'DONE');
+      e.stopPropagation();
+      showStatusPicker(e.clientX, e.clientY, statusOf(node.content)?.word, (word) => {
+        this.beginOp();
+        this.setMarker(node, word);
+      });
+      return;
+    }
+    const pdf = t.closest('.pdf-wrap');
+    if (pdf) {
+      e.stopPropagation();
+      const index = Number(pdf.dataset.index);
+      if (t.closest('.pdf-menu')) this.showPdfMenu(node, index, e);
+      else if (t.closest('.pdf-open')) openPdfPane(pdf.dataset.src, pdf.querySelector('.pdf-open span')?.textContent || 'PDF');
       return;
     }
     const ref = t.closest('.block-ref');
@@ -485,6 +513,7 @@ export class PageEditor {
     }
 
     if (k === 'Enter' && plain) {
+      if (inAdmonition(v, start)) return; // a plain newline inside #+BEGIN_…
       if (inFence(v, start)) {
         if (this.expandFence(node, ta)) e.preventDefault();
         return; // otherwise a plain newline inside code
@@ -497,11 +526,18 @@ export class PageEditor {
       }
       e.preventDefault();
       this.split(node, start, end);
-    } else if (k === 'Enter' && mod) {
+    } else if (matches(e, 'cycleStatus')) {
       e.preventDefault();
       this.beginOp();
-      const cur = MARKER.exec(node.content)?.[1];
-      this.setMarker(node, cur === 'TODO' || cur === 'DOING' || cur === 'LATER' || cur === 'NOW' ? 'DONE' : cur === 'DONE' ? null : 'TODO');
+      this.setMarker(node, nextStatus(statusOf(node.content)?.word));
+    } else if (matches(e, 'statusPicker')) {
+      e.preventDefault();
+      const r = ta.getBoundingClientRect();
+      showStatusPicker(r.left, r.top + 20, statusOf(node.content)?.word, (word) => {
+        this.beginOp();
+        this.setMarker(node, word);
+        this.edit(node, ta.selectionStart);
+      });
     } else if (k === 'Tab' && !mod && !e.altKey) {
       e.preventDefault();
       if (!e.shiftKey && this.expandFence(node, ta)) return;
@@ -764,15 +800,14 @@ export class PageEditor {
     this.edit(n);
   }
 
-  setMarker(node, marker) {
-    const body = node.content.replace(MARKER, '');
-    const value = marker ? `${marker} ${body}` : body;
-    this.applyValue(node, value);
+  // Sets the task status word (null removes it).
+  setMarker(node, word) {
+    this.applyValue(node, withStatus(node.content, word));
   }
 
   // Sets "# " .. "###### " on the first line (level 0 removes it).
   setHeading(node, level) {
-    const marker = MARKER.exec(node.content)?.[0] || '';
+    const marker = statusPrefix(node.content);
     const rest = node.content.slice(marker.length).replace(/^#{1,6} /, '');
     const value = marker + (level ? '#'.repeat(level) + ' ' : '') + rest;
     this.applyValue(node, value);
@@ -985,7 +1020,7 @@ export class PageEditor {
     const editingNow = () => this.editing === node && this.ta;
     let start = at ?? (editingNow() ? this.ta.selectionStart : node.content.length);
     let end = at ?? (editingNow() ? this.ta.selectionEnd : node.content.length);
-    toast(files.length > 1 ? `Uploading ${files.length} images…` : 'Uploading image…');
+    toast(files.length > 1 ? `Uploading ${files.length} files…` : 'Uploading…');
     const parts = [];
     for (const f of files) {
       try { parts.push(await uploadImage(f)); } catch (err) { toast(`Upload failed: ${err.message}`); }
@@ -1006,7 +1041,7 @@ export class PageEditor {
       this.setContent(node, v.slice(0, start) + md + v.slice(end));
       this.rerenderContent(node);
     }
-    toast(parts.length > 1 ? 'Images added' : 'Image added');
+    toast(parts.length > 1 ? 'Files added' : 'Added');
   }
 
   showImageMenu(node, index, e) {
@@ -1018,16 +1053,45 @@ export class PageEditor {
       label: `${label}${align === a ? '  ✓' : ''}`,
       fn: () => this.changeText(node, withAlign(node.content, index, a)),
     });
+    const size = imageSize(info.meta);
+    const sizeItem = (s, label) => ({
+      label: `${label}${size === s ? '  ✓' : ''}`,
+      fn: () => this.changeText(node, withMeta(node.content, index, 'size', s || null)),
+    });
     showMenu(e.clientX, e.clientY, [
       alignItem('left', 'Align left'),
       alignItem('center', 'Align center'),
       alignItem('right', 'Align right'),
+      '-',
+      sizeItem('', 'Fit to width'),
+      sizeItem('original', 'Original size'),
+      sizeItem('half', 'Half size'),
+      sizeItem('quarter', 'Quarter size'),
+      sizeItem('small', 'Very small'),
       '-',
       { label: 'Copy image', fn: () => copyImage(info.url) },
       { label: 'Open in new tab', fn: () => window.open(info.url, '_blank', 'noopener') },
       { label: 'Download', fn: () => downloadImage(info.url) },
       '-',
       { label: 'Delete image', danger: true, fn: () => this.changeText(node, withoutImage(node.content, index)) },
+    ]);
+  }
+
+  showPdfMenu(node, index, e) {
+    lastEditor = this;
+    const info = imageAt(node.content, index);
+    if (!info) return;
+    const name = info.alt || decodeURIComponent(info.url.split('?')[0].split('/').pop());
+    const view = pdfView(info.meta);
+    showMenu(e.clientX, e.clientY, [
+      { label: `Show as link${view === 'link' ? '  ✓' : ''}`, fn: () => this.changeText(node, withMeta(node.content, index, 'view', null)) },
+      { label: `Show full preview${view === 'preview' ? '  ✓' : ''}`, fn: () => this.changeText(node, withMeta(node.content, index, 'view', 'preview')) },
+      '-',
+      { label: 'Open in side pane', fn: () => openPdfPane(info.url, name) },
+      { label: 'Open in new tab', fn: () => window.open(info.url, '_blank', 'noopener') },
+      { label: 'Download', fn: () => downloadImage(info.url) },
+      '-',
+      { label: 'Remove from block', danger: true, fn: () => this.changeText(node, withoutImage(node.content, index)) },
     ]);
   }
 
@@ -1053,7 +1117,7 @@ export class PageEditor {
     colors.append(none);
 
     const heads = el('div', 'menu-headings');
-    const current = /^(?:(?:TODO|DOING|DONE|LATER|NOW|CANCELED) )?(#{1,6}) /.exec(node.content)?.[1].length || 0;
+    const current = /^(#{1,6}) /.exec(stripStatus(node.content))?.[1].length || 0;
     const headBtn = (label, title, level, active) => {
       const b = el('button', 'head-btn' + (active ? ' active' : ''), label);
       b.title = title;
@@ -1224,7 +1288,7 @@ export function hydrateRefs(container) {
     if (!b) { span.classList.add('missing'); return; }
     span.dataset.page = b.page_name;
     span.title = b.page_name;
-    const text = b.content.replace(MARKER, '').split('\n')[0];
+    const text = stripStatus(b.content).split('\n')[0];
     // One level only, so refs to refs can't loop.
     span.innerHTML = renderContent(text, { inlineTags: true }).replace(/class="block-ref"/g, 'class="block-ref nested"');
   });
@@ -1240,14 +1304,20 @@ const SLASH_COMMANDS = [
   { id: 'blockref', label: 'Block reference', hint: '(( ))' },
   { id: 'code', label: 'Code block', hint: '```' },
   { id: 'table', label: 'Table', hint: '| a | b |' },
-  { id: 'todo', label: 'TODO' },
-  { id: 'done', label: 'DONE' },
   { id: 'numbered', label: 'Numbered list' },
   { id: 'h1', label: 'Heading 1', hint: '#' },
   { id: 'h2', label: 'Heading 2', hint: '##' },
   { id: 'h3', label: 'Heading 3', hint: '###' },
-  { id: 'quote', label: 'Quote', hint: '>' },
+  { id: 'quote', label: 'Quote line', hint: '>' },
+  { id: 'quoteblock', label: 'Quote block', hint: '#quote (block and children)' },
+  { id: 'tip', label: 'Tip', hint: 'admonition' },
+  { id: 'note', label: 'Note', hint: 'admonition' },
+  { id: 'important', label: 'Important', hint: 'admonition' },
+  { id: 'caution', label: 'Caution', hint: 'admonition' },
+  { id: 'warning', label: 'Warning', hint: 'admonition' },
+  { id: 'pinned', label: 'Pinned', hint: 'admonition' },
   { id: 'image', label: 'Upload image', hint: 'png, jpg, gif, webp' },
+  { id: 'pdf', label: 'Upload PDF', hint: 'link or preview' },
   { id: 'today', label: 'Today', hint: "today's journal" },
   { id: 'tomorrow', label: 'Tomorrow' },
   { id: 'yesterday', label: 'Yesterday' },
@@ -1255,8 +1325,11 @@ const SLASH_COMMANDS = [
 
 function slashMatches(query) {
   const q = query.toLowerCase();
-  return SLASH_COMMANDS.filter((c) => c.id.startsWith(q) || c.label.toLowerCase().includes(q))
-    .sort((a, b) => (b.id.startsWith(q) || b.label.toLowerCase().startsWith(q)) - (a.id.startsWith(q) || a.label.toLowerCase().startsWith(q)));
+  // Task statuses come from Settings, so they are added each time.
+  const statusCmds = getStatuses().map((s) => ({ id: `status:${s.word}`, label: s.label, hint: 'task status', word: s.word }));
+  const hit = (c) => c.id.startsWith(q) || c.label.toLowerCase().includes(q) || c.word?.toLowerCase().startsWith(q);
+  const first = (c) => c.id.startsWith(q) || c.label.toLowerCase().startsWith(q) || !!c.word?.toLowerCase().startsWith(q);
+  return [...SLASH_COMMANDS, ...statusCmds].filter(hit).sort((a, b) => first(b) - first(a));
 }
 
 function runSlash(editor, node, ta, cmd, at) {
@@ -1281,8 +1354,19 @@ function runSlash(editor, node, ta, cmd, at) {
       const t = `${lead}| Column 1 | Column 2 |\n| --- | --- |\n|  |  |`;
       return editor.replaceText(node, ta, at, at, t, lead.length + 2, lead.length + 10);
     }
-    case 'todo': return editor.setMarker(node, 'TODO');
-    case 'done': return editor.setMarker(node, 'DONE');
+    case 'tip': case 'note': case 'important': case 'caution': case 'warning': case 'pinned': {
+      const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
+      const kind = cmd.toUpperCase();
+      return editor.replaceText(node, ta, at, at, `${lead}#+BEGIN_${kind}\n\n#+END_${kind}`, lead.length + kind.length + 9);
+    }
+    case 'quoteblock': {
+      const first = ta.value.split('\n')[0];
+      if (/(^|\s)#quote(\s|$)/i.test(first)) return;
+      const pos = first.length;
+      return editor.replaceText(node, ta, pos, pos, `${first.trim() ? ' ' : ''}#quote`, ta.selectionStart - pos);
+    }
+    case 'pdf':
+      return pickImages('application/pdf,.pdf').then((files) => { if (files.length) editor.insertImages(node, files, at); });
     case 'numbered': return editor.toggleNumbered(node);
     case 'h1': case 'h2': case 'h3': return editor.setHeading(node, Number(cmd[1]));
     case 'quote': {
@@ -1294,6 +1378,8 @@ function runSlash(editor, node, ta, cmd, at) {
     case 'today': return editor.replaceText(node, ta, at, at, day(0));
     case 'tomorrow': return editor.replaceText(node, ta, at, at, day(1));
     case 'yesterday': return editor.replaceText(node, ta, at, at, day(-1));
+    default:
+      if (cmd.startsWith('status:')) return editor.setMarker(node, cmd.slice(7));
   }
 }
 
@@ -1422,6 +1508,23 @@ function acceptAutocomplete() {
 
 // entries: [label, fn, cls] arrays, {label, fn, shortcut, danger} objects,
 // {element} for custom rows, or '-' for a separator.
+// A small menu of coloured status badges; onPick(word or null).
+export function showStatusPicker(x, y, current, onPick) {
+  const entries = getStatuses().map((st) => {
+    const item = el('div', 'item status-item');
+    const b = el('span', 'status-badge', st.label);
+    b.setAttribute('style', statusStyle(st));
+    item.append(b);
+    if (st.word === current) item.append(el('span', 'check', '✓'));
+    item.addEventListener('click', () => { closeMenu(); onPick(st.word); });
+    return { element: item };
+  });
+  const none = el('div', 'item');
+  none.append(el('span', 'muted', 'No status'));
+  none.addEventListener('click', () => { closeMenu(); onPick(null); });
+  showMenu(x, y, [...entries, '-', { element: none }]);
+}
+
 export function showMenu(x, y, entries) {
   closeMenu();
   const menu = el('div', 'popup menu');

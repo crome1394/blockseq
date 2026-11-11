@@ -3,16 +3,19 @@
 //! Configuration (environment variables):
 //!   BLOCKSEQ_ADDR      listen address            (default 0.0.0.0:3030)
 //!   BLOCKSEQ_DATA      data directory            (default ./data); holds the
-//!                      database, Markdown mirror and uploaded images (assets/)
+//!                      "Main" workbook (database, Markdown mirror, assets/),
+//!                      other workbooks in workbooks/<name>/, and config.json
 //!   BLOCKSEQ_PASSWORD  require this password via HTTP basic auth (optional)
 
 mod api;
 mod assets;
+mod config;
 mod db;
 mod md;
+mod workbooks;
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -22,7 +25,6 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use base64::Engine;
-use rusqlite::Connection;
 use tokio::sync::broadcast;
 
 #[derive(rust_embed::Embed)]
@@ -30,59 +32,28 @@ use tokio::sync::broadcast;
 struct Assets;
 
 pub struct AppState {
-    pub db: Mutex<Connection>,
-    pub data_dir: PathBuf,
+    pub root: PathBuf,
+    pub workbooks: workbooks::Registry,
+    pub config: RwLock<config::Config>,
     pub events: broadcast::Sender<String>,
     pub password: Option<String>,
 }
 
 impl AppState {
-    pub fn notify(&self, event: serde_json::Value) {
+    /// Tells every open tab about a change in a workbook.
+    pub fn notify(&self, wb: &workbooks::Workbook, mut event: serde_json::Value) {
+        event["wb"] = serde_json::Value::String(wb.id.clone());
+        self.notify_all(event);
+    }
+
+    pub fn notify_all(&self, event: serde_json::Value) {
         // No receivers just means no other tab is open.
         let _ = self.events.send(event.to_string());
     }
 
-    /// Writes the page as a Logseq Markdown file. This is a readable backup;
-    /// the database stays the source of truth, so failures are only logged.
-    pub fn write_mirror(&self, page: &db::PageMeta, blocks: &[db::Block]) {
-        let path = self.data_dir.join(md::mirror_path(&page.name, page.journal_day));
-        // Like Logseq, a page with no text gets no file.
-        if blocks.iter().all(|b| b.content.trim().is_empty()) {
-            let _ = std::fs::remove_file(&path);
-            return;
-        }
-        if let Err(e) = write_atomic(&path, &md::page_to_markdown(blocks)) {
-            tracing::warn!("could not write {}: {e:#}", path.display());
-        }
+    pub fn task_words(&self) -> Vec<String> {
+        self.config.read().unwrap().task_words()
     }
-
-    pub fn remove_mirror(&self, page: &db::PageMeta) {
-        let path = self.data_dir.join(md::mirror_path(&page.name, page.journal_day));
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-fn write_atomic(path: &Path, contents: &str) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
-}
-
-/// Rewrites every Markdown mirror file from the database.
-fn rebuild_mirror(state: &AppState) -> Result<usize> {
-    let conn = state.db.lock().unwrap();
-    let pages = db::list_pages(&conn)?;
-    for summary in &pages {
-        if let Some(page) = db::get_page(&conn, &summary.name)? {
-            let blocks = db::get_blocks(&conn, &page.id)?;
-            state.write_mirror(&page, &blocks);
-        }
-    }
-    Ok(pages.len())
 }
 
 async fn require_password(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
@@ -172,16 +143,19 @@ async fn main() -> Result<()> {
 
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating {}", data_dir.display()))?;
-    let conn = db::open(&data_dir.join("blockseq.db")).context("opening database")?;
-
+    let config = config::Config::load(&data_dir.join("config.json"));
     let state = Arc::new(AppState {
-        db: Mutex::new(conn),
-        data_dir: data_dir.clone(),
+        root: data_dir.clone(),
+        workbooks: workbooks::Registry::new(data_dir.clone()),
+        config: RwLock::new(config),
         events: broadcast::channel(256).0,
         password,
     });
-    let count = rebuild_mirror(&state)?;
-    tracing::info!("{count} pages, Markdown mirror in {}", data_dir.display());
+    // Open Main now, so a broken database is reported at startup.
+    state
+        .workbooks
+        .get(workbooks::MAIN, &state.task_words())
+        .context("opening the Main workbook")?;
 
     let api = Router::new()
         .route(
@@ -194,15 +168,18 @@ async fn main() -> Result<()> {
         .route("/names", get(api::names))
         .route("/journals", get(api::journals))
         .route("/search", get(api::search))
-        .route("/block", get(api::get_block))
-        .route("/assets", post(api::upload_asset))
+        .route("/block", get(api::get_block).put(api::put_block))
+        .route("/tasks", get(api::tasks))
+        .route("/assets", get(api::list_assets).post(api::upload_asset).delete(api::delete_asset))
+        .route("/workbooks", get(api::list_workbooks).post(api::create_workbook))
+        .route("/config", get(api::get_config).put(api::put_config))
         .route("/events", get(api::events));
 
     let app = Router::new()
         .nest("/api", api)
         .route("/assets/{name}", get(api::get_asset))
         .fallback(static_file)
-        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), require_password))
         .with_state(state.clone());
 

@@ -5,14 +5,19 @@ and you use them from any browser on your LAN or tailnet.
 
 - Block outliner: nested bullets, indent and outdent, collapse, move, merge
 - Daily journals, `[[page links]]`, `#tags`, `((block refs))`, linked references
-- `TODO` / `DONE` checkboxes, Markdown formatting, code blocks, tables,
-  numbered lists
+- Workbooks: separate sets of notes, each in its own folder; Logseq graphs
+  copied onto the server are imported
+- Task statuses you define (Backlog, Todo, Doing, In Review, Done, Cancelled),
+  colour-coded, with a task list in a side pane
+- Markdown formatting, code blocks, tables, numbered lists, admonitions
+  (tip, note, warning…), quote blocks
 - `/` commands, undo/redo, tags at the end of a line shown on the right
 - Code blocks with syntax colours, line numbers and a copy button, plus an
   in-block code editor (current-line highlight, language picker, auto-indent)
 - Bullet menu with block colours, headings, block links, export; bullet threading
-- Paste or drop images (screenshots); click for a full-size preview, ⋮ menu to
-  align, copy, open, download or delete
+- Paste or drop images and PDFs; images can be resized and aligned, PDFs shown
+  as a link or a full preview, or opened in a side pane. An Assets page lists
+  every file
 - Sidebar calendar: pick any date to open (or create) that day's journal
 - Autosave, live refresh on other devices, and a prompt if two devices edit
   the same page at once
@@ -147,12 +152,32 @@ lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
 
 `/var/lib/blockseq/` (or `./data` locally) contains:
 
+- `config.json` holds settings shared by all devices (task statuses).
+- `workbooks/<name>/` holds every workbook except Main, each with the same
+  layout as below (its own `blockseq.db`, `pages/`, `journals/`, `assets/`).
+- The rest of the folder is the **Main** workbook:
 - `blockseq.db` is the SQLite database and the source of truth.
 - `pages/*.md` and `journals/*.md` are Logseq-format copies, rewritten on every
   save. You can point Logseq at this folder (read-only) to compare the two apps.
 - `assets/` holds pasted and uploaded images, linked from blocks as
   `![name](../assets/name.png)`, the same layout Logseq uses. Removing an image
   from a block keeps the file, so undo still works.
+
+**Adding a workbook from elsewhere (side-loading).** Copy a folder into
+`workbooks/` and give it to the service user, then pick it in *Open workbook…*:
+
+```sh
+rsync -avs ~/"Logseq/My Notes/" "blockseq:/var/lib/blockseq/workbooks/My Notes/"
+ssh blockseq 'chown -R blockseq:blockseq "/var/lib/blockseq/workbooks/My Notes"'
+```
+
+(`-s` lets rsync handle the space in the folder name.) The folder can be another Blockseq workbook, or a **Logseq graph** (with
+`pages/`, `journals/`, `assets/`, `logseq/config.edn`). A Logseq graph is
+imported the first time it's opened: Markdown pages and journals, block ids,
+collapsed state and favorites. `.org` files are skipped. The original Markdown
+files are copied to `logseq-original/` first, because Blockseq then rewrites
+`pages/` and `journals/` in its own (Logseq-compatible) format. Folder names may
+use letters, digits, spaces, `-`, `_` and `.`.
 
 Back up the whole folder, or let Proxmox back up the container. To copy
 the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.db"`.
@@ -168,9 +193,14 @@ the database while Blockseq is running, use `sqlite3 blockseq.db ".backup copy.d
 | Alt+Shift+Up/Down    | Move block among its siblings              |
 | Ctrl+Up / Ctrl+Down  | Collapse / expand the block and everything under it |
 | Up / Down            | Move between blocks                        |
-| Ctrl+Enter           | Cycle TODO → DONE → none                   |
+| Ctrl+Enter           | Next task status (Backlog → … → none)      |
 | Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) | Undo / redo                   |
-| Esc                  | Stop editing                               |
+| Esc                  | Stop editing (or close the side pane)      |
+| ?                    | Shortcut help (when not editing)           |
+| t                    | Task list                                  |
+| g then j / a / f     | Journals / All pages / Assets              |
+| w                    | Switch workbook                            |
+| Ctrl+Shift+Enter     | Pick a task status                         |
 | Ctrl+\\               | Show / hide the sidebar (or the ☰ button)  |
 | `[[` / `((`          | Page / block autocomplete                  |
 | `/`                  | Command menu (link, code, table, TODO, headings, numbered list, dates) |
@@ -205,7 +235,39 @@ and expand/collapse all.
 **Images:** paste a screenshot, drag an image onto a block, or use `/image`.
 PNG, JPEG, GIF, WebP and AVIF are accepted (checked by file content, not name).
 Click an image for a full-size preview. Its ⋮ button offers align
-left/center/right, copy image, open in new tab, download, and delete. *Copy image*
+left/center/right, size (fit, original, half, quarter, very small), copy image,
+open in new tab, download, and delete.
+
+**PDFs:** drag a PDF onto a block, paste it, or use `/pdf`. Its ⋮ menu switches
+between a link and a full inline preview, and offers open in the side pane, open
+in a new tab, download, and remove. Clicking the PDF's name opens it in the side
+pane. Files go in the workbook's `assets/` folder.
+
+**Assets** (sidebar) lists every file in the workbook's `assets/` folder with
+a thumbnail, size, date and the pages that use it, and buttons to open,
+download or delete. *Only unused* finds files no block links to any more.
+
+**Task statuses:** start a block with a status word (`TODO Call the bank`), use
+`/` and the status name, or press **Ctrl+Enter** to step through the statuses
+(**Ctrl+Shift+Enter** opens a picker). Click a status badge to change it. Finished
+statuses (Done, Cancelled) are struck out. Every task also counts as tagged
+`#task`, so the *task* page lists them all, without `#task` being added to the
+text. Define your own statuses (word, label, colour, finished or not) in
+*Settings → Tasks*; they are shared by all devices.
+
+**Task list:** the ☑ icon at the top right (or **t**) opens the open tasks in
+the side pane, grouped by page. Tick *Show completed* to include finished ones.
+Click a task to jump to it, or its badge to change its status.
+
+**Admonitions:** `/tip`, `/note`, `/important`, `/caution`, `/warning` and
+`/pinned` insert a box like Logseq's (stored as `#+BEGIN_TIP … #+END_TIP`).
+Enter adds a line inside the box.
+
+**Quotes:** `> text` is a quote line. Put `#quote` on a block (or `/quote block`)
+to show it and all its children as a quotation.
+
+**Help:** press **?** (when you're not typing in a block; Esc stops editing) for
+the list of shortcuts. Change them in *Settings → Keyboard*. *Copy image*
 needs HTTPS (your Caddy address), because browsers block image clipboard
 access on plain HTTP.
 
@@ -213,27 +275,33 @@ access on plain HTTP.
 Click a day to open its journal; if none exists, it's created. ‹ › change month,
 and clicking the month name returns to today. Hidden on narrow (phone) screens.
 
-**Journals:** *+ New journal* in the sidebar picks a date and creates that
-journal on the server (or opens it if it exists). *Open journal…* lists every
-journal with a filter. Delete a journal from its ⋯ menu (next to the title on
-the Journals page, or top right when it's open); this removes it and its
-Markdown file from the server.
+**Workbooks:** the box under the Blockseq name shows the workbook you're in;
+click it (or press **w**) to switch. *+ New workbook* makes an empty one. Each
+workbook has its own pages, journals, favorites and assets; task statuses are
+shared. Each browser remembers which workbook it was on.
+
+**Journals:** delete a journal from its ⋯ menu (next to the title on the
+Journals page, or top right when it's open); this removes it and its Markdown
+file from the server. The calendar opens or creates any day.
 
 **Favorites:** click ☆ next to a page title to star it. Starred pages are listed
 in the sidebar. They are stored on the server, so every computer shows the same list.
 
-**All pages** is a table of page name, tags, created and updated time. Click a
-column heading to sort. The filter matches names and tags.
+**All pages** is a table of favorite star, page name, tags, created and updated
+time. Click a star to (un)favorite, or a column heading to sort. The filter
+matches names and tags.
 
-**Settings** (bottom of the sidebar) are saved per browser:
-- theme (Automatic, Light, Dark, Sepia, Solarized Light/Dark, Catppuccin
-  Latte/Mocha, Nord, Gruvbox, Dracula, Tokyo Night)
-- full window width
-- favorites in the sidebar
-- a colour per tag
-- bullet threading, and showing it all the time
-- syntax colours while editing code
-- wrapping long code lines (otherwise they scroll sideways)
+**Settings** (bottom of the sidebar), by category:
+- *Appearance:* theme (Automatic, Light, Dark, Sepia, Solarized Light/Dark,
+  Catppuccin Latte/Mocha, Nord, Gruvbox, Dracula, Tokyo Night), full window
+  width, a colour per tag
+- *Editor:* open links in a new tab, bullet threading (and showing it all the
+  time), syntax colours while editing code, wrapping long code lines
+- *Sidebar:* favorites
+- *Tasks:* the status list (shared by all devices)
+- *Keyboard:* change any global shortcut
+
+Everything except task statuses is saved per browser.
 
 Code highlighting is built in, with no third-party library. It covers bash/shell,
 ini/conf/toml/systemd, YAML, JSON, Python, JavaScript/TypeScript, Rust, Go,
@@ -250,5 +318,5 @@ sync work, the API, and where future features would go.
 ## Not done yet
 
 Page rename, zooming into a block, editing inside linked references,
-unlinked references, queries, image resizing, cleanup of unused images, and
+unlinked references, queries, renaming or deleting workbooks from the UI, and
 full-text ranking.

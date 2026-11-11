@@ -19,7 +19,6 @@ fn ordinal(day: u32) -> &'static str {
     }
 }
 
-#[cfg(test)]
 /// Formats a day (yyyymmdd) the way Logseq names journal pages: "Nov 11th, 2026".
 pub fn journal_name(day: i64) -> String {
     let (y, m, d) = (day / 10000, (day / 100) % 100, (day % 100) as u32);
@@ -98,7 +97,8 @@ fn scan_refs(content: &str, mut add: impl FnMut(&str, bool)) {
             .iter()
             .take_while(|c| !c.is_whitespace() && !",.!?;:()[]\"'`#".contains(**c))
             .collect();
-        if !tag.is_empty() {
+        // "#+BEGIN_TIP" and friends are Logseq directives, not tags.
+        if !tag.is_empty() && !tag.starts_with('+') {
             add(&tag, true);
         }
     }
@@ -120,6 +120,24 @@ fn scan_refs(content: &str, mut add: impl FnMut(&str, bool)) {
 pub fn page_to_markdown(blocks: &[Block]) -> String {
     let mut depth = std::collections::HashMap::<&str, usize>::new();
     let mut out = String::new();
+    let mut blocks = blocks;
+    // A first block of only "key:: value" lines is the page's properties,
+    // which Logseq writes at the top of the file without a dash.
+    if let Some(first) = blocks.first() {
+        let props_only = first.parent_id.is_none()
+            && !first.content.trim().is_empty()
+            && !blocks.iter().any(|b| b.parent_id.as_deref() == Some(first.id.as_str()))
+            && first.content.lines().all(|l| {
+                l.split_once("::").is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+                })
+            });
+        if props_only {
+            out.push_str(&first.content);
+            out.push_str("\n\n");
+            blocks = &blocks[1..];
+        }
+    }
     for b in blocks {
         let d = b
             .parent_id
@@ -171,9 +189,174 @@ pub fn mirror_path(name: &str, journal_day: Option<i64>) -> String {
     format!("pages/{file}.md")
 }
 
+/// True when a block starts with one of the task status words
+/// ("TODO Buy milk"), which makes it a task.
+pub fn is_task(content: &str, words: &[String]) -> bool {
+    let first = content.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+    !first.is_empty() && words.iter().any(|w| w == first)
+}
+
+/// Page name for a file in a Logseq graph: `pages/foo___bar.md` → "foo/bar",
+/// `journals/2026_11_11.md` → "Nov 11th, 2026". `None` for other files.
+pub fn page_name_from_file(folder: &str, file_stem: &str) -> Option<String> {
+    if folder == "journals" {
+        let parts: Vec<&str> = file_stem.split(['_', '-']).collect();
+        if let [y, m, d] = parts[..] {
+            let (y, m, d): (i64, i64, i64) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);
+            chrono::NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)?;
+            return Some(journal_name(y * 10000 + m * 100 + d));
+        }
+        return None;
+    }
+    // Undo Logseq's file-name escaping: "___" for "/", %XX for reserved chars.
+    let name = file_stem.replace("___", "/");
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit()
+        {
+            let hex = |c: u8| (c as char).to_digit(16).unwrap() as u8;
+            out.push(hex(bytes[i + 1]) * 16 + hex(bytes[i + 2]));
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    let name = String::from_utf8(out).ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Parses a Logseq Markdown page ("- block" lines, tab or space indented)
+/// into blocks in document order. `id::` and `collapsed::` lines become the
+/// block's id and collapsed flag; other properties stay in the text. Lines
+/// before the first "- " (page properties) become the first block.
+pub fn parse_outline(text: &str) -> Vec<Block> {
+    struct Open {
+        indent: usize,
+        id: String,
+    }
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut stack: Vec<Open> = Vec::new();
+    let mut content_col = 0usize; // where the current block's text starts
+    let mut in_fence = false;
+    let mut preamble: Vec<String> = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    let width = |line: &str| -> usize {
+        let mut w = 0;
+        for c in line.chars() {
+            match c {
+                '\t' => w += 2,
+                ' ' => w += 1,
+                _ => break,
+            }
+        }
+        w
+    };
+
+    for raw in text.replace("\r\n", "\n").split('\n') {
+        let trimmed = raw.trim_start();
+        let is_item = !in_fence && (trimmed == "-" || trimmed.starts_with("- "));
+        if is_item {
+            let indent = width(raw);
+            while stack.last().is_some_and(|o| o.indent >= indent) {
+                stack.pop();
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            blocks.push(Block {
+                id: id.clone(),
+                parent_id: stack.last().map(|o| o.id.clone()),
+                content: trimmed.strip_prefix('-').unwrap_or("").trim_start().to_string(),
+                collapsed: false,
+            });
+            stack.push(Open { indent, id });
+            content_col = indent + 2;
+            in_fence = blocks.last().unwrap().content.trim_start().starts_with("```");
+            continue;
+        }
+        let Some(block) = blocks.last_mut() else {
+            if !trimmed.is_empty() {
+                preamble.push(trimmed.to_string());
+            }
+            continue;
+        };
+        // Continuation line: strip the block's indentation.
+        let mut line = raw;
+        let mut w = 0;
+        while w < content_col {
+            match line.chars().next() {
+                Some('\t') => { w += 2; line = &line[1..]; }
+                Some(' ') => { w += 1; line = &line[1..]; }
+                _ => break,
+            }
+        }
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence {
+            let t = line.trim();
+            if let Some(v) = t.strip_prefix("id::") {
+                let v = v.trim();
+                if uuid::Uuid::parse_str(v).is_ok() && seen_ids.insert(v.to_string()) {
+                    let old = std::mem::replace(&mut block.id, v.to_string());
+                    if let Some(o) = stack.last_mut() { if o.id == old { o.id = v.to_string(); } }
+                }
+                continue;
+            }
+            if let Some(v) = t.strip_prefix("collapsed::") {
+                block.collapsed = v.trim() == "true";
+                continue;
+            }
+        }
+        block.content.push('\n');
+        block.content.push_str(line);
+    }
+    for b in &mut blocks {
+        let trimmed = b.content.trim_end().len();
+        b.content.truncate(trimmed);
+    }
+    if !preamble.is_empty() {
+        blocks.insert(0, Block {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            content: preamble.join("\n"),
+            collapsed: false,
+        });
+    }
+    blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logseq_outline_is_parsed() {
+        let text = "title:: Plans\n- One\n\tid:: 6f9619ff-8b86-d011-b42d-00cf4fc964ff\n\t- Child\n\t  second line\n\t  collapsed:: true\n\t\t- Grandchild\n- ```bash\n  - not a block\n  ```\n- Two";
+        let b = parse_outline(text);
+        let c: Vec<&str> = b.iter().map(|b| b.content.as_str()).collect();
+        assert_eq!(c, ["title:: Plans", "One", "Child\nsecond line", "Grandchild", "```bash\n- not a block\n```", "Two"]);
+        assert_eq!(b[1].id, "6f9619ff-8b86-d011-b42d-00cf4fc964ff");
+        assert_eq!(b[2].parent_id.as_deref(), Some("6f9619ff-8b86-d011-b42d-00cf4fc964ff"));
+        assert_eq!(b[3].parent_id.as_deref(), Some(b[2].id.as_str()));
+        assert!(b[2].collapsed);
+        assert_eq!(b[4].parent_id, None);
+    }
+
+    #[test]
+    fn logseq_file_names() {
+        assert_eq!(page_name_from_file("pages", "foo___bar").as_deref(), Some("foo/bar"));
+        assert_eq!(page_name_from_file("pages", "a%3Ab").as_deref(), Some("a:b"));
+        assert_eq!(page_name_from_file("pages", "50%é").as_deref(), Some("50%é"));
+        assert_eq!(page_name_from_file("journals", "2026_11_11").as_deref(), Some("Nov 11th, 2026"));
+        assert_eq!(page_name_from_file("journals", "notes"), None);
+        assert!(is_task("TODO buy milk", &["TODO".into()]));
+        assert!(!is_task("TODOS", &["TODO".into()]));
+    }
 
     #[test]
     fn journal_names_round_trip() {
@@ -197,6 +380,7 @@ mod tests {
         let names: Vec<&str> = refs.values().map(String::as_str).collect();
         assert_eq!(names, ["Alice Smith", "Big Plans", "home", "rust", "work"]);
         assert!(extract_refs("# Heading and a#b").is_empty());
+        assert!(extract_refs("#+BEGIN_TIP\nhello\n#+END_TIP").is_empty());
         let tags: Vec<String> = extract_tags("Met [[Alice Smith]] about #rust and #[[Big Plans]]\ntags:: work").into_iter().collect();
         assert_eq!(tags, ["big plans", "rust", "work"]);
     }

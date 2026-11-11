@@ -1,5 +1,9 @@
 // Turns block text (Logseq-flavoured Markdown) into HTML for display.
 
+import { getSetting } from './settings.js';
+import { withWb } from './workbook.js';
+import { statusOf, badgeHtml } from './tasks.js';
+
 export function esc(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
@@ -8,10 +12,36 @@ function safeUrl(url) {
   return /^(https?:|mailto:|\/|#|\.)/i.test(url) ? url : '#';
 }
 
-// Images are stored Logseq-style as ../assets/<name>; the server serves them
-// at /assets/<name>.
+// Images and PDFs are stored Logseq-style as ../assets/<name>; the server
+// serves them at /assets/<name>?wb=<workbook>.
 export function assetUrl(url) {
-  return url.startsWith('../assets/') ? '/assets/' + url.slice('../assets/'.length) : safeUrl(url);
+  return url.startsWith('../assets/') ? withWb('/assets/' + url.slice('../assets/'.length)) : safeUrl(url);
+}
+
+// target="_blank" when Settings > Open links in a new tab is on.
+function linkTarget() {
+  return getSetting('linksNewTab') ? ' target="_blank" rel="noopener"' : ' rel="noopener"';
+}
+
+export function imageSize(meta) {
+  return /:size\s+"?(original|half|quarter|small)"?/.exec(meta || '')?.[1] || '';
+}
+
+export function pdfView(meta) {
+  return /:view\s+"?preview"?/.test(meta || '') ? 'preview' : 'link';
+}
+
+const FILE_ICON = '<svg class="file-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
+
+function pdfHtml(url, alt, meta, index) {
+  const name = esc(alt || decodeURIComponent(url.split('?')[0].split('/').pop()));
+  const open = `<button type="button" class="pdf-open" title="Open in side pane">${FILE_ICON}<span>${name}</span></button>`
+    + '<button type="button" class="pdf-menu" title="PDF options">⋮</button>';
+  if (pdfView(meta) === 'preview') {
+    return `<span class="pdf-wrap pdf-preview" data-index="${index}" data-src="${esc(url)}"><span class="pdf-head">${open}</span>`
+      + `<iframe class="pdf-frame" src="${esc(url)}#view=FitH" loading="lazy" title="${name}"></iframe></span>`;
+  }
+  return `<span class="pdf-wrap" data-index="${index}" data-src="${esc(url)}">${open}</span>`;
 }
 
 // ![alt](url){:align "center"} — the {...} part is Logseq's image metadata.
@@ -38,7 +68,7 @@ const INLINE = [
   '(?<![\\w*])\\*(?<it1>[^*\\s](?:[^*\\n]*[^*\\s])?)\\*(?![\\w*])',
   '(?<![\\w])_(?<it2>[^_\\s](?:[^_\\n]*[^_\\s])?)_(?![\\w])',
   '(?<url>https?:\\/\\/[^\\s<>()]*[^\\s<>().,;:!?\'"])',
-  '(?<![^\\s(])#(?<tag>[^\\s#,.!?;:()\\[\\]"\'`]+)',
+  '(?<![^\\s(])#(?<tag>[^\\s#,.!?;:()\\[\\]"\'`+][^\\s#,.!?;:()\\[\\]"\'`]*)',
 ].join('|');
 
 // Hues that stay distinct from each other in light and dark themes.
@@ -67,13 +97,17 @@ export function inline(text) {
     out += esc(text.slice(last, m.index));
     const g = m.groups;
     if (g.code !== undefined) out += `<code>${esc(g.code)}</code>`;
+    else if (g.imgUrl !== undefined && /\.pdf$/i.test(g.imgUrl.split('?')[0])) {
+      out += pdfHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);
+    }
     else if (g.imgUrl !== undefined) {
       const align = imageAlign(g.imgMeta);
+      const size = imageSize(g.imgMeta);
       out += `<span class="img-wrap align-${align}" data-index="${imageIndex++}"><span class="img-box">`
-        + `<img src="${esc(assetUrl(g.imgUrl))}" alt="${esc(g.imgAlt)}" loading="lazy">`
+        + `<img src="${esc(assetUrl(g.imgUrl))}" alt="${esc(g.imgAlt)}" loading="lazy"${size ? ` data-size="${size}"` : ''}>`
         + '<button class="img-menu" type="button" title="Image options">⋮</button></span></span>';
     }
-    else if (g.linkUrl !== undefined) out += `<a class="ext" href="${esc(safeUrl(g.linkUrl))}" target="_blank" rel="noopener">${inline(g.linkText)}</a>`;
+    else if (g.linkUrl !== undefined) out += `<a class="ext" href="${esc(safeUrl(g.linkUrl))}"${linkTarget()}>${inline(g.linkText)}</a>`;
     else if (g.tagb !== undefined) out += pageLink(g.tagb, true);
     else if (g.page !== undefined) out += pageLink(g.page);
     else if (g.bref !== undefined) out += `<span class="block-ref" data-ref="${esc(g.bref.toLowerCase())}">((${esc(g.bref)}))</span>`;
@@ -82,14 +116,12 @@ export function inline(text) {
     else if (g.hl !== undefined) out += `<mark>${inline(g.hl)}</mark>`;
     else if (g.it1 !== undefined) out += `<em>${inline(g.it1)}</em>`;
     else if (g.it2 !== undefined) out += `<em>${inline(g.it2)}</em>`;
-    else if (g.url !== undefined) out += `<a class="ext" href="${esc(g.url)}" target="_blank" rel="noopener">${esc(g.url)}</a>`;
+    else if (g.url !== undefined) out += `<a class="ext" href="${esc(g.url)}"${linkTarget()}>${esc(g.url)}</a>`;
     else if (g.tag !== undefined) out += pageLink(g.tag, true);
     last = re.lastIndex;
   }
   return out + esc(text.slice(last));
 }
-
-const MARKER = /^(TODO|DOING|DONE|LATER|NOW|CANCELED) /;
 
 // Block properties Blockseq manages itself. They are stored in the block text
 // the way Logseq writes them (so the Markdown mirror stays compatible), but
@@ -126,7 +158,8 @@ const FENCE_SRC = '^```([^\\n`]*)\\n([\\s\\S]*?)(?:\\n```[ \\t]*(?=\\n|(?![\\s\\
 // Finds the code fences in a block's raw text, in the same order the renderer
 // numbers them (data-fence). Positions are offsets into `text`.
 export function findFences(text) {
-  const offset = MARKER.exec(text)?.[0].length || 0;
+  const st = statusOf(text);
+  const offset = st ? st.word.length + (text[st.word.length] === ' ' ? 1 : 0) : 0;
   const body = text.slice(offset);
   const re = new RegExp(FENCE_SRC, 'gm');
   const out = [];
@@ -184,7 +217,7 @@ function renderLine(line, pre) {
   const h = /^(#{1,6}) (.*)$/.exec(line);
   if (h) return `<div class="h${h[1].length}">${pre}${inline(h[2])}</div>`;
   const q = /^> ?(.*)$/.exec(line);
-  if (q) return `<blockquote>${pre}${inline(q[1])}</blockquote>`;
+  if (q) return `<blockquote class="md-quote">${pre}${inline(q[1])}</blockquote>`;
   return `<div>${pre}${inline(line) || (pre ? '' : '<br>')}</div>`;
 }
 
@@ -203,6 +236,45 @@ function renderLines(text, prefix) {
     }
     out += renderLine(lines[i], pre);
   }
+  return out;
+}
+
+// Admonitions, written the way Logseq does: #+BEGIN_TIP … #+END_TIP.
+const ADMON_SRC = '^#\\+BEGIN_(NOTE|TIP|IMPORTANT|CAUTION|WARNING|PINNED|QUOTE)[^\\n]*\\n?([\\s\\S]*?)\\n?^#\\+END_\\1[ \\t]*$';
+export const ADMON_KINDS = ['tip', 'note', 'important', 'caution', 'warning', 'pinned'];
+const svg = (d) => `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ADMON_ICONS = {
+  tip: svg('M9 18h6M10 21h4M12 3a6 6 0 0 0-3.8 10.6c.6.6.8 1.3.8 2.4h6c0-1.1.2-1.8.8-2.4A6 6 0 0 0 12 3zM12 7v0'),
+  note: svg('M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 8h6M9 12h6M9 16h4'),
+  pinned: svg('M12 16v5M8.5 3h7l-1 5.5L18 12v1.5H6V12l3.5-3.5z'),
+  important: svg('M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7.5v5.5M12 16.5v.01'),
+  caution: svg('M12 3c.8 3.2 5 5.4 5 10.2A5 5 0 0 1 7 13.2c0-2.3 1.2-3.9 2.4-5 .3 1.9 1.3 3 2.4 3.2-.4-3.1.2-5.9.2-8.4z'),
+  warning: svg('M12 3.5 22 20.5H2zM12 10v5M12 17.8v.01'),
+};
+
+function renderAdmonition(kind, inner) {
+  kind = kind.toLowerCase();
+  const body = inner.trim() ? renderLines(inner, '') : '<div><br></div>';
+  if (kind === 'quote') return `<blockquote class="md-quote">${body}</blockquote>`;
+  return `<div class="admonition adm-${kind}"><span class="adm-icon" title="${kind}">${ADMON_ICONS[kind]}</span><div class="adm-body">${body}</div></div>`;
+}
+
+// Text between code fences: admonitions, then ordinary lines.
+function renderBody(text, prefix) {
+  const re = new RegExp(ADMON_SRC, 'gim');
+  let out = '';
+  let last = 0;
+  let first = true;
+  let m;
+  while ((m = re.exec(text))) {
+    const before = text.slice(last, m.index).replace(/\n$/, '');
+    if (before || (first && prefix)) out += renderLines(before, first ? prefix : '');
+    first = false;
+    out += renderAdmonition(m[1], m[2]);
+    last = re.lastIndex;
+    if (text[last] === '\n') last++;
+  }
+  if (last < text.length || first) out += renderLines(text.slice(last), first ? prefix : '');
   return out;
 }
 
@@ -230,13 +302,11 @@ export function renderContent(src, opts = {}) {
   imageIndex = 0;
   let prefix = '';
   let cls = '';
-  const marker = MARKER.exec(src);
-  if (marker) {
-    const done = marker[1] === 'DONE';
-    const off = marker[1] === 'CANCELED';
-    cls = done ? 'is-done' : off ? 'is-canceled' : '';
-    prefix = `<input type="checkbox" class="todo" ${done ? 'checked' : ''}><span class="marker m-${marker[1].toLowerCase()}">${marker[1]}</span> `;
-    src = src.slice(marker[0].length);
+  const st = statusOf(src);
+  if (st) {
+    cls = st.done ? 'is-done' : 'is-task';
+    prefix = `${badgeHtml(st)} `;
+    src = src.slice(st.word.length).replace(/^ /, '');
   }
   let tags = [];
   if (!opts.inlineTags) ({ src, tags } = pullTrailingTags(src));
@@ -247,13 +317,13 @@ export function renderContent(src, opts = {}) {
   let m;
   while ((m = fence.exec(src))) {
     const before = src.slice(last, m.index).replace(/\n$/, '');
-    if (before || (last === 0 && prefix)) html += renderLines(before, last === 0 ? prefix : '');
+    if (before || (last === 0 && prefix)) html += renderBody(before, last === 0 ? prefix : '');
     const lang = m[1].trim();
     html += `<pre class="code" data-fence="${fenceIndex++}"${lang ? ` data-lang="${esc(lang)}"` : ''}><code>${esc(m[2])}</code></pre>`;
     last = fence.lastIndex;
     if (src[last] === '\n') last++;
   }
-  if (last < src.length || last === 0) html += renderLines(src.slice(last), last === 0 ? prefix : '');
+  if (last < src.length || last === 0) html += renderBody(src.slice(last), last === 0 ? prefix : '');
   const tagHtml = tags.length ? `<div class="block-tags">${tags.map((t) => pageLink(t, true)).join('')}</div>` : '';
   return `<div class="rendered ${cls}"><div class="body">${html}</div>${tagHtml}</div>`;
 }

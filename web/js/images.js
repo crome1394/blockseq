@@ -4,14 +4,19 @@
 import { clientId } from './api.js';
 import { IMAGE_SRC, assetUrl } from './render.js';
 import { toast } from './ui.js';
+import { withWb } from './workbook.js';
 
+const isPdf = (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+
+// Images and PDFs from a drop, paste or file picker.
 export function imageFiles(dataTransfer) {
-  return [...(dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+  return [...(dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/') || isPdf(f));
 }
 
-// Uploads one image; resolves to the Markdown that shows it.
+// Uploads one image or PDF; resolves to the Markdown that shows it.
+// Both use Logseq's syntax: ![name](../assets/file).
 export async function uploadImage(file) {
-  const res = await fetch('/api/assets', {
+  const res = await fetch(withWb('/api/assets'), {
     method: 'POST',
     // Header values must be plain ASCII; the server cleans the name further.
     headers: { 'X-Client-Id': clientId, 'X-Filename': (file.name || 'image').replace(/[^\w.-]+/g, '_') },
@@ -28,11 +33,11 @@ function altFrom(name) {
 }
 
 // Opens a file picker for images; resolves to the chosen files.
-export function pickImages() {
+export function pickImages(accept = 'image/*') {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'image/*';
+    input.accept = accept;
     input.multiple = true;
     input.addEventListener('change', () => resolve(imageFiles({ files: input.files })));
     input.click();
@@ -56,14 +61,20 @@ export function imageAt(text, index) {
   return m ? { alt: m[1], src: m[2], url: assetUrl(m[2]), meta: m[3] || '' } : null;
 }
 
-// Returns the text with the image's alignment changed ('left' = default).
-export function withAlign(text, index, align) {
+// Returns the text with one {:key "value"} setting of the image (or PDF)
+// changed; `value` null removes it.
+export function withMeta(text, index, key, value) {
   const m = nthImage(text, index);
   if (!m) return text;
-  let meta = (m[3] || '').replace(/,?\s*:align\s+"?\w+"?/, '').trim().replace(/^,\s*/, '');
-  if (align !== 'left') meta = meta ? `${meta}, :align "${align}"` : `:align "${align}"`;
+  let meta = (m[3] || '').replace(new RegExp(`,?\\s*:${key}\\s+"?[\\w-]+"?`), '').trim().replace(/^,\s*/, '');
+  if (value) meta = meta ? `${meta}, :${key} "${value}"` : `:${key} "${value}"`;
   const md = `![${m[1]}](${m[2]})${meta ? `{${meta}}` : ''}`;
   return text.slice(0, m.index) + md + text.slice(m.index + m[0].length);
+}
+
+// Returns the text with the image's alignment changed ('left' = default).
+export function withAlign(text, index, align) {
+  return withMeta(text, index, 'align', align === 'left' ? null : align);
 }
 
 export function withoutImage(text, index) {
@@ -118,7 +129,7 @@ async function toPng(blob) {
 export function downloadImage(url) {
   const a = document.createElement('a');
   a.href = url;
-  a.download = decodeURIComponent(url.split('/').pop() || 'image');
+  a.download = decodeURIComponent(url.split('?')[0].split('/').pop() || 'file');
   document.body.append(a);
   a.click();
   a.remove();

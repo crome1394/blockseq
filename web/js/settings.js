@@ -8,6 +8,7 @@ const DEFAULTS = {
   tagColors: true, // give each trailing tag its own colour
   threading: true, // highlight the path from the edited block up to its parents
   threadAlways: false, // show lines from every block to its parent all the time
+  linksNewTab: true, // open web links in a new browser tab
   liveCode: true, // syntax colours while editing code blocks
   codeWrap: false, // wrap long lines in code blocks instead of scrolling sideways
 };
@@ -54,52 +55,55 @@ export const THEMES = [
   ['tokyo-night', 'Tokyo Night'],
 ];
 
-// [name, label, help, choices?]. Without choices the setting is a checkbox.
-const OPTIONS = [
-  ['theme', 'Theme', 'Colours for the whole app.', THEMES],
-  ['wideLayout', 'Use the full window width', 'Pages grow with the window instead of staying a fixed reading width.'],
-  ['favorites', 'Favorites in the sidebar', 'Show starred pages in the sidebar. Star a page with ☆ next to its title.'],
-  ['tagColors', 'Colour tags', 'Give each tag at the end of a block its own colour.'],
-  ['threading', 'Bullet threading', 'Highlight the line from the block you are editing up through its parents.'],
-  ['threadAlways', 'Always show bullet threading', 'Show the lines connecting every block to its parent all the time, not only while editing.'],
-  ['liveCode', 'Highlight code while editing', 'Show syntax colours while you type in a code block. When off, code is plain text until you click away.'],
-  ['codeWrap', 'Wrap long lines in code', 'Wrap long lines onto the next row. When off, long lines scroll sideways.'],
+// Settings grouped for the Settings screen (settings-ui.js). Each option is
+// [name, label, help, choices?]; without choices it is a checkbox. Groups
+// with `custom` are drawn by settings-ui.js (task statuses, key bindings).
+export const CATEGORIES = [
+  { id: 'appearance', label: 'Appearance', options: [
+    ['theme', 'Theme', 'Colours for the whole app.', THEMES],
+    ['wideLayout', 'Use the full window width', 'Pages grow with the window instead of staying a fixed reading width.'],
+    ['tagColors', 'Colour tags', 'Give each tag at the end of a block its own colour.'],
+  ] },
+  { id: 'editor', label: 'Editor', options: [
+    ['linksNewTab', 'Open links in a new tab', 'Web links (including ones made with /link) open in a new browser tab. When off, they open in this tab.'],
+    ['threading', 'Bullet threading', 'Highlight the line from the block you are editing up through its parents.'],
+    ['threadAlways', 'Always show bullet threading', 'Show the lines connecting every block to its parent all the time, not only while editing.'],
+    ['liveCode', 'Highlight code while editing', 'Show syntax colours while you type in a code block.'],
+    ['codeWrap', 'Wrap long lines in code', 'Wrap long lines onto the next row. When off, long lines scroll sideways.'],
+  ] },
+  { id: 'sidebar', label: 'Sidebar', options: [
+    ['favorites', 'Favorites in the sidebar', 'Show starred pages in the sidebar. Star a page with ☆ next to its title.'],
+  ] },
+  { id: 'tasks', label: 'Tasks', custom: true },
+  { id: 'keyboard', label: 'Keyboard', custom: true },
 ];
 
-export function settingsForm() {
-  const form = document.createElement('div');
-  form.className = 'settings';
-  for (const [name, label, help, choices] of OPTIONS) {
-    const row = document.createElement('label');
-    row.className = 'setting';
-    const text = document.createElement('div');
-    text.innerHTML = `<div class="setting-label"></div><div class="setting-help"></div>`;
-    text.firstChild.textContent = label;
-    text.lastChild.textContent = help;
-    if (choices) {
-      row.classList.add('setting-select');
-      const select = document.createElement('select');
-      for (const [value, text] of choices) {
-        const opt = document.createElement('option');
-        opt.value = value;
-        opt.textContent = text;
-        select.append(opt);
-      }
-      select.value = getSetting(name);
-      select.addEventListener('change', () => setSetting(name, select.value));
-      row.append(text, select);
-    } else {
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.checked = !!getSetting(name);
-      box.addEventListener('change', () => setSetting(name, box.checked));
-      row.append(box, text);
+// One setting as a form row (checkbox, or a select when it has choices).
+export function settingRow([name, label, help, choices]) {
+  const row = document.createElement('label');
+  row.className = 'setting';
+  const text = document.createElement('div');
+  text.innerHTML = `<div class="setting-label"></div><div class="setting-help"></div>`;
+  text.firstChild.textContent = label;
+  text.lastChild.textContent = help;
+  if (choices) {
+    row.classList.add('setting-select');
+    const select = document.createElement('select');
+    for (const [value, t] of choices) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = t;
+      select.append(opt);
     }
-    form.append(row);
+    select.value = getSetting(name);
+    select.addEventListener('change', () => setSetting(name, select.value));
+    row.append(text, select);
+  } else {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = !!getSetting(name);
+    box.addEventListener('change', () => setSetting(name, box.checked));
+    row.append(box, text);
   }
-  const note = document.createElement('p');
-  note.className = 'muted small';
-  note.textContent = 'Settings are saved in this browser, so each computer keeps its own.';
-  form.append(note);
-  return form;
+  return row;
 }

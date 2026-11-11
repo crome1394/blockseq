@@ -1,4 +1,4 @@
-//! Uploaded images, stored as files in `BLOCKSEQ_DATA/assets/`.
+//! Uploaded images and PDFs, stored as files in the workbook's `assets/`.
 //!
 //! Blocks reference them the way Logseq does: `![image](../assets/name.png)`.
 //! That path is relative to the Markdown mirror's `pages/` folder, so the
@@ -51,10 +51,51 @@ pub fn valid_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// Saves an image and returns its file name, e.g. "image_1762870000000_0.png".
+/// File type from the first bytes: an image type, or "pdf".
+pub fn file_ext(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF-") { Some("pdf") } else { image_ext(bytes) }
+}
+
+pub struct AssetInfo {
+    pub name: String,
+    pub size: u64,
+    pub modified: i64,
+    /// "image", "pdf" or "other".
+    pub kind: &'static str,
+}
+
+/// Lists the files in an assets folder, newest first.
+pub fn list(dir: &Path) -> Result<Vec<AssetInfo>> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(out) };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let Some(name) = entry.file_name().to_str().map(String::from) else { continue };
+        if !meta.is_file() || !valid_name(&name) {
+            continue;
+        }
+        let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let kind = match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" => "image",
+            "pdf" => "pdf",
+            _ => "other",
+        };
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        out.push(AssetInfo { name, size: meta.len(), modified, kind });
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(out)
+}
+
+/// Saves an upload and returns its file name, e.g. "image_1762870000000_0.png".
 pub fn save(dir: &Path, bytes: &[u8], original_name: &str, now_ms: i64) -> Result<String> {
-    let Some(ext) = image_ext(bytes) else {
-        bail!("not a supported image (PNG, JPEG, GIF, WebP or AVIF)");
+    let Some(ext) = file_ext(bytes) else {
+        bail!("not a supported file (PNG, JPEG, GIF, WebP, AVIF or PDF)");
     };
     std::fs::create_dir_all(dir)?;
     let stem = safe_stem(original_name);
