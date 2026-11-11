@@ -1,0 +1,989 @@
+// The block outliner. One PageEditor edits one page; the journals view shows
+// several at once. Each keeps the page as a tree of nodes, re-renders after
+// structural changes, and autosaves the whole page with optimistic
+// versioning (the server answers 409 if another device saved first).
+
+import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
+import { renderContent, parseOutline, esc, splitProps, joinProps } from './render.js';
+import { journalName } from './dates.js';
+import { toast, copyText, updateStatus } from './ui.js';
+
+export const editors = new Set();
+
+const SAVE_DELAY = 600;
+const HISTORY_LIMIT = 200;
+const MARKER = /^(TODO|DOING|DONE|LATER|NOW|CANCELED) /;
+const NUMBERED = 'logseq.order-list-type';
+
+// The editor the user touched last; keyboard undo outside a block goes here.
+let lastEditor = null;
+export function activeEditor() {
+  return lastEditor && editors.has(lastEditor) && !lastEditor.disposed ? lastEditor : null;
+}
+
+function makeNode(content = '', id = uuid(), props = {}) {
+  return { id, content, props, collapsed: false, children: [], parent: null };
+}
+
+function buildTree(blocks) {
+  const root = makeNode('', null);
+  const byId = new Map([[null, root]]);
+  for (const b of blocks) {
+    const { content, props } = splitProps(b.content);
+    const node = makeNode(content, b.id, props);
+    node.collapsed = !!b.collapsed;
+    const parent = byId.get(b.parent_id ?? null) || root;
+    node.parent = parent;
+    parent.children.push(node);
+    byId.set(b.id, node);
+  }
+  return root;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// True if the caret sits inside a ``` code fence (including its first line).
+function inFence(text, pos) {
+  return ((text.slice(0, pos).match(/^```/gm) || []).length) % 2 === 1;
+}
+
+function lineAt(text, pos) {
+  const start = text.lastIndexOf('\n', pos - 1) + 1;
+  const endIdx = text.indexOf('\n', pos);
+  const end = endIdx === -1 ? text.length : endIdx;
+  return { start, end, line: text.slice(start, end) };
+}
+
+export class PageEditor {
+  constructor(container, data, opts = {}) {
+    this.container = container;
+    this.opts = opts;
+    this.editing = null; // node being edited
+    this.ta = null;
+    this.dirty = false;
+    this.saving = false;
+    this.offline = false;
+    this.conflict = null;
+    this.changeSeq = 0;
+    this.saveTimer = null;
+    this.pendingReload = false;
+    this.disposed = false;
+    editors.add(this);
+    this.load(data);
+  }
+
+  load(data) {
+    this.name = data.name;
+    this.version = data.page ? data.page.version : 0;
+    this.root = buildTree(data.blocks || []);
+    if (!this.root.children.length) this.insertChild(this.root, makeNode(), 0);
+    this.undoStack = [];
+    this.redoStack = [];
+    this.burst = false;
+    this.render();
+  }
+
+  get lower() { return this.name.toLowerCase(); }
+
+  // ---- tree helpers ------------------------------------------------------
+
+  insertChild(parent, node, index) {
+    node.parent = parent;
+    parent.children.splice(index, 0, node);
+  }
+
+  insertAfter(ref, node) {
+    this.insertChild(ref.parent, node, ref.parent.children.indexOf(ref) + 1);
+  }
+
+  detach(node) {
+    const sibs = node.parent.children;
+    sibs.splice(sibs.indexOf(node), 1);
+  }
+
+  visible() {
+    const out = [];
+    const walk = (n) => n.children.forEach((c) => { out.push(c); if (!c.collapsed) walk(c); });
+    walk(this.root);
+    return out;
+  }
+
+  findNode(id) {
+    let found = null;
+    const walk = (n) => n.children.forEach((c) => { if (c.id === id) found = c; else if (!found) walk(c); });
+    walk(this.root);
+    return found;
+  }
+
+  flatten() {
+    const out = [];
+    const walk = (n) => n.children.forEach((c) => {
+      out.push({
+        id: c.id,
+        parent_id: n === this.root ? null : n.id,
+        content: joinProps(c.content, c.props),
+        collapsed: c.collapsed && c.children.length > 0,
+      });
+      walk(c);
+    });
+    walk(this.root);
+    return out;
+  }
+
+  // ---- undo / redo ---------------------------------------------------------
+  // History holds whole-page snapshots. Structural edits take one before they
+  // change anything; typing takes one at the start of each burst of keystrokes.
+
+  snapshot() {
+    return {
+      blocks: this.flatten(),
+      focus: this.editing ? { id: this.editing.id, caret: this.ta?.selectionStart ?? 0 } : null,
+    };
+  }
+
+  checkpoint() {
+    const snap = this.snapshot();
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (top && JSON.stringify(top.blocks) === JSON.stringify(snap.blocks)) return;
+    this.undoStack.push(snap);
+    if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    this.redoStack = [];
+  }
+
+  // Call at the start of every structural edit.
+  beginOp() {
+    lastEditor = this;
+    this.burst = false;
+    this.checkpoint();
+  }
+
+  undo() { this.travel(this.undoStack, this.redoStack, 'Nothing to undo'); }
+  redo() { this.travel(this.redoStack, this.undoStack, 'Nothing to redo'); }
+
+  travel(from, to, emptyMsg) {
+    this.burst = false;
+    const snap = from.pop();
+    if (!snap) return toast(emptyMsg);
+    to.push(this.snapshot());
+    closeAutocomplete();
+    this.root = buildTree(snap.blocks);
+    if (!this.root.children.length) this.insertChild(this.root, makeNode(), 0);
+    this.markDirty();
+    this.render();
+    const n = snap.focus && this.findNode(snap.focus.id);
+    if (n) this.edit(n, snap.focus.caret);
+  }
+
+  // ---- rendering ---------------------------------------------------------
+
+  render() {
+    this.rendering = true;
+    this.editing = null;
+    this.ta = null;
+    const frag = document.createDocumentFragment();
+    if (this.conflict) frag.append(this.renderConflict());
+    this.appendNodes(frag, this.root.children);
+    const tail = el('div', 'add-block');
+    tail.title = 'Click to add a block';
+    tail.addEventListener('click', () => this.appendBlock());
+    frag.append(tail);
+    this.container.replaceChildren(frag);
+    this.container.classList.add('outline');
+    this.rendering = false;
+  }
+
+  // Renders sibling nodes; runs of numbered blocks count 1, 2, 3...
+  appendNodes(parentEl, nodes) {
+    let n = 0;
+    for (const c of nodes) {
+      n = c.props[NUMBERED] === 'number' ? n + 1 : 0;
+      parentEl.append(this.renderNode(c, n));
+    }
+  }
+
+  renderNode(node, number = 0) {
+    const wrap = el('div', 'block');
+    wrap.dataset.id = node.id;
+    const row = el('div', 'block-row');
+    const toggle = el('span', 'toggle');
+    if (node.children.length) {
+      toggle.classList.add('has');
+      toggle.textContent = node.collapsed ? '▸' : '▾';
+      toggle.addEventListener('mousedown', (e) => e.preventDefault());
+      toggle.addEventListener('click', () => this.toggleCollapse(node));
+    }
+    const bullet = el('span', 'bullet' + (node.collapsed && node.children.length ? ' collapsed' : ''));
+    if (number) {
+      bullet.classList.add('numbered');
+      bullet.textContent = `${number}.`;
+    } else {
+      bullet.append(el('span', 'dot'));
+    }
+    bullet.addEventListener('mousedown', (e) => e.preventDefault());
+    bullet.addEventListener('click', (e) => this.showBlockMenu(node, e));
+    bullet.addEventListener('contextmenu', (e) => { e.preventDefault(); this.showBlockMenu(node, e); });
+    const content = el('div', 'content');
+    content.innerHTML = renderContent(node.content);
+    content.addEventListener('click', (e) => this.onContentClick(node, e));
+    row.append(toggle, bullet, content);
+    wrap.append(row);
+    node.el = wrap;
+    node.contentEl = content;
+    if (node.children.length && !node.collapsed) {
+      const kids = el('div', 'children');
+      this.appendNodes(kids, node.children);
+      wrap.append(kids);
+    }
+    hydrateRefs(content);
+    return wrap;
+  }
+
+  renderConflict() {
+    const bar = el('div', 'conflict');
+    bar.append(el('span', '', 'This page was changed on another device while you were editing it.'));
+    const theirs = el('button', '', 'Use their version');
+    theirs.addEventListener('click', () => {
+      this.conflict = null;
+      this.dirty = false;
+      this.load(this.conflictData);
+      updateStatus();
+    });
+    const mine = el('button', 'primary', 'Keep mine');
+    mine.addEventListener('click', () => {
+      this.version = this.conflict.version;
+      this.conflict = null;
+      this.render();
+      this.save();
+    });
+    bar.append(theirs, mine);
+    return bar;
+  }
+
+  rerenderContent(node) {
+    if (!node.contentEl) return;
+    node.contentEl.innerHTML = renderContent(node.content);
+    hydrateRefs(node.contentEl);
+  }
+
+  // ---- editing -----------------------------------------------------------
+
+  onContentClick(node, e) {
+    const t = e.target;
+    if (t.closest('a')) return; // links navigate (hash router / new tab)
+    if (t.classList.contains('todo')) {
+      e.preventDefault();
+      this.beginOp();
+      this.setMarker(node, MARKER.exec(node.content)?.[1] === 'DONE' ? 'TODO' : 'DONE');
+      return;
+    }
+    const ref = t.closest('.block-ref');
+    if (ref && ref.dataset.page) {
+      location.hash = `#/page/${encodeURIComponent(ref.dataset.page)}`;
+      return;
+    }
+    if (this.editing !== node) this.edit(node, 'end');
+  }
+
+  edit(node, caret = 'end') {
+    if (this.editing && this.editing !== node) this.stopEdit();
+    if (!node.contentEl) return;
+    lastEditor = this;
+    this.burst = false;
+    this.editing = node;
+    const ta = el('textarea', 'editor');
+    ta.value = node.content;
+    ta.rows = 1;
+    ta.spellcheck = true;
+    node.contentEl.replaceChildren(ta);
+    node.el.classList.add('editing');
+    this.ta = ta;
+    autosize(ta);
+    ta.focus({ preventScroll: false });
+    const pos = caret === 'end' ? ta.value.length : caret === 'start' ? 0 : Math.min(caret, ta.value.length);
+    ta.setSelectionRange(pos, pos);
+    ta.addEventListener('input', (e) => this.onInput(node, ta, e));
+    ta.addEventListener('keydown', (e) => this.onKey(node, ta, e));
+    ta.addEventListener('paste', (e) => this.onPaste(node, ta, e));
+    ta.addEventListener('blur', () => {
+      if (this.rendering || this.editing !== node) return;
+      // Clicking the autocomplete list must not end editing.
+      setTimeout(() => { if (this.editing === node && document.activeElement !== ta) this.stopEdit(); }, 0);
+    });
+  }
+
+  stopEdit() {
+    const node = this.editing;
+    if (!node) return;
+    this.editing = null;
+    this.ta = null;
+    this.burst = false;
+    closeAutocomplete();
+    node.el?.classList.remove('editing');
+    this.rerenderContent(node);
+    if (this.pendingReload && !this.dirty) this.reload();
+  }
+
+  setContent(node, value) {
+    if (node.content === value) return;
+    node.content = value;
+    this.markDirty();
+  }
+
+  // Replaces ta[start, end) with text, selects [selStart, selEnd) relative to
+  // the inserted text, and saves it to the node.
+  replaceText(node, ta, start, end, text, selStart = text.length, selEnd = selStart) {
+    ta.value = ta.value.slice(0, start) + text + ta.value.slice(end);
+    ta.setSelectionRange(start + selStart, start + selEnd);
+    this.setContent(node, ta.value);
+    autosize(ta);
+  }
+
+  onInput(node, ta, e) {
+    // Snapshot once at the start of a burst of typing.
+    if (!this.burst) {
+      this.checkpoint();
+      this.burst = true;
+    }
+    clearTimeout(this.burstTimer);
+    this.burstTimer = setTimeout(() => { this.burst = false; }, 1000);
+
+    // Auto-close [[ and (( like Logseq.
+    const pos = ta.selectionStart;
+    if (e.inputType === 'insertText' && (e.data === '[' || e.data === '(')) {
+      const pair = e.data === '[' ? ['[[', ']]'] : ['((', '))'];
+      if (ta.value.slice(pos - 2, pos) === pair[0] && !ta.value.slice(pos).startsWith(pair[1])) {
+        ta.value = ta.value.slice(0, pos) + pair[1] + ta.value.slice(pos);
+        ta.setSelectionRange(pos, pos);
+      }
+    }
+    this.setContent(node, ta.value);
+    autosize(ta);
+    updateAutocomplete(this, node, ta);
+  }
+
+  onKey(node, ta, e) {
+    if (handleAutocompleteKey(e)) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const v = ta.value;
+    const plain = !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
+    const mod = e.ctrlKey || e.metaKey;
+    const k = e.key;
+    if (e.isComposing) return;
+
+    if (mod && !e.altKey && (k === 'z' || k === 'Z' || k === 'y')) {
+      e.preventDefault();
+      if (k === 'y' || e.shiftKey) this.redo(); else this.undo();
+      return;
+    }
+
+    if (k === 'Enter' && plain) {
+      if (inFence(v, start)) return; // newline inside code
+      const { start: ls, end: le, line } = lineAt(v, start);
+      if (/^\s*\|/.test(line)) {
+        e.preventDefault();
+        this.tableEnter(node, ta, ls, le, line);
+        return;
+      }
+      e.preventDefault();
+      this.split(node, start, end);
+    } else if (k === 'Enter' && mod) {
+      e.preventDefault();
+      this.beginOp();
+      const cur = MARKER.exec(node.content)?.[1];
+      this.setMarker(node, cur === 'TODO' || cur === 'DOING' || cur === 'LATER' || cur === 'NOW' ? 'DONE' : cur === 'DONE' ? null : 'TODO');
+    } else if (k === 'Tab' && !mod && !e.altKey) {
+      e.preventDefault();
+      if (inFence(v, start)) this.codeIndent(node, ta, e.shiftKey);
+      else if (e.shiftKey) this.outdent(node, start);
+      else this.indent(node, start);
+    } else if (k === 'Backspace' && start === 0 && end === 0) {
+      if (this.mergeUp(node)) e.preventDefault();
+    } else if (k === 'Delete' && start === v.length && end === v.length) {
+      const vis = this.visible();
+      const next = vis[vis.indexOf(node) + 1];
+      if (next) { e.preventDefault(); this.mergeUp(next); }
+    } else if ((k === 'ArrowUp' || k === 'ArrowDown') && e.altKey && e.shiftKey) {
+      e.preventDefault();
+      this.move(node, k === 'ArrowUp' ? -1 : 1, start);
+    } else if (k === 'ArrowUp' && plain && start === end && !v.slice(0, start).includes('\n')) {
+      const vis = this.visible();
+      const prev = vis[vis.indexOf(node) - 1];
+      if (prev) { e.preventDefault(); this.edit(prev, 'end'); }
+    } else if (k === 'ArrowDown' && plain && start === end && !v.slice(end).includes('\n')) {
+      const vis = this.visible();
+      const next = vis[vis.indexOf(node) + 1];
+      if (next) { e.preventDefault(); this.edit(next, 'start'); }
+    } else if (k === 'Escape') {
+      e.preventDefault();
+      ta.blur();
+    }
+  }
+
+  // Enter in a table row adds a row with the same number of cells. Enter on
+  // an empty row removes it and starts a new block.
+  tableEnter(node, ta, ls, le, line) {
+    this.beginOp();
+    const cols = Math.max(1, (line.match(/\|/g) || []).length - 1);
+    const empty = line.replace(/[|\s]/g, '') === '';
+    if (empty) {
+      const from = ls > 0 ? ls - 1 : ls;
+      this.replaceText(node, ta, from, le, '');
+      this.split(node, from, from, true);
+      return;
+    }
+    const row = '\n' + '|  '.repeat(cols) + '|';
+    this.replaceText(node, ta, le, le, row, 3);
+  }
+
+  // Tab / Shift+Tab inside a code fence indents the current line.
+  codeIndent(node, ta, out) {
+    this.beginOp();
+    const pos = ta.selectionStart;
+    const { start } = lineAt(ta.value, pos);
+    if (!out) return this.replaceText(node, ta, pos, pos, '  ');
+    const lead = /^ {1,2}/.exec(ta.value.slice(start))?.[0].length || 0;
+    if (!lead) return;
+    ta.value = ta.value.slice(0, start) + ta.value.slice(start + lead);
+    const p = Math.max(start, pos - lead);
+    ta.setSelectionRange(p, p);
+    this.setContent(node, ta.value);
+  }
+
+  // Re-render the whole outline, then put the cursor back.
+  refresh(focusNode, caret) {
+    this.markDirty();
+    this.render();
+    if (focusNode) this.edit(focusNode, caret);
+  }
+
+  split(node, start, end, skipCheckpoint = false) {
+    if (!skipCheckpoint) this.beginOp();
+    const v = node.content;
+    // Enter on an empty numbered item ends the list.
+    if (v === '' && node.props[NUMBERED]) {
+      delete node.props[NUMBERED];
+      return this.refresh(node, 0);
+    }
+    // Enter on an empty nested block moves it out a level.
+    if (v === '' && node.parent !== this.root) return this.outdent(node, 0);
+    // Enter at the very start of a block inserts an empty block above it.
+    if (start === 0 && end === 0 && v !== '') {
+      const n = makeNode('', uuid(), { ...pick(node.props, NUMBERED) });
+      this.insertChild(node.parent, n, node.parent.children.indexOf(node));
+      return this.refresh(node, 0);
+    }
+    node.content = v.slice(0, start);
+    const n = makeNode(v.slice(end));
+    if (node.children.length && !node.collapsed) {
+      this.insertChild(node, n, 0);
+    } else {
+      n.props = { ...pick(node.props, NUMBERED) }; // numbered lists continue
+      this.insertAfter(node, n);
+    }
+    this.refresh(n, 'start');
+  }
+
+  indent(node, caret) {
+    const sibs = node.parent.children;
+    const i = sibs.indexOf(node);
+    if (i === 0) return;
+    this.beginOp();
+    const prev = sibs[i - 1];
+    this.detach(node);
+    prev.collapsed = false;
+    this.insertChild(prev, node, prev.children.length);
+    this.refresh(node, caret);
+  }
+
+  outdent(node, caret) {
+    const parent = node.parent;
+    if (parent === this.root) return;
+    this.beginOp();
+    this.detach(node);
+    this.insertAfter(parent, node);
+    this.refresh(node, caret);
+  }
+
+  move(node, dir, caret) {
+    const sibs = node.parent.children;
+    const i = sibs.indexOf(node);
+    const j = i + dir;
+    if (j < 0 || j >= sibs.length) return;
+    this.beginOp();
+    [sibs[i], sibs[j]] = [sibs[j], sibs[i]];
+    this.refresh(node, caret);
+  }
+
+  // Backspace at the start of a block: join it onto the block above.
+  mergeUp(node) {
+    const vis = this.visible();
+    const i = vis.indexOf(node);
+    if (i <= 0) return false;
+    this.beginOp();
+    const prev = vis[i - 1];
+    const caret = prev.content.length;
+    if (node.content === '' && !node.children.length) {
+      this.detach(node);
+      this.refresh(prev, 'end');
+      return true;
+    }
+    prev.content += node.content;
+    // The merged block's children take its place in the tree.
+    const sibs = node.parent.children;
+    const at = sibs.indexOf(node);
+    node.children.forEach((c) => { c.parent = node.parent; });
+    sibs.splice(at, 1, ...node.children);
+    this.refresh(prev, caret);
+    return true;
+  }
+
+  appendBlock() {
+    const last = this.root.children[this.root.children.length - 1];
+    if (last && last.content === '' && !last.children.length) return this.edit(last, 'end');
+    const n = makeNode();
+    this.insertChild(this.root, n, this.root.children.length);
+    this.render();
+    this.edit(n);
+  }
+
+  setMarker(node, marker) {
+    const body = node.content.replace(MARKER, '');
+    const value = marker ? `${marker} ${body}` : body;
+    const delta = value.length - node.content.length;
+    this.setContent(node, value);
+    if (this.editing === node && this.ta) {
+      const pos = Math.max(0, this.ta.selectionStart + delta);
+      this.ta.value = value;
+      this.ta.setSelectionRange(pos, pos);
+    } else {
+      this.rerenderContent(node);
+    }
+  }
+
+  // Sets "# " .. "###### " on the first line (level 0 removes it).
+  setHeading(node, level) {
+    const marker = MARKER.exec(node.content)?.[0] || '';
+    const rest = node.content.slice(marker.length).replace(/^#{1,6} /, '');
+    const value = marker + (level ? '#'.repeat(level) + ' ' : '') + rest;
+    const delta = value.length - node.content.length;
+    this.setContent(node, value);
+    if (this.editing === node && this.ta) {
+      const pos = Math.max(0, this.ta.selectionStart + delta);
+      this.ta.value = value;
+      this.ta.setSelectionRange(pos, pos);
+    } else {
+      this.rerenderContent(node);
+    }
+  }
+
+  toggleNumbered(node) {
+    this.beginOp();
+    const keep = this.editing;
+    const caret = this.ta?.selectionStart;
+    if (node.props[NUMBERED] === 'number') delete node.props[NUMBERED];
+    else node.props[NUMBERED] = 'number';
+    this.refresh(keep, caret);
+  }
+
+  toggleCollapse(node) {
+    node.collapsed = !node.collapsed;
+    const keep = this.editing && !isInside(this.editing, node) ? this.editing : null;
+    const caret = this.ta?.selectionStart;
+    this.refresh(keep, caret);
+  }
+
+  removeNode(node) {
+    this.beginOp();
+    this.detach(node);
+    if (!this.root.children.length) this.insertChild(this.root, makeNode(), 0);
+    this.refresh();
+  }
+
+  onPaste(node, ta, e) {
+    const text = e.clipboardData?.getData('text/plain');
+    if (!text || !text.includes('\n') || inFence(ta.value, ta.selectionStart)) return;
+    const existing = new Set(this.flatten().map((b) => b.id));
+    const roots = parseOutline(text, uuid);
+    if (!roots || !roots.length) return;
+    e.preventDefault();
+    this.beginOp();
+    // Keep ids from pasted Logseq text (so ((refs)) work) unless they clash.
+    const adopt = (n, parent) => {
+      if (existing.has(n.id)) n.id = uuid();
+      existing.add(n.id);
+      n.parent = parent;
+      const split = splitProps(n.content);
+      n.content = split.content;
+      n.props = split.props;
+      n.children.forEach((c) => adopt(c, n));
+    };
+    let anchor = node;
+    let lastNode = null;
+    roots.forEach((r, idx) => {
+      adopt(r, node.parent);
+      if (idx === 0 && node.content.trim() === '' && !node.children.length) {
+        const sibs = node.parent.children;
+        sibs.splice(sibs.indexOf(node), 1, r);
+      } else {
+        this.insertAfter(anchor, r);
+      }
+      anchor = r;
+      lastNode = r;
+    });
+    while (lastNode.children.length && !lastNode.collapsed) lastNode = lastNode.children[lastNode.children.length - 1];
+    this.refresh(lastNode, 'end');
+  }
+
+  showBlockMenu(node, e) {
+    lastEditor = this;
+    const items = [
+      ['Copy block ref', () => { copyText(`((${node.id}))`); toast('Block ref copied'); }],
+      ['Copy as Markdown', () => { copyText(subtreeMarkdown(node)); toast('Copied'); }],
+      [node.props[NUMBERED] === 'number' ? 'Remove number list' : 'Toggle number list', () => this.toggleNumbered(node)],
+    ];
+    if (node.children.length) items.push([node.collapsed ? 'Expand' : 'Collapse', () => this.toggleCollapse(node)]);
+    items.push(['Delete block', () => this.removeNode(node), 'danger']);
+    showMenu(e.clientX, e.clientY, items);
+  }
+
+  // ---- saving and sync ---------------------------------------------------
+
+  markDirty() {
+    this.dirty = true;
+    this.changeSeq++;
+    updateStatus();
+    if (this.conflict) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.save(), SAVE_DELAY);
+  }
+
+  async save(opts) {
+    if (this.conflict || !this.dirty) return;
+    if (this.saving) { this.saveAgain = true; return; }
+    clearTimeout(this.saveTimer);
+    this.saving = true;
+    updateStatus();
+    const seq = this.changeSeq;
+    const wasNew = this.version === 0;
+    try {
+      const r = await api.savePage(this.name, this.version, this.flatten(), opts);
+      if (r.status === 200) {
+        this.version = r.data.page.version;
+        this.offline = false;
+        if (this.changeSeq === seq) this.dirty = false;
+        if (wasNew) invalidatePageNames();
+        this.opts.onSaved?.(this);
+      } else if (r.status === 409) {
+        this.conflict = r.data.page;
+        this.conflictData = { name: r.data.page.name, page: r.data.page, blocks: r.data.blocks };
+        const caret = this.ta?.selectionStart;
+        const editing = this.editing;
+        this.render();
+        if (editing) this.edit(editing, caret);
+      } else {
+        this.offline = true;
+        toast(`Save failed: ${r.data?.error || r.status}`);
+      }
+    } catch {
+      this.offline = true;
+    } finally {
+      this.saving = false;
+      if (this.dirty && !this.conflict) {
+        const delay = this.offline ? 4000 : this.saveAgain ? 0 : SAVE_DELAY;
+        this.saveTimer = setTimeout(() => this.save(), delay);
+      }
+      this.saveAgain = false;
+      if (!this.dirty && this.disposed) editors.delete(this);
+      updateStatus();
+    }
+  }
+
+  // Called when another device saved this page.
+  remoteChanged(version) {
+    if (this.disposed) return;
+    if (version !== undefined && version <= this.version) return;
+    if (this.dirty || this.saving) return; // the next save reports the conflict
+    if (this.editing) { this.pendingReload = true; return; }
+    this.reload();
+  }
+
+  async reload() {
+    this.pendingReload = false;
+    try {
+      const data = await api.page(this.name);
+      if (this.dirty || this.editing) return;
+      this.load(data);
+    } catch { /* offline; try again on the next event */ }
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.stopEdit();
+    if (this.dirty) this.save(); else editors.delete(this);
+  }
+}
+
+function pick(obj, ...keys) {
+  const out = {};
+  for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];
+  return out;
+}
+
+function isInside(node, ancestor) {
+  for (let n = node.parent; n; n = n.parent) if (n === ancestor) return true;
+  return false;
+}
+
+function autosize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = ta.scrollHeight + 'px';
+}
+
+function subtreeMarkdown(node) {
+  const lines = [];
+  const walk = (n, depth) => {
+    const ind = '\t'.repeat(depth);
+    const [first, ...rest] = joinProps(n.content, n.props).split('\n');
+    lines.push(`${ind}- ${first}`);
+    rest.forEach((l) => lines.push(`${ind}  ${l}`));
+    n.children.forEach((c) => walk(c, depth + 1));
+  };
+  walk(node, 0);
+  return lines.join('\n');
+}
+
+// ---- block references ((uuid)) ---------------------------------------------
+
+const refCache = new Map();
+
+function findLocalBlock(id) {
+  for (const ed of editors) {
+    const n = ed.findNode(id);
+    if (n) return { id, content: n.content, page_name: ed.name };
+  }
+  return null;
+}
+
+export function hydrateRefs(container) {
+  container.querySelectorAll('.block-ref[data-ref]:not([data-page])').forEach(async (span) => {
+    const id = span.dataset.ref;
+    let b = findLocalBlock(id);
+    if (!b) {
+      if (!refCache.has(id)) refCache.set(id, api.block(id).catch(() => null));
+      b = await refCache.get(id);
+      if (!b) refCache.delete(id);
+    }
+    if (!b) { span.classList.add('missing'); return; }
+    span.dataset.page = b.page_name;
+    span.title = b.page_name;
+    const text = b.content.replace(MARKER, '').split('\n')[0];
+    // One level only, so refs to refs can't loop.
+    span.innerHTML = renderContent(text, { inlineTags: true }).replace(/class="block-ref"/g, 'class="block-ref nested"');
+  });
+}
+
+export function clearRefCache() { refCache.clear(); }
+
+// ---- slash commands ----------------------------------------------------------
+
+const SLASH_COMMANDS = [
+  { id: 'link', label: 'Link', hint: '[text](url)' },
+  { id: 'page', label: 'Page reference', hint: '[[ ]]' },
+  { id: 'blockref', label: 'Block reference', hint: '(( ))' },
+  { id: 'code', label: 'Code block', hint: '```' },
+  { id: 'table', label: 'Table', hint: '| a | b |' },
+  { id: 'todo', label: 'TODO' },
+  { id: 'done', label: 'DONE' },
+  { id: 'numbered', label: 'Numbered list' },
+  { id: 'h1', label: 'Heading 1', hint: '#' },
+  { id: 'h2', label: 'Heading 2', hint: '##' },
+  { id: 'h3', label: 'Heading 3', hint: '###' },
+  { id: 'quote', label: 'Quote', hint: '>' },
+  { id: 'today', label: 'Today', hint: "today's journal" },
+  { id: 'tomorrow', label: 'Tomorrow' },
+  { id: 'yesterday', label: 'Yesterday' },
+];
+
+function slashMatches(query) {
+  const q = query.toLowerCase();
+  return SLASH_COMMANDS.filter((c) => c.id.startsWith(q) || c.label.toLowerCase().includes(q))
+    .sort((a, b) => (b.id.startsWith(q) || b.label.toLowerCase().startsWith(q)) - (a.id.startsWith(q) || a.label.toLowerCase().startsWith(q)));
+}
+
+function runSlash(editor, node, ta, cmd, at) {
+  // `at` is where the "/query" text was; it has already been removed.
+  const day = (offset) => { const d = new Date(); d.setDate(d.getDate() + offset); return `[[${journalName(d)}]]`; };
+  switch (cmd) {
+    case 'link': return editor.replaceText(node, ta, at, at, '[text](https://)', 1, 5);
+    case 'page':
+      editor.replaceText(node, ta, at, at, '[[]]', 2);
+      return updateAutocomplete(editor, node, ta);
+    case 'blockref':
+      editor.replaceText(node, ta, at, at, '(())', 2);
+      return updateAutocomplete(editor, node, ta);
+    case 'code': {
+      const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
+      return editor.replaceText(node, ta, at, at, `${lead}\`\`\`\n\`\`\``, lead.length + 3);
+    }
+    case 'table': {
+      const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
+      const t = `${lead}| Column 1 | Column 2 |\n| --- | --- |\n|  |  |`;
+      return editor.replaceText(node, ta, at, at, t, lead.length + 2, lead.length + 10);
+    }
+    case 'todo': return editor.setMarker(node, 'TODO');
+    case 'done': return editor.setMarker(node, 'DONE');
+    case 'numbered': return editor.toggleNumbered(node);
+    case 'h1': case 'h2': case 'h3': return editor.setHeading(node, Number(cmd[1]));
+    case 'quote': {
+      const { start } = lineAt(ta.value, at);
+      return editor.replaceText(node, ta, start, start, '> ', ta.selectionStart - start + 2);
+    }
+    case 'today': return editor.replaceText(node, ta, at, at, day(0));
+    case 'tomorrow': return editor.replaceText(node, ta, at, at, day(1));
+    case 'yesterday': return editor.replaceText(node, ta, at, at, day(-1));
+  }
+}
+
+// ---- autocomplete for [[pages]], ((blocks)) and /commands -------------------
+
+let ac = null;
+
+function closeAutocomplete() {
+  ac?.el.remove();
+  ac = null;
+}
+
+async function updateAutocomplete(editor, node, ta) {
+  const before = ta.value.slice(0, ta.selectionStart);
+  const page = /\[\[([^[\]\n]*)$/.exec(before);
+  const block = !page && /\(\(([^()\n]*)$/.exec(before);
+  const slash = !page && !block && !inFence(ta.value, ta.selectionStart) && /(?:^|\s)\/([\w-]*)$/.exec(before);
+  if (!page && !block && !slash) return closeAutocomplete();
+  const query = (page || block || slash)[1];
+  const kind = page ? 'page' : block ? 'block' : 'slash';
+  const seq = (ac?.seq || 0) + 1;
+
+  let items = [];
+  if (kind === 'slash') {
+    items = slashMatches(query).map((c) => ({
+      label: `${esc(c.label)}${c.hint ? `<span class="cmd-hint">${esc(c.hint)}</span>` : ''}`,
+      value: c.id,
+    }));
+    if (!items.length) return closeAutocomplete(); // e.g. typing a path like /etc
+  }
+  if (!ac || ac.ta !== ta) {
+    closeAutocomplete();
+    const box = el('div', 'popup autocomplete');
+    document.body.append(box);
+    ac = { el: box, ta, editor, node, items: [], index: 0 };
+  }
+  ac.seq = seq;
+  ac.kind = kind;
+  ac.query = query;
+
+  if (kind === 'page') {
+    const q = query.toLowerCase();
+    const names = await getPageNames();
+    items = names
+      .filter((n) => n.toLowerCase().includes(q))
+      .sort((a, b) => (b.toLowerCase().startsWith(q) - a.toLowerCase().startsWith(q)) || a.length - b.length)
+      .slice(0, 8)
+      .map((n) => ({ label: esc(n), value: n }));
+    if (q && !names.some((n) => n.toLowerCase() === q)) items.push({ label: `New page: <b>${esc(query)}</b>`, value: query });
+  } else if (kind === 'block' && query.trim().length >= 2) {
+    try {
+      const res = await api.search(query, 8);
+      items = res.blocks.filter((b) => b.id !== node.id).map((b) => ({
+        label: `${esc(b.content.slice(0, 90))}<small>${esc(b.page_name)}</small>`,
+        value: b.id,
+      }));
+    } catch { items = []; }
+  }
+  if (!ac || ac.seq !== seq) return;
+  if (!items.length) {
+    ac.el.innerHTML = `<div class="hint">${kind === 'page' ? 'Type a page name' : 'Type to search blocks'}</div>`;
+    ac.items = [];
+  } else {
+    ac.items = items;
+    ac.index = 0;
+    ac.el.replaceChildren(...items.map((it, i) => {
+      const row = el('div', 'item');
+      row.innerHTML = it.label;
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); ac.index = i; acceptAutocomplete(); });
+      return row;
+    }));
+    highlight();
+  }
+  const r = ta.getBoundingClientRect();
+  ac.el.style.left = `${r.left + window.scrollX}px`;
+  ac.el.style.top = `${r.bottom + window.scrollY + 4}px`;
+}
+
+function highlight() {
+  [...ac.el.children].forEach((c, i) => c.classList.toggle('active', i === ac.index));
+}
+
+function handleAutocompleteKey(e) {
+  if (!ac) return false;
+  if (e.key === 'Escape') { e.preventDefault(); closeAutocomplete(); return true; }
+  if (!ac.items.length) return false;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    ac.index = (ac.index + (e.key === 'ArrowDown' ? 1 : -1) + ac.items.length) % ac.items.length;
+    highlight();
+    return true;
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    acceptAutocomplete();
+    return true;
+  }
+  return false;
+}
+
+function acceptAutocomplete() {
+  const { ta, editor, node, kind, query } = ac;
+  const item = ac.items[ac.index];
+  if (!item) return;
+  const pos = ta.selectionStart;
+  closeAutocomplete();
+  if (kind === 'slash') {
+    editor.beginOp();
+    const at = pos - query.length - 1; // remove "/query"
+    editor.replaceText(node, ta, at, pos, '');
+    runSlash(editor, node, ta, item.value, at);
+    return;
+  }
+  const close = kind === 'page' ? ']]' : '))';
+  const start = pos - query.length;
+  const rest = ta.value.slice(pos).startsWith(close) ? ta.value.slice(pos + 2) : ta.value.slice(pos);
+  const insert = item.value + close;
+  ta.value = ta.value.slice(0, start) + insert + rest;
+  const caret = start + insert.length;
+  ta.setSelectionRange(caret, caret);
+  editor.setContent(node, ta.value);
+  autosize(ta);
+}
+
+// ---- small popup menu --------------------------------------------------------
+
+export function showMenu(x, y, items) {
+  document.querySelector('.menu')?.remove();
+  const menu = el('div', 'popup menu');
+  for (const [label, fn, cls] of items) {
+    const item = el('div', 'item' + (cls ? ` ${cls}` : ''), label);
+    item.addEventListener('click', () => { menu.remove(); fn(); });
+    menu.append(item);
+  }
+  document.body.append(menu);
+  const w = menu.offsetWidth;
+  menu.style.left = `${Math.min(x, window.innerWidth - w - 8) + window.scrollX}px`;
+  menu.style.top = `${y + window.scrollY + 6}px`;
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+}
