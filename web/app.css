@@ -570,6 +570,7 @@ html.no-favorites .star { display: none; }
 
 textarea.editor {
   display: block;
+  tab-size: 4;
   width: 100%;
   margin: 0;
   padding: 0;
@@ -613,6 +614,9 @@ html.tag-colors .block-tags .page-ref.tag:hover, html.tag-colors .page-table .ta
 .rendered .h2 { font-size: 1.35em; font-weight: 700; }
 .rendered .h3 { font-size: 1.15em; font-weight: 700; }
 .rendered .h4, .rendered .h5, .rendered .h6 { font-weight: 700; }
+.rendered .indent-line { display: flex; }
+.rendered .indent { flex: none; white-space: pre; tab-size: 4; }
+.rendered .indent-body { flex: 1; min-width: 0; }
 .rendered blockquote.md-quote {
   margin: 4px 0;
   padding: 6px 12px;

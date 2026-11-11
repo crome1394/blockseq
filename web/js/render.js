@@ -209,6 +209,12 @@ function renderTable(rows) {
 }
 
 function renderLine(line, pre) {
+  // Spaces or tabs at the start of a line indent it, as in the editor. The
+  // indent keeps its exact width, and wrapped text stays lined up with it.
+  const ws = /^[ \t]+/.exec(line)?.[0];
+  if (ws && line.trim()) {
+    return `<div class="indent-line"><span class="indent">${ws}</span><div class="indent-body">${renderLine(line.slice(ws.length), pre)}</div></div>`;
+  }
   const prop = /^([\w.-]+):: ?(.*)$/.exec(line);
   if (prop) {
     if (ALWAYS_HIDDEN.has(prop[1])) return '';
