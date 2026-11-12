@@ -52,13 +52,15 @@ CREATE INDEX IF NOT EXISTS refs_block ON refs(block_id);
 -- Earlier versions of pages (see "page history" below). Keyed by name, not
 -- page id, so the history of a deleted page stays and can bring it back.
 CREATE TABLE IF NOT EXISTS page_history (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    page_name  TEXT NOT NULL,
-    name_lower TEXT NOT NULL,
-    version    INTEGER NOT NULL,
-    saved_at   INTEGER NOT NULL,
-    reason     TEXT NOT NULL,
-    blocks     TEXT NOT NULL   -- JSON array of blocks, as stored (ciphertext for #Encrypted)
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_name   TEXT NOT NULL,
+    name_lower  TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    saved_at    INTEGER NOT NULL,
+    reason      TEXT NOT NULL,
+    blocks      TEXT NOT NULL,  -- JSON array of blocks, as stored (ciphertext for #Encrypted)
+    block_count INTEGER NOT NULL DEFAULT 0,
+    word_count  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS page_history_page ON page_history(name_lower, saved_at);
 
@@ -72,7 +74,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
 "#;
 
 /// Current schema version, stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
@@ -254,7 +256,33 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 4 {
         migrate_v4(conn)?;
     }
+    if version < 5 {
+        migrate_v5(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    Ok(())
+}
+
+/// v5: block and word counts on each kept version, so the history list does
+/// not parse every snapshot.
+fn migrate_v5(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "page_history", "block_count")? {
+        conn.execute_batch("ALTER TABLE page_history ADD COLUMN block_count INTEGER NOT NULL DEFAULT -1")?;
+    }
+    if !has_column(conn, "page_history", "word_count")? {
+        conn.execute_batch("ALTER TABLE page_history ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0")?;
+    }
+    // -1 marks rows from before this column existed. A damaged snapshot counts as empty.
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, blocks FROM page_history WHERE block_count < 0")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut set = conn.prepare("UPDATE page_history SET block_count = ?1, word_count = ?2 WHERE id = ?3")?;
+    for (id, json) in rows {
+        let blocks: Vec<Block> = serde_json::from_str(&json).unwrap_or_default();
+        let words: i64 = blocks.iter().map(|b| word_count(&b.content)).sum();
+        set.execute(params![i64::try_from(blocks.len()).unwrap_or(i64::MAX), words, id])?;
+    }
     Ok(())
 }
 
@@ -953,9 +981,12 @@ pub fn snapshot(conn: &Connection, page: &PageMeta, blocks: &[Block], reason: &s
     if newest.as_deref() == Some(json.as_str()) {
         return Ok(());
     }
+    let block_count = i64::try_from(blocks.len()).unwrap_or(i64::MAX);
+    let words: i64 = blocks.iter().map(|b| word_count(&b.content)).sum();
     conn.execute(
-        "INSERT INTO page_history (page_name, name_lower, version, saved_at, reason, blocks) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![page.name, lower, page.version, now, reason, json],
+        "INSERT INTO page_history (page_name, name_lower, version, saved_at, reason, blocks, block_count, word_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![page.name, lower, page.version, now, reason, json, block_count, words],
     )?;
     conn.execute(
         "DELETE FROM page_history WHERE name_lower = ?1 AND id NOT IN
@@ -965,22 +996,24 @@ pub fn snapshot(conn: &Connection, page: &PageMeta, blocks: &[Block], reason: &s
     Ok(())
 }
 
-/// Kept versions of a page, newest first.
+/// Kept versions of a page, newest first. Counts come from the row, so this
+/// does not read the stored block JSON.
 pub fn history(conn: &Connection, name: &str) -> Result<Vec<HistoryEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT id, version, saved_at, reason, blocks FROM page_history WHERE name_lower = ?1 ORDER BY saved_at DESC, id DESC",
+        "SELECT id, version, saved_at, reason, block_count, word_count
+         FROM page_history WHERE name_lower = ?1 ORDER BY saved_at DESC, id DESC",
     )?;
     let rows = stmt.query_map([name.trim().to_lowercase()], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+        Ok(HistoryEntry {
+            id: r.get(0)?,
+            version: r.get(1)?,
+            saved_at: r.get(2)?,
+            reason: r.get(3)?,
+            blocks: usize::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
+            words: r.get(5)?,
+        })
     })?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, version, saved_at, reason, json) = row?;
-        let blocks: Vec<Block> = serde_json::from_str(&json).unwrap_or_default();
-        let words = blocks.iter().map(|b| word_count(&b.content)).sum();
-        out.push(HistoryEntry { id, version, saved_at, reason, blocks: blocks.len(), words });
-    }
-    Ok(out)
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn history_version(conn: &Connection, id: i64) -> Result<Option<HistoryVersion>> {
@@ -1443,6 +1476,35 @@ mod tests {
         save_page(&c, "P", version, &[block("m0", None, "a line of text")], &[]).unwrap();
         assert_eq!(history(&c, "P").unwrap()[0].reason, "before a large change");
         assert_eq!(history(&c, "P").unwrap()[0].blocks, 8);
+        assert_eq!(history(&c, "P").unwrap()[0].words, 8 * word_count("a line of text"));
+    }
+
+    #[test]
+    fn older_history_rows_get_counts() {
+        let c = mem();
+        // A database from before the counts were stored.
+        c.execute_batch(
+            "CREATE TABLE page_history_old AS
+               SELECT id, page_name, name_lower, version, saved_at, reason, blocks FROM page_history;
+             DROP TABLE page_history;
+             ALTER TABLE page_history_old RENAME TO page_history;
+             PRAGMA user_version = 4",
+        )
+        .unwrap();
+        let json = serde_json::to_string(&[block("a", None, "hello there")]).unwrap();
+        c.execute(
+            "INSERT INTO page_history (id, page_name, name_lower, version, saved_at, reason, blocks)
+             VALUES (1, 'P', 'p', 1, 1, 'autosave', ?1)",
+            [json],
+        )
+        .unwrap();
+        migrate(&c).unwrap();
+        let h = history(&c, "P").unwrap();
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].blocks, 1);
+        assert_eq!(h[0].words, 2);
+        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
