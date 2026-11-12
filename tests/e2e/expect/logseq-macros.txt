@@ -1,0 +1,5 @@
+Embedded heading embedded child with bold a block worth embedding
+block embed: Embedded block from
+Logseq query (and [[project]] (task TODO))
+Logseq renderer :todomaster
+self-embed stops: 3 boxes | true

@@ -27,7 +27,7 @@ await p.waitForSelector(".outline .content"); await sleep(300);
 // 1. View and restore
 await menu("History…");
 console.log("versions:", await p.$$eval(".history-row", (x: any[]) => x.map((r) => r.innerText.replace(/\s+/g, " "))));
-console.log("preview:", await p.$eval(".history-preview .history-block", (e: any) => e.innerText));
+console.log("preview:", await p.$eval(".history-preview .outline-view-block", (e: any) => e.innerText));
 await p.screenshot({ path: S + "/history.png" });
 await clickBtn("Restore this version"); await sleep(1500);
 console.log("after restore, server:", (await page()).blocks[0].content, "| editor shows:", await p.$eval(".outline .content", (e: any) => e.innerText));

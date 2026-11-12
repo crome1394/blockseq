@@ -4,7 +4,7 @@
 
 import { api } from './api.js';
 import { el } from './dom.js';
-import { renderContent } from './render.js';
+import { renderOutline } from './render.js';
 import { openModal, closeModal, toast } from './ui.js';
 
 const when = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
@@ -12,35 +12,6 @@ const REASONS = {
   autosave: 'Saved while editing',
 };
 const reasonText = (r) => REASONS[r] || r.charAt(0).toUpperCase() + r.slice(1);
-
-// The blocks of a kept version as a read-only nested outline.
-function outline(blocks) {
-  const children = new Map();
-  for (const b of blocks) {
-    const key = b.parent_id ?? '';
-    if (!children.has(key)) children.set(key, []);
-    children.get(key).push(b);
-  }
-  const ids = new Set(blocks.map((b) => b.id));
-  const list = (parent) => {
-    const ul = el('ul', 'history-outline');
-    // Blocks whose parent is missing are shown at the top level.
-    const kids = parent === ''
-      ? blocks.filter((b) => !b.parent_id || !ids.has(b.parent_id))
-      : children.get(parent) || [];
-    for (const b of kids) {
-      const li = el('li');
-      const body = el('div', 'history-block');
-      body.innerHTML = renderContent(b.content);
-      if (/(^|\n)encrypted:: v1:/.test(b.content)) body.append(el('div', 'muted small', '🔒 encrypted contents (shown after restoring and unlocking)'));
-      li.append(body);
-      if (children.has(b.id)) li.append(list(b.id));
-      ul.append(li);
-    }
-    return ul;
-  };
-  return list('');
-}
 
 // Shows a page's kept versions. `deleted`: the page doesn't exist now.
 export async function historyDialog(name, { deleted = false } = {}) {
@@ -73,7 +44,9 @@ export async function historyDialog(name, { deleted = false } = {}) {
     restoreBtn.disabled = false;
     const head = el('div', 'history-preview-head');
     head.append(el('strong', '', when(v.saved_at)), el('span', 'muted small', ` · ${reasonText(v.reason)}`));
-    preview.replaceChildren(head, outline(v.blocks));
+    const tree = el('div');
+    tree.innerHTML = renderOutline(v.blocks);
+    preview.replaceChildren(head, tree);
   };
   entries.forEach((entry, i) => {
     const row = el('button', 'history-row');

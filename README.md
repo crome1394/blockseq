@@ -433,6 +433,13 @@ writes LaTeX and teaches it as you go:
   `/math` with the cursor inside a formula edits it. Editing keeps the
   delimiters the formula already used. Ctrl+Enter inserts.
 
+**Logseq embeds and macros:** `{{embed [[Page]]}}` shows that page's blocks
+and `{{embed ((block id))}}` that block, read-only, with a link to the source
+(edit them on their own page). Queries (`{{query …}}`) and other Logseq
+macros aren't run; they show as a labelled chip and their text is kept as
+written, so Logseq still sees them. Logseq whiteboards aren't supported (a
+graph's `whiteboards/` folder is kept in backups but not shown).
+
 **Admonitions:** `/tip`, `/note`, `/important`, `/caution`, `/warning` and
 `/pinned` insert a box like Logseq's (stored as `#+BEGIN_TIP … #+END_TIP`).
 Enter adds a line inside the box.

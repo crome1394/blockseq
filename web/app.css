@@ -1641,7 +1641,17 @@ html.wide .embed-wrap.embed-tweet { width: 550px; }
 .history-why { font-size: 12.5px; }
 .history-preview { overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
 .history-preview-head { margin-bottom: 8px; }
-.history-outline { list-style: disc; margin: 0; padding-left: 20px; }
-.history-outline .history-outline { margin-top: 2px; }
-.history-block { padding: 1px 0; }
 @media (max-width: 720px) { .history { grid-template-columns: 1fr; max-height: none; } }
+
+/* Read-only outlines (embeds, history preview) */
+.outline-view { list-style: disc; margin: 0; padding-left: 20px; }
+.outline-view .outline-view { margin-top: 2px; }
+.outline-view-block { padding: 1px 0; }
+
+/* {{embed}} boxes and Logseq macro chips */
+.embed-box { margin: 4px 0; padding: 6px 10px 8px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--accent-soft) 35%, transparent); }
+.embed-head { font-size: 13px; margin-bottom: 4px; }
+.embed-body > .outline-view { padding-left: 18px; }
+.macro-chip { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 1px 8px; border: 1px dashed var(--border); border-radius: 6px; font-size: 13px; }
+.macro-kind { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.macro-chip code { background: none; padding: 0; white-space: pre-wrap; overflow-wrap: anywhere; }

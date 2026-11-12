@@ -159,7 +159,12 @@ const INLINE = [
   '\\\\\\[(?<mathD2>.+?)\\\\\\]',
   '\\\\\\((?<mathI>.+?)\\\\\\)',
   '(?<![\\\\\\w$])\\$(?<mathI2>[^\\s$](?:[^$\\n]*?[^\\s$\\\\])?)\\$(?![\\w$])',
+  // Logseq embeds: {{embed [[page]]}} and {{embed ((block id))}}.
+  '\\{\\{embed\\s+\\[\\[(?<embedPage>[^\\]\\n]+)\\]\\]\\s*\\}\\}',
+  '\\{\\{embed\\s+\\(\\((?<embedBlock>[0-9a-fA-F-]{36})\\)\\)\\s*\\}\\}',
   '\\{\\{(?:video|youtube|vimeo|tweet|twitter)\\s+(?<embed>[^}\\s]+)\\s*\\}\\}',
+  // Any other {{macro …}} (Logseq queries, renderers…): shown as a chip.
+  '\\{\\{(?<macro>[a-zA-Z][\\w-]*)(?<macroArgs>(?:[^{}\\n]|\\{[^{}\\n]*\\})*)\\}\\}',
   '!\\[(?<imgAlt>[^\\]\\n]*)\\]\\((?<imgUrl>[^)\\s]+)\\)(?:\\{(?<imgMeta>[^}\\n]*)\\})?',
   '\\[(?<linkText>[^\\]]+)\\]\\((?<linkUrl>[^)\\s]+)\\)',
   '#\\[\\[(?<tagb>[^\\]\\n]+)\\]\\]',
@@ -246,7 +251,18 @@ export function inline(text) {
     else if (g.code !== undefined) out += `<code>${esc(g.code)}</code>`;
     else if (g.mathD !== undefined || g.mathD2 !== undefined) out += texToMathML(g.mathD ?? g.mathD2, true);
     else if (g.mathI !== undefined || g.mathI2 !== undefined) out += texToMathML(g.mathI ?? g.mathI2, false);
+    else if (g.embedPage !== undefined) {
+      out += `<div class="embed-box" data-embed-page="${esc(g.embedPage)}"><div class="embed-head">${pageLink(g.embedPage)}</div><div class="embed-body muted">Loading…</div></div>`;
+    }
+    else if (g.embedBlock !== undefined) {
+      out += `<div class="embed-box" data-embed-block="${esc(g.embedBlock.toLowerCase())}"><div class="embed-head muted small">Embedded block</div><div class="embed-body muted">Loading…</div></div>`;
+    }
     else if (g.embed !== undefined) out += embedHtml(g.embed);
+    else if (g.macro !== undefined) {
+      const kind = g.macro.toLowerCase();
+      const label = kind === 'query' ? 'Logseq query' : `Logseq ${esc(g.macro)}`;
+      out += `<span class="macro-chip" title="${label}: Blockseq doesn't run these; the text is kept as written"><span class="macro-kind">${label}</span><code>${esc(g.macroArgs.trim())}</code></span>`;
+    }
     else if (g.imgUrl !== undefined && /\.pdf$/i.test(g.imgUrl.split('?')[0])) {
       out += pdfHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);
     }
@@ -514,6 +530,23 @@ export function renderContent(src, opts = {}) {
   if (last < src.length || last === 0) html += renderBody(src.slice(last), last === 0 ? prefix : '');
   const tagHtml = tags.length ? `<div class="block-tags">${tags.map((t) => pageLink(t, true)).join('')}</div>` : '';
   return `<div class="rendered ${cls}"><div class="body">${html}</div>${tagHtml}</div>`;
+}
+
+// Blocks (with parent ids) as a read-only nested list, e.g. for embeds and
+// the page history preview. Encrypted contents stay hidden.
+export function renderOutline(blocks) {
+  const ids = new Set(blocks.map((b) => b.id));
+  const kids = new Map();
+  for (const b of blocks) {
+    const key = b.parent_id && ids.has(b.parent_id) ? b.parent_id : '';
+    if (!kids.has(key)) kids.set(key, []);
+    kids.get(key).push(b);
+  }
+  const list = (key) => `<ul class="outline-view">${(kids.get(key) || []).map((b) => {
+    const locked = /(^|\n)encrypted:: v1:/.test(b.content) ? '<div class="muted small">🔒 encrypted contents</div>' : '';
+    return `<li><div class="outline-view-block">${renderContent(b.content)}${locked}</div>${kids.has(b.id) ? list(b.id) : ''}</li>`;
+  }).join('')}</ul>`;
+  return list('');
 }
 
 // Parses pasted Logseq-style Markdown ("- item" lines, tab or space indented)

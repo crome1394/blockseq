@@ -39,7 +39,7 @@ done
 TESTS=("$@")
 if [[ ${#TESTS[@]} -eq 0 ]]; then
   # Order matters a little: encryption sets the password the others use.
-  TESTS=(encryption slash-encrypted review-fixes csp workbooks history math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted)
+  TESTS=(encryption slash-encrypted review-fixes csp workbooks history logseq-macros math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted)
 fi
 # A test passes when the script exits cleanly, prints no page errors, and
 # prints every line listed in expect/<name>.txt (fixed text, anywhere).
