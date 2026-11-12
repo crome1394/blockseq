@@ -18,6 +18,8 @@ format, without reading Logseq's source code. It contains no code, styles or ass
 note in [AGENTS.md](AGENTS.md)). It is not affiliated with or endorsed by
 Logseq.
 
+![Journals with tasks, page links and tags](docs/screenshots/journals.png)
+
 - Block outliner: nested bullets, indent and outdent, collapse, move, merge
 - Daily journals, `[[page links]]`, `#tags`, `((block refs))`, linked references
 - Workbooks: separate sets of notes, each with its own database, Markdown
@@ -49,6 +51,18 @@ Logseq.
   inside the database
 - Backups as one `.zip` per workbook, from the browser or a cron job
 - One binary with the web UI built in. No Node or external database.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![A page with tasks, a table, maths, code and a tip, in the dark theme](docs/screenshots/page-dark.png) | ![The tasks pane beside the journals](docs/screenshots/tasks.png) |
+| A page in the dark theme: tasks, a table, LaTeX maths, highlighted code, a tip | The tasks pane: every open task, grouped by page, keyboard-driven |
+| ![The slash menu and the format bar while editing](docs/screenshots/slash-menu.png) | ![The All pages table](docs/screenshots/all-pages.png) |
+| Typing `/` opens the command menu; the format bar follows the block | All pages: filter, sort, tags, word counts, starred pages |
+
+The screenshots use made-up notes. To make them again:
+`tests/e2e/run.sh screenshots`.
 
 ## Run locally
 

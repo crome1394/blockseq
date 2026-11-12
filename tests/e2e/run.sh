@@ -10,6 +10,8 @@
 # the output (screenshots land in the temporary folder printed at the end).
 # Not in the default set: tweet (needs the internet) and backup (needs three
 # servers on ports 3941-3943, see the top of backup.ts).
+# screenshots (rewrites docs/screenshots/ from made-up notes) is also run
+# only on request.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
