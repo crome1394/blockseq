@@ -2,7 +2,7 @@
 
 All notable changes to Blockseq are listed here. There are no release tags yet, so entries are grouped by theme. The newest group is first, and the newest change is first inside each section.
 
-Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `45d79b1` (2026-11-12).
+Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `b731e77` (2026-11-12).
 
 Opening an older database upgrades it in place. The current schema is **version 8**.
 
@@ -17,6 +17,21 @@ Opening an older database upgrades it in place. The current schema is **version 
 | 2 | Favourites on pages, and tag links marked apart from ordinary links. | `862359e` |
 
 On the move to version 6, history rows whose name matches a page that still exists are attached to that page. Rows left over from deleted pages are grouped one id per name. Copies that already shared a name cannot be split apart.
+
+## Sign out, stored counts
+
+### Added
+
+- **Sign in and sign out.** With `BLOCKSEQ_PASSWORD` set, browsers sign in on a page and get a session cookie (HttpOnly, SameSite=Lax, Secure behind a trusted HTTPS proxy) that lasts 90 days from last use and survives restarts. **Sign out** is in the header; Settings → Security can also sign out every browser. Changing the password signs every browser out. `sessions.json` holds only hashes. Scripts keep using HTTP basic auth. A browser signed out with unsaved text is sent to the sign-in page and offered that text afterwards. (`b731e77`)
+
+### Changed
+
+- Each page stores its block count (schema 8), so All pages no longer counts every page's blocks on each load. A page that loses blocks to a merge has its word count corrected too. (`6417ef4`)
+
+### Fixed
+
+- Live updates start a new stream after an error response (a proxy's 502 while Blockseq restarts) closed the old one; the status no longer stays on "Reconnecting…" until a reload. (`17c35f7`)
+- A local draft whose tab was just left is offered once that tab's lock is released, instead of on the next page load. (`8a05333`)
 
 ## Hardening
 
