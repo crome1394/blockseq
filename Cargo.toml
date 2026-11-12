@@ -5,6 +5,7 @@ edition = "2024"
 # let-chains (`if let … && …`) need 1.88
 rust-version = "1.88"
 license = "MIT"
+description = "A self-hosted, Logseq-style outliner: notes in SQLite on your own server, used from any browser"
 
 [dependencies]
 aes-gcm = "0.10"

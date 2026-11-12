@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 
 use crate::AppState;
 
-const WINDOW: Duration = Duration::from_mins(15);
+const WINDOW: Duration = Duration::from_secs(15 * 60);
 const MAX_WRONG: usize = 10;
 /// Clients remembered at most (old entries are dropped first).
 const MAX_CLIENTS: usize = 4096;
