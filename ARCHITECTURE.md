@@ -495,8 +495,11 @@ workbook registry has one gate per workbook id for opening and moving
 folders, so a slow open (a big Logseq import) only delays that workbook.
 Deleting a workbook moves its folder to `workbooks/.trash/<name> <date>/`
 (hidden from the list, skipped by the startup clean-up); Main can't be
-deleted. Error messages sent to browsers replace the data folder's path with
-"the data folder" (`api::redact`); logs keep the full text.
+deleted. API failures sent to browsers are a short code (`invalid`,
+`storage`, `error`, and so on) plus, sometimes, a short phrase. That phrase
+has the data folder replaced with "the data folder" (`api::redact`). The
+error chain stays in the log. `GET /api/health` reports `ok` or `error` for
+the settings file and each database, with no filesystem paths.
 
 ## Known limits and extension points
 

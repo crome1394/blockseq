@@ -35,9 +35,28 @@ async function request(method, url, body, opts = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
+// Stable codes from the server. `message`, when present, is a short phrase
+// the server chose to show. A bare code becomes one of these sentences.
+const ERROR_TEXT = {
+  invalid: 'That was not accepted.',
+  conflict: 'It was changed somewhere else.',
+  storage: 'The server could not write that just now.',
+  error: 'The server had a problem with that.',
+  not_found: 'That could not be found.',
+  forbidden: 'Unlock with the current password first.',
+  too_large: 'That file is too large.',
+};
+
+export function explain(data, fallback) {
+  if (typeof data?.message === 'string' && data.message) return data.message;
+  const code = data?.error;
+  if (typeof code === 'string' && ERROR_TEXT[code]) return ERROR_TEXT[code];
+  return fallback;
+}
+
 async function getJson(url, opts) {
   const r = await request('GET', url, undefined, opts);
-  if (!r.ok) throw new Error(r.data?.error || `HTTP ${r.status}`);
+  if (!r.ok) throw new Error(explain(r.data, `HTTP ${r.status}`));
   return r.data;
 }
 

@@ -3,7 +3,7 @@
 // used a different password. See src/backup.rs for what a backup holds.
 
 import { el } from './dom.js';
-import { api } from './api.js';
+import { api, explain } from './api.js';
 import * as sec from './crypto.js';
 import { unlockDialog } from './secure-ui.js';
 import { openModal, closeModal, toast } from './ui.js';
@@ -46,7 +46,7 @@ function upload(url, file, onProgress) {
       let data = null;
       try { data = JSON.parse(xhr.responseText); } catch { data = { error: xhr.responseText }; }
       if (xhr.status >= 200 && xhr.status < 300) resolve(data);
-      else reject(new Error(data?.error || `HTTP ${xhr.status}`));
+      else reject(new Error(explain(data, `HTTP ${xhr.status}`)));
     };
     xhr.onerror = () => reject(new Error('The upload failed (connection lost?)'));
     xhr.send(file);
@@ -195,7 +195,7 @@ async function rekeyAll(oldKey, progress) {
       if (!changed) { failed += bad; break; }
       const res = await api.savePage(name, data.page?.version ?? 0, blocks);
       if (res.ok) { count += changed; failed += bad; pages++; break; }
-      if (res.status !== 409 || attempt >= 2) throw new Error(`Could not save ${name}: ${res.data?.error || res.status}`);
+      if (res.status !== 409 || attempt >= 2) throw new Error(`Could not save ${name}: ${explain(res.data, 'the save was refused')}`);
     }
   }
   return { count, failed, pages };

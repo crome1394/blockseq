@@ -1,7 +1,7 @@
 // Images: upload, full-size preview, copy/download, and editing an image's
 // Markdown (alignment, delete) inside a block's text.
 
-import { clientId } from './api.js';
+import { clientId, explain } from './api.js';
 import { IMAGE_SRC, assetUrl } from './render.js';
 import { toast } from './ui.js';
 import { withWb } from './workbook.js';
@@ -21,7 +21,7 @@ export async function uploadImage(file) {
     body: file,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(explain(data, `HTTP ${res.status}`));
   // Images, PDFs, video and audio are embedded (![…]); other files are links
   // labelled with their original name, like Logseq does.
   if (['image', 'pdf', 'video', 'audio'].includes(data.kind)) return `![${altFrom(file.name)}](${data.path})`;

@@ -2,7 +2,7 @@
 // "page history"), with a preview and Restore; and the list of deleted pages
 // that can be brought back.
 
-import { api } from './api.js';
+import { api, explain } from './api.js';
 import { el } from './dom.js';
 import { renderOutline } from './render.js';
 import { openModal, closeModal, toast } from './ui.js';
@@ -66,7 +66,7 @@ export async function historyDialog(name, { deleted = false } = {}) {
     if (!confirm(question)) return;
     restoreBtn.disabled = true;
     const r = await api.restoreVersion(selected.id);
-    if (!r.ok) { toast(r.data?.error || 'Could not restore it'); restoreBtn.disabled = false; return; }
+    if (!r.ok) { toast(explain(r.data, 'Could not restore it')); restoreBtn.disabled = false; return; }
     closeModal();
     toast(deleted ? `Restored ${name}` : 'Older version restored');
     document.dispatchEvent(new CustomEvent('blockseq:resync'));

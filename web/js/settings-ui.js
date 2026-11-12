@@ -7,7 +7,7 @@ import { el } from './dom.js';
 import { CATEGORIES, settingRow, getSetting, setSetting } from './settings.js';
 import { ACTIONS, defaultKey, comboOf, prettyKey } from './keys.js';
 import { getStatuses, setStatuses, STATUS_COLORS, statusStyle } from './tasks.js';
-import { api } from './api.js';
+import { api, explain } from './api.js';
 import { toast } from './ui.js';
 import { securityPanel } from './secure-ui.js';
 import { backupPanel } from './backup-ui.js';
@@ -71,7 +71,7 @@ export function settingsForm(initial) {
     for (const n of NAMES) if (!same(values[n], getSetting(n))) setSetting(n, clone(values[n]));
     if (!same(statuses, getStatuses())) {
       const r = await api.saveConfig({ statuses });
-      if (!r.ok) { toast(r.data?.error || 'Could not save the task statuses'); return false; }
+      if (!r.ok) { toast(explain(r.data, 'Could not save the task statuses')); return false; }
       setStatuses(clone(statuses));
       document.dispatchEvent(new CustomEvent('blockseq:statuses'));
     }

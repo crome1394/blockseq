@@ -4,7 +4,7 @@
 // versioning (the server answers 409 if another device saved first).
 
 import { el } from './dom.js';
-import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
+import { api, explain, uuid, getPageNames, invalidatePageNames } from './api.js';
 import {
   renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
   isVideoUrl, mathSpans, tweetId, renderOutline, pageLink,
@@ -2096,6 +2096,10 @@ export class PageEditor {
     updateStatus();
     const seq = this.changeSeq;
     const wasNew = this.version === 0;
+    // null: leave the edit dirty and wait for the next keystroke.
+    // A number: try again after that many milliseconds. Only a lost
+    // connection and a 503 (storage) keep retrying on their own.
+    let schedule = null;
     try {
       await this.sealSecrets();
       const sending = this.flatten({ forSave: true });
@@ -2110,6 +2114,8 @@ export class PageEditor {
         if (this.changeSeq === seq) {
           this.dirty = false;
           dropDraft(this.name);
+        } else {
+          schedule = SAVE_DELAY;
         }
         if (wasNew) invalidatePageNames();
         noteSaved(r.data.page.updated_at || Date.now());
@@ -2118,33 +2124,54 @@ export class PageEditor {
         // Pasted blocks reuse ids that belong to another page. A cut and
         // paste in this tab may simply not have saved the old page yet:
         // wait for it a few times. Otherwise they are copies: new ids.
+        this.offline = false;
         const busy = [...editors].some((ed) => ed !== this && !ed.disposed && (ed.dirty || ed.saving));
         this.idWaits = (this.idWaits || 0) + 1;
         if (!busy || this.idWaits > 3) {
           this.renewIds(r.data.foreign_ids);
           this.idWaits = 0;
-          this.saveAgain = true;
+          schedule = 0;
+        } else {
+          schedule = SAVE_DELAY;
         }
       } else if (r.status === 409 && r.data?.deleted) {
         // The page was deleted or renamed. Version 0 lets Keep mine create it
         // again; Leave it deleted discards this edit.
+        this.offline = false;
         this.conflict = { name: this.name, version: 0, deleted: true };
         this.conflictData = { name: this.name, page: null, blocks: [] };
         const caret = this.ta?.selectionStart;
         const editing = this.editing;
         this.render();
         if (editing) this.edit(editing, caret);
-      } else {
+      } else if (r.status === 409 && r.data?.page) {
+        // Another device saved this page. Show both versions; do not retry.
+        this.offline = false;
+        this.conflict = r.data.page;
+        this.conflictData = { name: r.data.page.name, page: r.data.page, blocks: r.data.blocks };
+        const caret = this.ta?.selectionStart;
+        const editing = this.editing;
+        this.render();
+        if (editing) this.edit(editing, caret);
+      } else if (r.status === 503) {
         this.offline = true;
-        toast(`Save failed: ${r.data?.error || r.status}`);
+        toast(`Save failed: ${explain(r.data, 'The server could not store that just now')}`);
+        schedule = 4000;
+      } else {
+        this.offline = false;
+        toast(`Save failed: ${explain(r.data, 'Could not save')}`);
+        if (this.changeSeq !== seq) schedule = SAVE_DELAY;
       }
     } catch {
       this.offline = true;
+      schedule = 4000;
     } finally {
       this.saving = false;
-      if (this.dirty && !this.conflict) {
-        const delay = this.offline ? 4000 : this.saveAgain ? 0 : SAVE_DELAY;
-        this.saveTimer = setTimeout(() => this.save(), delay);
+      // A save() that arrived while this one was running wants the new text
+      // sent now, unless the connection itself is the problem.
+      if (this.saveAgain && this.dirty && !this.conflict && !this.offline) schedule = 0;
+      if (schedule !== null && this.dirty && !this.conflict) {
+        this.saveTimer = setTimeout(() => this.save(), schedule);
       }
       this.saveAgain = false;
       if (!this.dirty && this.disposed) editors.delete(this);

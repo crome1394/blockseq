@@ -27,12 +27,91 @@ use crate::AppState;
 
 type Shared = State<Arc<AppState>>;
 
-pub struct ApiError(StatusCode, String);
+/// A failure the browser can act on. `code` is a short stable token
+/// (`invalid`, `storage`, `error`, …). `message`, when set, is a short phrase
+/// written for people. The error chain is logged and is not sent.
+pub struct ApiError {
+    status: StatusCode,
+    code: &'static str,
+    message: Option<String>,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self { status, code, message: Some(message.into()) }
+    }
+
+    fn coded(status: StatusCode, code: &'static str) -> Self {
+        Self { status, code, message: None }
+    }
+}
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         tracing::error!("{e:#}");
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+        classify(&e)
+    }
+}
+
+/// Disk full, a locked database, and other failures a later try might survive
+/// are `storage` (503). Other database and IO failures are `error` (500).
+/// A rejection we wrote ourselves (no IO or database cause) is `invalid`
+/// (400), and its text is sent only when it cannot contain a filesystem path.
+fn classify(e: &anyhow::Error) -> ApiError {
+    if e.chain().any(is_storage) {
+        return ApiError::coded(StatusCode::SERVICE_UNAVAILABLE, "storage");
+    }
+    if e.chain().any(is_internal) {
+        return ApiError::coded(StatusCode::INTERNAL_SERVER_ERROR, "error");
+    }
+    match client_message(&e.to_string()) {
+        Some(msg) => ApiError::new(StatusCode::BAD_REQUEST, "invalid", msg),
+        None => ApiError::coded(StatusCode::BAD_REQUEST, "invalid"),
+    }
+}
+
+fn is_storage(err: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(sql) = err.downcast_ref::<rusqlite::Error>() {
+        if matches!(
+            sql.sqlite_error_code(),
+            Some(
+                rusqlite::ffi::ErrorCode::DiskFull
+                    | rusqlite::ffi::ErrorCode::DatabaseBusy
+                    | rusqlite::ffi::ErrorCode::DatabaseLocked
+                    | rusqlite::ffi::ErrorCode::SystemIoFailure
+                    | rusqlite::ffi::ErrorCode::ReadOnly
+            )
+        ) {
+            return true;
+        }
+    }
+    if let Some(io) = err.downcast_ref::<std::io::Error>() {
+        if io.kind() == std::io::ErrorKind::StorageFull || io.raw_os_error() == Some(28) {
+            return true;
+        }
+    }
+    let text = err.to_string().to_ascii_lowercase();
+    text.contains("disk full")
+        || text.contains("disk is full")
+        || text.contains("no space left")
+        || text.contains("database is locked")
+        || text.contains("sqlite_busy")
+}
+
+fn is_internal(err: &(dyn std::error::Error + 'static)) -> bool {
+    err.downcast_ref::<rusqlite::Error>().is_some()
+        || err.downcast_ref::<std::io::Error>().is_some()
+        || err.downcast_ref::<serde_json::Error>().is_some()
+        || err.downcast_ref::<tokio::task::JoinError>().is_some()
+}
+
+/// A phrase safe to show: one short line, with no path separator.
+fn client_message(msg: &str) -> Option<String> {
+    let msg = msg.trim();
+    if msg.is_empty() || msg.len() > 200 || msg.contains('/') || msg.contains('\\') || msg.contains('\n') {
+        None
+    } else {
+        Some(msg.to_string())
     }
 }
 
@@ -90,7 +169,11 @@ fn redact(msg: &str) -> String {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({ "error": redact(&self.1) }))).into_response()
+        let body = match &self.message {
+            Some(m) => json!({ "error": self.code, "message": redact(m) }),
+            None => json!({ "error": self.code }),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -129,7 +212,7 @@ async fn read_config(s: &Arc<AppState>) -> Result<Config, ApiError> {
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
-    ApiError(StatusCode::BAD_REQUEST, msg.into())
+    ApiError::new(StatusCode::BAD_REQUEST, "invalid", msg)
 }
 
 fn client_id(headers: &HeaderMap) -> String {
@@ -179,7 +262,9 @@ impl FromRequestParts<Arc<AppState>> for Wb {
         let wb = tokio::task::spawn_blocking(move || state.workbooks.get(&lookup, &words))
             .await
             ??;
-        wb.map(Wb).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no workbook called {id}")))
+        wb.map(Wb).ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, "not_found", format!("no workbook called {id}"))
+        })
     }
 }
 
@@ -232,7 +317,7 @@ pub async fn put_page(
             } else {
                 db::save_page(&conn, &q.name, body.base_version, &body.blocks, &words)
             }
-            .map_err(|e| bad(format!("{e:#}")))?;
+            ?;
             if let SaveOutcome::Saved(page) = &outcome {
                 wb.write_mirror(page, &body.blocks);
             }
@@ -244,17 +329,23 @@ pub async fn put_page(
                 prune(&s, &wb, &client);
                 Json(json!({ "page": page })).into_response()
             }
-            SaveOutcome::Conflict(page, blocks) => {
-                (StatusCode::CONFLICT, Json(json!({ "page": page, "blocks": blocks }))).into_response()
-            }
+            SaveOutcome::Conflict(page, blocks) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "conflict", "page": page, "blocks": blocks })),
+            )
+                .into_response(),
             SaveOutcome::ForeignIds(ids) => (
                 StatusCode::CONFLICT,
-                Json(json!({ "error": "some blocks belong to another page", "foreign_ids": ids })),
+                Json(json!({
+                    "error": "conflict",
+                    "message": "some blocks belong to another page",
+                    "foreign_ids": ids,
+                })),
             )
                 .into_response(),
             SaveOutcome::Deleted => (
                 StatusCode::CONFLICT,
-                Json(json!({ "deleted": true, "page": null, "blocks": [] })),
+                Json(json!({ "error": "conflict", "deleted": true, "page": null, "blocks": [] })),
             )
                 .into_response(),
         })
@@ -322,7 +413,7 @@ pub async fn rename_page(
         let words = s.task_words();
         let out = {
             let conn = wb.db.lock();
-            let out = db::rename_page(&conn, &q.name, &q.to, &words).map_err(|e| bad(format!("{e:#}")))?;
+            let out = db::rename_page(&conn, &q.name, &q.to, &words)?;
             wb.remove_mirror(&out.old);
             let blocks = db::get_blocks(&conn, &out.page.id)?;
             wb.write_mirror(&out.page, &blocks);
@@ -465,7 +556,15 @@ pub async fn put_block(
             match db::update_block(&conn, &q.id, &body.content, body.expected.as_deref(), &words)? {
                 db::UpdateOutcome::Missing => return Ok(StatusCode::NOT_FOUND.into_response()),
                 db::UpdateOutcome::Changed(current) => {
-                    return Ok((StatusCode::CONFLICT, Json(json!({ "error": "the block changed elsewhere", "current": current }))).into_response());
+                    return Ok((
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "error": "conflict",
+                            "message": "the block changed elsewhere",
+                            "current": current,
+                        })),
+                    )
+                        .into_response());
                 }
                 db::UpdateOutcome::Saved(page, blocks) => {
                     wb.write_mirror(&page, &blocks);
@@ -521,7 +620,7 @@ pub async fn restore_version(State(s): Shared, Wb(wb): Wb, Query(q): Query<Histo
         let words = s.task_words();
         let restored = {
             let conn = wb.db.lock();
-            let restored = db::restore_version(&conn, q.id, &words).map_err(|e| bad(format!("{e:#}")))?;
+            let restored = db::restore_version(&conn, q.id, &words)?;
             if let Some((page, blocks)) = &restored {
                 wb.write_mirror(page, blocks);
             }
@@ -599,11 +698,18 @@ async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64) -> Result<V
     let mut head = Vec::with_capacity(16);
     let mut total: u64 = 0;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| bad(format!("upload interrupted: {e}")))?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("upload interrupted: {e:#}");
+                return Err(bad("upload interrupted"));
+            }
+        };
         total += chunk.len() as u64;
         if total > max {
-            return Err(ApiError(
+            return Err(ApiError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
                 format!("file is larger than {} MB", max / 1024 / 1024),
             ));
         }
@@ -782,10 +888,7 @@ pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) 
     } else {
         let state = s.clone();
         let (from, dest) = (q.id.clone(), to.clone());
-        tokio::task::spawn_blocking(move || state.workbooks.rename(&from, &dest))
-            .await
-            ?
-            .map_err(|e| bad(format!("{e:#}")))?
+        tokio::task::spawn_blocking(move || state.workbooks.rename(&from, &dest)).await??
     };
     tracing::info!("renamed workbook {} to {}", q.id, info.name);
     s.notify_all(&json!({ "type": "workbooks", "renamed": { "from": q.id, "to": info.id } }));
@@ -801,10 +904,7 @@ pub struct IdOnly {
 pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiResult {
     let state = s.clone();
     let id = q.id.clone();
-    let trash = tokio::task::spawn_blocking(move || state.workbooks.delete(&id))
-        .await
-        ?
-        .map_err(|e| bad(format!("{e:#}")))?;
+    let trash = tokio::task::spawn_blocking(move || state.workbooks.delete(&id)).await??;
     tracing::info!("deleted workbook {}: moved to {}", q.id, trash.display());
     s.notify_all(&json!({ "type": "workbooks", "deleted": q.id }));
     Ok(Json(json!({ "trash": trash.display().to_string() })).into_response())
@@ -812,7 +912,7 @@ pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiRe
 
 pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
     let state = s.clone();
-    let info = blocking(move || state.workbooks.create(&q.name).map_err(|e| bad(format!("{e:#}")))).await?;
+    let info = blocking(move || Ok(state.workbooks.create(&q.name)?)).await?;
     s.notify_all(&json!({ "type": "workbooks" }));
     Ok(Json(info).into_response())
 }
@@ -855,7 +955,9 @@ pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) 
     }
     update_config(&s, move |cfg| {
         if let Some(existing) = &cfg.encryption {
-            let forbidden = || ApiError(StatusCode::FORBIDDEN, "unlock with the current password first".into());
+            let forbidden = || {
+                ApiError::new(StatusCode::FORBIDDEN, "forbidden", "unlock with the current password first")
+            };
             if body.encryption.check != existing.check {
                 return Err(forbidden());
             }
@@ -904,7 +1006,7 @@ pub async fn put_config(State(s): Shared, Json(body): Json<StatusesBody>) -> Api
     // Change only the statuses; keep everything else in the file as it is.
     let words = update_config(&s, move |cfg| {
         cfg.statuses = body.statuses;
-        cfg.validate().map_err(|e| bad(format!("{e:#}")))?;
+        cfg.validate()?;
         Ok(cfg.task_words())
     })
     .await?;
@@ -1016,7 +1118,7 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
         Ok(v) => v,
         Err(e) => {
             let _ = tokio::fs::remove_file(&tmp).await;
-            return Err(bad(format!("{e:#}")));
+            return Err(e.into());
         }
     };
     if let Some(key) = adopt {
@@ -1090,34 +1192,65 @@ pub async fn done_imported_key(Wb(wb): Wb) -> ApiResult {
     .await
 }
 
-/// For monitoring (no password needed; shows no notes): the server runs,
-/// config.json reads, and each open workbook's database answers and passed
-/// its startup check. 503 if anything is wrong.
+/// For monitoring (no password needed; shows no notes and no filesystem
+/// paths): the server runs, config.json reads, and each open workbook's
+/// database answers and passed its startup check. Each of those is `ok` or
+/// `error`. 503 if anything is wrong. The real text is logged.
 pub async fn health(State(s): Shared) -> Response {
     match tokio::task::spawn_blocking(move || health_report(&s)).await {
         Ok(res) => res,
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(e) => {
+            tracing::error!("health check: {e:#}");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
     }
 }
 
+fn health_flag(ok: bool) -> &'static str {
+    if ok { "ok" } else { "error" }
+}
+
 fn health_report(s: &AppState) -> Response {
-    let config = match s.read_config() {
-        Ok(_) => "ok".to_string(),
-        Err(e) => format!("{e:#}"),
+    let config_ok = match s.read_config() {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::error!("health: config: {e:#}");
+            false
+        }
     };
-    let mut ok = config == "ok";
+    let mut ok = config_ok;
     let workbooks: Vec<_> = s
         .workbooks
         .open_workbooks()
         .iter()
         .map(|wb| {
             let answers = wb.read().query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).is_ok();
-            ok &= answers && wb.integrity == "ok";
-            json!({ "id": wb.id, "database": if answers { "ok" } else { "not answering" }, "integrity": wb.integrity })
+            let integrity_ok = wb.integrity == "ok";
+            if !answers {
+                tracing::error!("health: workbook {} database is not answering", wb.id);
+            }
+            if !integrity_ok {
+                tracing::error!("health: workbook {} integrity: {}", wb.id, wb.integrity);
+            }
+            ok &= answers && integrity_ok;
+            json!({
+                "id": wb.id,
+                "database": health_flag(answers),
+                "integrity": health_flag(integrity_ok),
+            })
         })
         .collect();
     let status = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-    (status, Json(json!({ "ok": ok, "version": env!("CARGO_PKG_VERSION"), "config": config, "workbooks": workbooks }))).into_response()
+    (
+        status,
+        Json(json!({
+            "ok": ok,
+            "version": env!("CARGO_PKG_VERSION"),
+            "config": health_flag(config_ok),
+            "workbooks": workbooks,
+        })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -1130,6 +1263,48 @@ mod tests {
         set_data_root(&root);
         let msg = format!("writing {}/workbooks/X/pages/a.md: disk full", root.display());
         assert_eq!(redact(&msg), "writing the data folder/workbooks/X/pages/a.md: disk full");
+        let err = ApiError::new(StatusCode::BAD_REQUEST, "invalid", msg);
+        let shown = match &err.message {
+            Some(m) => json!({ "error": err.code, "message": redact(m) }),
+            None => json!({ "error": err.code }),
+        };
+        assert_eq!(shown["error"], "invalid");
+        assert_eq!(shown["message"], "writing the data folder/workbooks/X/pages/a.md: disk full");
+    }
+
+    fn sql_err(code: i32, message: &str) -> anyhow::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), Some(message.into())).into()
+    }
+
+    #[test]
+    fn failures_become_stable_codes() {
+        let full = classify(&sql_err(rusqlite::ffi::SQLITE_FULL, "database or disk is full"));
+        assert_eq!(full.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(full.code, "storage");
+        assert!(full.message.is_none());
+
+        let busy = classify(&sql_err(rusqlite::ffi::SQLITE_BUSY, "database is locked"));
+        assert_eq!(busy.code, "storage");
+
+        let constraint = classify(&sql_err(rusqlite::ffi::SQLITE_CONSTRAINT, "UNIQUE constraint failed: pages.name"));
+        assert_eq!(constraint.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(constraint.code, "error");
+        assert!(constraint.message.is_none());
+
+        let io = classify(&anyhow::Error::from(std::io::Error::from_raw_os_error(28)));
+        assert_eq!(io.code, "storage");
+
+        let rejected = classify(&anyhow::anyhow!("page name is empty"));
+        assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+        assert_eq!(rejected.code, "invalid");
+        assert_eq!(rejected.message.as_deref(), Some("page name is empty"));
+
+        let path = classify(&anyhow::anyhow!("writing /var/lib/blockseq/pages/a.md failed"));
+        assert_eq!(path.code, "invalid");
+        assert!(path.message.is_none());
+
+        let locked = classify(&anyhow::anyhow!("sqlite_busy"));
+        assert_eq!(locked.code, "storage");
     }
 
     #[test]

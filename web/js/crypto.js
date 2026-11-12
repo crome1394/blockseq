@@ -9,6 +9,7 @@
 // src/crypto.rs (the terminal reset) must use exactly the same formats.
 
 import { getSetting } from './settings.js';
+import { explain } from './api.js';
 
 const PW_ROUNDS = 600000;
 const RK_ROUNDS = 100000;
@@ -97,7 +98,7 @@ async function saveConfig(encryption, auth = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ encryption, ...auth }),
   });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+  if (!r.ok) throw new Error(explain(await r.json().catch(() => ({})), `HTTP ${r.status}`));
 }
 
 export async function isConfigured() {

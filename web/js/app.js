@@ -1,7 +1,7 @@
 // App shell: routing, views, search and live updates from the server.
 
 import { el } from './dom.js';
-import { api, clientId, invalidatePageNames, getPageNames } from './api.js';
+import { api, clientId, explain, invalidatePageNames, getPageNames } from './api.js';
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
@@ -226,7 +226,7 @@ async function deletePage(name, journal = false) {
     const target = journal ? '#/journals' : '#/all';
     if (location.hash === target) route(); else location.hash = target;
   } else {
-    toast(`Delete failed: ${r.data?.error || r.status}`);
+    toast(`Delete failed: ${explain(r.data, 'Could not delete it')}`);
   }
 }
 
@@ -260,7 +260,7 @@ async function renameDialog(data) {
     await settleSaves();
     const r = await api.renamePage(data.name, to);
     if (!r.ok) {
-      err.textContent = r.data?.error || 'Could not rename it';
+      err.textContent = explain(r.data, 'Could not rename it');
       route(); // reopen the editors
       return false;
     }
@@ -752,7 +752,7 @@ function newWorkbookDialog() {
     const name = input.value.trim();
     if (!name) return false;
     const r = await api.createWorkbook(name);
-    if (!r.ok) { err.textContent = r.data?.error || 'Could not create it'; return false; }
+    if (!r.ok) { err.textContent = explain(r.data, 'Could not create it'); return false; }
     await loadWorkbooks();
     switchWorkbook(r.data.id);
   };
@@ -854,7 +854,7 @@ function deleteWorkbookDialog(id) {
   const go = async () => {
     if (input.value.trim() !== w.name) { err.textContent = 'The name doesn’t match'; return; }
     const r = await api.deleteWorkbook(id);
-    if (!r.ok) { err.textContent = r.data?.error || 'Could not delete it'; return; }
+    if (!r.ok) { err.textContent = explain(r.data, 'Could not delete it'); return; }
     toast(`Deleted ${w.name} (moved to the server's trash folder)`);
     await workbookGone(id);
     openWorkbookDialog();
@@ -891,7 +891,7 @@ function renameWorkbookDialog(id) {
     const to = input.value.trim();
     if (!to || to === w.name) { openWorkbookDialog(id); return; }
     const r = await api.renameWorkbook(id, to);
-    if (!r.ok) { err.textContent = r.data?.error || 'Could not rename it'; return; }
+    if (!r.ok) { err.textContent = explain(r.data, 'Could not rename it'); return; }
     renamed(id, r.data.id);
     toast(`Renamed to ${r.data.name}`);
     openWorkbookDialog(r.data.id);
@@ -1041,7 +1041,7 @@ async function assetsView(seq) {
         const warn = a.pages.length ? `\n\nIt is used on: ${a.pages.join(', ')}. Those blocks will show a broken link.` : '';
         if (!confirm(`Delete ${a.name} from the server? This cannot be undone.${warn}`)) return;
         const r = await api.deleteAsset(a.name);
-        if (!r.ok && r.status !== 404) { toast(`Delete failed: ${r.data?.error || r.status}`); return; }
+        if (!r.ok && r.status !== 404) { toast(`Delete failed: ${explain(r.data, 'Could not delete it')}`); return; }
         list.splice(list.indexOf(a), 1);
         draw();
         toast('File deleted');
@@ -1123,7 +1123,7 @@ async function setTaskStatus(t, word) {
     for (const ed of editors) if (ed.lower === t.page_name.toLowerCase()) ed.remoteChanged(r.data.page.version);
   }
   if (r.status === 409) toast('That task was changed elsewhere; the list is refreshed, try again');
-  else if (!r.ok) toast(r.data?.error || 'Could not change the status');
+  else if (!r.ok) toast(explain(r.data, 'Could not change the status'));
   await renderTasks({ focus: true });
 }
 

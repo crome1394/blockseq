@@ -193,9 +193,9 @@ is up (repeating the same typo counts once; locked yourself out? wait, or
 restart the service). Blockseq refuses changes coming from other websites (a
 page you visit can't edit your notes through your browser), sends a
 Content-Security-Policy and no-framing headers, and with `BLOCKSEQ_HOSTS` set
-only answers to the names you list. `GET /api/health` reports whether the
-settings file and databases are healthy (no password needed; it shows no
-notes), e.g. for Uptime Kuma.
+only answers to the names you list. `GET /api/health` reports `ok` or `error`
+for the settings file and each database (no password needed; it shows no
+notes and no file paths), e.g. for Uptime Kuma.
 
 ## Your data
 
@@ -249,9 +249,10 @@ a database instead of Markdown files (the "DB version") can't be imported.
   encrypted). If the tab or browser dies, the page offers to restore them the
   next time you open it.
 - **Startup checks.** Each workbook's database gets a quick integrity check
-  when it opens (shown in the log and by `/api/health`), and temporary files
-  left by an interrupted upload, export or import are removed. On shutdown the
-  database files are tidied so they're complete on their own.
+  when it opens (the detail is in the log; `/api/health` says `ok` or
+  `error`), and temporary files left by an interrupted upload, export or
+  import are removed. On shutdown the database files are tidied so they're
+  complete on their own.
 - **Upgrades back up first** (see Upgrading above).
 
 ### Backup and restore
