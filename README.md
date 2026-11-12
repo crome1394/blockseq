@@ -1,5 +1,12 @@
 # Blockseq
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational?logo=linux&logoColor=white)](#deploy-on-a-linux-server-or-container)
+[![Database: SQLite](https://img.shields.io/badge/database-SQLite-003B57?logo=sqlite&logoColor=white)](ARCHITECTURE.md)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-yes-2ea44f)](#deploy-on-a-linux-server-or-container)
+[![No JavaScript dependencies](https://img.shields.io/badge/JS%20dependencies-none-2ea44f)](AGENTS.md)
+
 A self-hosted, Logseq-style outliner. Your notes live on your own server (in
 SQLite), and you use them from any browser on your network or VPN.
 
@@ -100,7 +107,7 @@ cd /root && ./deploy/install.sh ./blockseq
 ### Option B: build on the server
 
 Install Rust with rustup. Don't use `apt install rustc`: Debian's packaged
-Rust is too old for this project, which needs Rust 1.85+.
+Rust is too old for this project, which needs Rust 1.88+.
 
 ```sh
 # on the server, as root
