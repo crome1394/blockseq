@@ -311,13 +311,18 @@ set `BLOCKSEQ_DATA`. Container or VM snapshots are a good second layer.
 | Esc                  | Stop editing (or close the side pane)      |
 | ?                    | Shortcut help (when not editing)           |
 | t                    | Task list                                  |
+| g then e             | Go to the editor (e.g. from the task list) |
+| g then l             | Lock / unlock encrypted blocks             |
+| Ctrl+B / Ctrl+I      | Bold / italic                              |
 | g then j / a / f     | Journals / All pages / Assets              |
 | w                    | Switch workbook                            |
 | Ctrl+Shift+Enter     | Pick a task status                         |
 | Ctrl+\\               | Show / hide the sidebar (or the ☰ button)  |
 | `[[` / `((`          | Page / block autocomplete                  |
-| `/`                  | Command menu (link, code, table, TODO, headings, numbered list, dates) |
+| `/`                  | Command menu (common commands, then groups; type to search all) |
 | Ctrl+K               | Search                                     |
+
+The single-key and `g` shortcuts can be changed in Settings → Keyboard.
 
 **The / menu:** a bare `/` shows a short list: common commands, then groups
 (Headings, Admonitions & quote block, Upload & embed, Dates & times, Task

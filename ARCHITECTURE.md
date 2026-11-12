@@ -499,10 +499,10 @@ deleted. Error messages sent to browsers replace the data folder's path with
 | Zoom into a block | `PageEditor` option to render from a given node as root; a `#/block/<id>` route |
 | Editable linked references | Render backlink blocks with a `PageEditor` scoped to the source page's subtree |
 | Queries (`{{query}}`) | A server endpoint over `refs` + `blocks`; rendered in `render.js` |
-| Image resizing | Store `:width` in the existing `{...}` image metadata; drag handle in `.img-box` |
-| Unused-image cleanup | Scan block text for `../assets/` references; list or delete files nobody uses |
+| Free image resizing | Sizes are presets today (`:size` in the `{...}` image metadata); a drag handle in `.img-box` could store a width |
+| Bulk unused-file cleanup | The Assets page already filters unused files (`asset_usage`); a "delete all unused" action would go there |
 | Better search | FTS5 virtual table kept in step with `blocks` inside `save_page` |
-| Version history | Before replacing blocks in `save_page`, copy the old page into a history table |
+| Diffs in page history | `page_history` keeps whole versions; the conflict diff (`diffLines` in editor.js) could compare two of them |
 | Schema changes | Add a step to `db::migrate` and bump `SCHEMA_VERSION` |
 
 ## Testing
