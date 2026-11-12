@@ -13,7 +13,8 @@ and you use them from any browser on your LAN or tailnet.
   Deleting asks you to type the name and moves the folder to
   `workbooks/.trash/` (move it back to undo, or remove it for good). Every
   workbook is separate: its own database, Markdown files and assets
-- The status at the bottom shows when the workbook was last saved, to the second
+- A header across the top: the save status with when the workbook was last
+  saved (to the second) in the middle; tasks, lock, settings and help on the right
 - Task statuses you define (Backlog, Todo, Doing, In Review, Done, Cancelled),
   colour-coded, with a task list in a side pane
 - Markdown formatting, code blocks, tables, numbered lists, admonitions,
@@ -550,7 +551,7 @@ and updated time (encrypted text isn't counted). Click a star to (un)favorite, o
 box matches names and tags, and the buttons next to it show Pages (no
 journals), Journals, Starred or All. Each browser remembers the last choice.
 
-**Settings** (bottom of the sidebar), by category:
+**Settings** (⚙ in the header), by category:
 - *Appearance:* theme (Automatic, Light, Dark, Sepia, Solarized Light/Dark,
   Catppuccin Latte/Mocha, Nord, Gruvbox, Dracula, Tokyo Night), full window
   width, a colour per tag

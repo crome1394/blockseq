@@ -2772,7 +2772,9 @@ function positionBar() {
   const h = bar.el.offsetHeight;
   const w = bar.el.offsetWidth;
   const gap = 6;
-  const minTop = 8;
+  // Below the fixed header, not under it.
+  const header = document.getElementById('topbar')?.getBoundingClientRect();
+  const minTop = (header && header.bottom > 0 ? header.bottom : 0) + 6;
   const maxTop = window.innerHeight - h - 8;
   let top;
   if (r.top - h - gap >= minTop) top = r.top - h - gap;

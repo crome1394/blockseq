@@ -32,17 +32,21 @@
       <div class="fav-list"></div>
     </section>
     <div id="calendar" class="calendar" aria-label="Journal calendar"></div>
-    <button id="open-settings" class="sidebar-button" type="button"><svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4 1 2-3.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Settings</span></button>
-    <div id="status" class="status ok">Saved</div>
   </aside>
   <main id="main"></main>
-  <div id="topbar" class="topbar">
-    <button id="tasks-toggle" type="button" title="Tasks (t)" aria-label="Tasks">
-      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6.5l1.5 1.5L8.5 5M11 6.5h9M4 12.5l1.5 1.5 3-3M11 12.5h9M4 18.5h4.5M11 18.5h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-    <button id="lock-toggle" type="button" title="Unlock encrypted blocks" aria-label="Lock or unlock encrypted blocks">🔒</button>
-    <button id="help-toggle" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
-  </div>
+  <header id="topbar" class="topbar">
+    <div class="topbar-side"></div>
+    <!-- Sync status and when the workbook was last saved -->
+    <div class="topbar-center"><div id="status" class="status ok" role="status">Saved</div></div>
+    <div class="topbar-side topbar-buttons">
+      <button id="tasks-toggle" type="button" title="Tasks (t)" aria-label="Tasks">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6.5l1.5 1.5L8.5 5M11 6.5h9M4 12.5l1.5 1.5 3-3M11 12.5h9M4 18.5h4.5M11 18.5h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="lock-toggle" type="button" title="Unlock encrypted blocks" aria-label="Lock or unlock encrypted blocks">🔒</button>
+      <button id="open-settings" type="button" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4 1 2-3.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></button>
+      <button id="help-toggle" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+    </div>
+  </header>
   <aside id="pane" class="pane hidden" aria-label="Side pane">
     <div class="pane-grip" title="Drag to resize"></div>
     <div class="pane-head">
