@@ -250,7 +250,8 @@ CRDTs (conflict-free merge structures):
   one gets a `refs` row to `task` with `tag = 2` (implied, not in the text), so
   the *task* page shows every task and `GET /api/tasks` can list them. When
   the statuses change, `refresh_task_refs` recomputes these rows in every open
-  workbook; workbooks opened later do it on open.
+  workbook. If that recompute fails, it is logged and the save still stands:
+  the client gets 204 and a `config` event. Workbooks opened later do it on open.
 - **One SQLite connection per workbook behind a `std::sync::Mutex`.** All queries are short
   and the app has a single user, so a connection pool would add complexity for
   no gain. Handlers lock, run their queries, and release the lock before any

@@ -1023,16 +1023,21 @@ pub async fn put_config(State(s): Shared, Json(body): Json<StatusesBody>) -> Api
         Ok(cfg.task_words())
     })
     .await?;
+    // The file is already durable. A failure while rebuilding the task index
+    // must not look like the save failed, or other tabs never hear about it.
     let state = s.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    let recompute = tokio::task::spawn_blocking(move || {
         for wb in state.workbooks.open_workbooks() {
-            db::refresh_task_refs(&wb.db.lock(), &words)?;
+            if let Err(e) = db::refresh_task_refs(&wb.db.lock(), &words) {
+                tracing::error!("task statuses were saved, but {} could not be updated: {e:#}", wb.id);
+            }
         }
-        Ok(())
     })
-    .await
-    ??;
+    .await;
     s.notify_all(&json!({ "type": "config" }));
+    if let Err(e) = recompute {
+        tracing::error!("task statuses were saved; recomputing tasks failed: {e}");
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
