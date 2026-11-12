@@ -60,6 +60,8 @@ async function route() {
   view = null;
   const hash = location.hash.slice(1) || '/journals';
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', hash === `/${a.dataset.nav}`));
+  // The assets table has many columns: give it more room than a page of text.
+  main.classList.toggle('wide-table', hash === '/assets');
   markActiveFavorite();
   if (matchMedia('(max-width: 760px)').matches && !document.documentElement.classList.contains('sidebar-hidden')) {
     // On a phone the sidebar covers the page; close it after navigating.
@@ -960,7 +962,7 @@ async function assetsView(seq) {
   controls.append(filter, unused, total);
   const wrap = el('div', 'table-wrap');
   const table = el('table', 'page-table asset-table');
-  table.innerHTML = '<thead><tr><th></th><th>File</th><th>Used on</th><th>Size</th><th>Added</th><th></th></tr></thead>';
+  table.innerHTML = '<thead><tr><th></th><th>File</th><th>Server path</th><th>Used on</th><th>Size</th><th>Added</th><th></th></tr></thead>';
   const tbody = el('tbody');
   table.append(tbody);
   wrap.append(table);
@@ -990,6 +992,15 @@ async function assetsView(seq) {
         thumb.append(el('span', `asset-kind kind-${a.kind}`, (a.name.split('.').pop() || 'file').toUpperCase().slice(0, 4)));
       }
       const name = el('td', 'col-name asset-name', a.name);
+      const pathCell = el('td', 'asset-path');
+      const pathText = el('code', '', a.path);
+      const copy = el('button', 'inline-copy', '');
+      copy.type = 'button';
+      copy.innerHTML = COPY_ICON;
+      copy.dataset.copy = a.path; // handled by the page-wide copy-button listener
+      copy.title = 'Copy the path';
+      copy.setAttribute('aria-label', `Copy the server path of ${a.name}`);
+      pathCell.append(pathText, copy);
       const used = el('td', 'asset-used');
       if (a.pages.length) {
         a.pages.forEach((p) => { const l = el('a', '', p); l.href = pageHref(p); used.append(l); });
@@ -1016,7 +1027,7 @@ async function assetsView(seq) {
         draw();
         toast('File deleted');
       }, 'danger');
-      tr.append(thumb, name, used, size, added, actions);
+      tr.append(thumb, name, pathCell, used, size, added, actions);
       return tr;
     }));
     empty.textContent = rows.length ? '' : (list.length ? 'No matching files.' : 'No files yet. Paste or drop images and PDFs into a block.');

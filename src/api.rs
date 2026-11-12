@@ -687,6 +687,7 @@ pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap)
 /// Files in the workbook's assets folder, newest first, with the pages that
 /// mention each one.
 pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
+    let dir = std::path::absolute(wb.assets_dir()).unwrap_or_else(|_| wb.assets_dir());
     let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.db.lock())?, assets::list(&wb.assets_dir())))).await?;
     let out: Vec<_> = list
         .into_iter()
@@ -699,7 +700,9 @@ pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
                 .collect();
             pages.sort_unstable();
             pages.dedup();
-            json!({ "name": a.name, "size": a.size, "modified": a.modified, "kind": a.kind, "pages": pages })
+            // Where the file is on the server (shown with a copy button).
+            let path = dir.join(&a.name).display().to_string();
+            json!({ "name": a.name, "path": path, "size": a.size, "modified": a.modified, "kind": a.kind, "pages": pages })
         })
         .collect();
     Ok(Json(out).into_response())

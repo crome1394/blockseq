@@ -388,7 +388,8 @@ such as `?s=20` are dropped). It is X's own embed page in a frame, matching the
 light or dark theme, with an "Open on X" link under it. An embed shows that one
 post (and what it replies to); to keep a whole thread, paste each post you want.
 
-**Assets** (sidebar) lists every file in the workbook's `assets/` folder with
+**Assets** (sidebar) lists every file in the workbook's `assets/` folder, with
+its path on the server (copy button next to it) and
 a thumbnail, size, date and the pages that use it, and buttons to open,
 download or delete. *Only unused* finds files no block links to any more.
 
