@@ -1,8 +1,12 @@
 # Changelog
 
-All notable changes to Blockseq are listed here. There are no release tags yet, so entries are grouped by theme. The newest group is first, and the newest change is first inside each section.
+All notable changes to Blockseq are listed here, newest first. Each entry ends with the short commit hash it comes from.
 
-Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `396c49b` (2026-11-12).
+## 0.1.0 (2026-11-12)
+
+The first release (tag `v0.1.0`): everything from `64076f1` (2026-11-11) onwards. Its changes are grouped by theme below; the newest group is first, and the newest change is first inside each section.
+
+Since the last group below: the README became a short overview with the details in [docs/](docs/), screenshots were added (`76ab3fb`), and the unit tests moved into their own files (`30f6dd8`).
 
 Opening an older database upgrades it in place. The current schema is **version 8**.
 
