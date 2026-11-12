@@ -331,8 +331,10 @@ CRDTs (conflict-free merge structures):
   unpacked size at 4× the upload limit, checks the database (`quick_check`,
   `user_version` not newer) and only then renames the folder into place. Key
   handling compares the backup's `encryption.check` with the server's: same →
-  nothing; server has none → adopted into `config.json`; different → the
-  backup's wrapping is saved as `imported-key.json` in the workbook. The
+  nothing; server has none → the wrapping is written to `imported-key.json`,
+  then adopted into `config.json`, and that file is removed so the browser
+  does not re-encrypt (the upload zip is deleted only after the key is stored);
+  different → the backup's wrapping is saved as `imported-key.json` in the workbook. The
   browser then opens that old key with the old password or recovery key
   (`keyFromSetup`), rewrites every `encrypted:: v1:` blob, including ones
   nested inside other blobs (`rekeyText`), on the pages from

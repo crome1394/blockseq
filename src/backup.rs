@@ -252,8 +252,11 @@ fn read_entry<R: Read + std::io::Seek>(zip: &mut ZipArchive<R>, name: &str) -> O
 
 /// Extracts the zip at `src` into the new, not yet existing folder `dest`.
 /// `server_key` is this server's encryption setup; when the backup's differs,
-/// the backup's is kept in `dest/IMPORTED_KEY`. Returns the report and, for
-/// `KeyOutcome::Adopted`, the key setup the server should start using.
+/// the backup's is kept in `dest/IMPORTED_KEY`. When this server has no key,
+/// that file is written as well and the key is also returned so the caller
+/// can store it in `config.json` before deleting the upload. Returns the
+/// report and, for `KeyOutcome::Adopted`, the key setup the server should
+/// start using.
 /// `max_bytes` caps the unpacked size.
 pub fn import_zip(src: &Path, dest: &Path, server_key: Option<&Encryption>, max_bytes: u64) -> Result<(ImportReport, Option<Encryption>)> {
     let file = std::fs::File::open(src)?;
@@ -311,6 +314,10 @@ pub fn import_zip(src: &Path, dest: &Path, server_key: Option<&Encryption>, max_
             (None, _) => KeyOutcome::None,
             (Some(b), Some(s)) if b.check == s.check => KeyOutcome::Same,
             (Some(b), None) => {
+                // On disk before we return, so a crash after the upload zip is
+                // gone still leaves the wrap next to the ciphertext.
+                let text = serde_json::to_string_pretty(b)?;
+                crate::config::write_durable(&dest.join(IMPORTED_KEY), text.as_bytes())?;
                 adopt = Some(b.clone());
                 KeyOutcome::Adopted
             }
@@ -439,6 +446,65 @@ mod tests {
         assert!(!dest.join("config.json").exists());
         // Too small a limit is refused.
         assert!(import_zip(&zip, &tmp.join("dest2"), None, 2).is_err());
+        std::fs::remove_dir_all(&tmp)?;
+        Ok(())
+    }
+
+    fn sample_key(check: &str) -> Encryption {
+        Encryption {
+            version: 1,
+            salt: "s".into(),
+            iterations: 1,
+            pw_iv: "i".into(),
+            pw_data: "d".into(),
+            rk_salt: "rs".into(),
+            rk_iterations: 1,
+            rk_iv: "ri".into(),
+            rk_data: "rd".into(),
+            check: check.into(),
+            proof_hash: None,
+        }
+    }
+
+    #[test]
+    fn an_adopted_key_is_written_before_the_caller_can_delete_the_zip() -> Result<()> {
+        let tmp = std::env::temp_dir().join(format!("bq-adopt-{}", uuid::Uuid::new_v4()));
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src)?;
+        let conn = crate::db::open(&src.join(DB_FILE))?;
+        let block = crate::db::Block {
+            id: "b".into(),
+            parent_id: None,
+            content: "encrypted:: v1:aa:bb".into(),
+            collapsed: false,
+        };
+        crate::db::save_page(&conn, "Secret", 0, &[block], &[])?;
+        let key = sample_key("check-value");
+        let cfg = Config { encryption: Some(key.clone()), ..Config::default() };
+        cfg.save(&tmp.join("config.json"))?;
+        let copy = tmp.join("copy.db");
+        snapshot_file(&src.join(DB_FILE), &copy)?;
+        let zip = tmp.join("b.zip");
+        write_zip("src", &src, &copy, &tmp.join("config.json"), &zip)?;
+
+        let dest = tmp.join("dest");
+        let (report, adopt) = import_zip(&zip, &dest, None, 1 << 30)?;
+        assert_eq!(report.key, KeyOutcome::Adopted);
+        assert_eq!(adopt.unwrap().check, key.check);
+        let stored: Encryption = serde_json::from_str(&std::fs::read_to_string(dest.join(IMPORTED_KEY))?)?;
+        assert_eq!(stored, key);
+
+        let dest_same = tmp.join("dest-same");
+        let (report, adopt) = import_zip(&zip, &dest_same, Some(&key), 1 << 30)?;
+        assert_eq!(report.key, KeyOutcome::Same);
+        assert!(adopt.is_none());
+        assert!(!dest_same.join(IMPORTED_KEY).exists());
+
+        let dest_other = tmp.join("dest-other");
+        let (report, adopt) = import_zip(&zip, &dest_other, Some(&sample_key("other")), 1 << 30)?;
+        assert_eq!(report.key, KeyOutcome::Different);
+        assert!(adopt.is_none());
+        assert!(dest_other.join(IMPORTED_KEY).is_file());
         std::fs::remove_dir_all(&tmp)?;
         Ok(())
     }

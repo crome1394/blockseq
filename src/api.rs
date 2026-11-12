@@ -1012,16 +1012,24 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
     let result = tokio::task::spawn_blocking(move || state.workbooks.restore(&wb_name, &zip, server_key.as_ref(), max_bytes))
         .await
         ?;
-    let _ = tokio::fs::remove_file(&tmp).await;
-    let (info, mut report, adopt) = result.map_err(|e| bad(format!("{e:#}")))?;
+    let (info, mut report, adopt) = match result {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(bad(format!("{e:#}")));
+        }
+    };
     if let Some(key) = adopt {
         let key_file = folder.join(&name).join(backup::IMPORTED_KEY);
+        let key_path = key_file.clone();
+        // The wrap is already in imported-key.json. Store it in the server
+        // settings before deleting the upload. A failure here leaves both.
         let outcome = update_config(&s, move |cfg| {
             Ok(match &cfg.encryption {
                 // A password was set while the upload ran: treat the key as different.
                 Some(now) if now.check != key.check => {
                     let text = serde_json::to_string_pretty(&key)?;
-                    crate::config::write_durable(&key_file, text.as_bytes())?;
+                    crate::config::write_durable(&key_path, text.as_bytes())?;
                     backup::KeyOutcome::Different
                 }
                 Some(_) => backup::KeyOutcome::Same,
@@ -1032,11 +1040,21 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
             })
         })
         .await?;
+        // The browser treats imported-key.json as a foreign key and would
+        // re-encrypt. Remove it once the server itself holds that key.
+        if matches!(outcome, backup::KeyOutcome::Adopted | backup::KeyOutcome::Same) {
+            if let Err(e) = tokio::fs::remove_file(&key_file).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(e.into());
+            }
+        }
         if outcome == backup::KeyOutcome::Adopted {
             s.notify_all(&json!({ "type": "encryption" }));
         }
         report.key = outcome;
     }
+    let _ = tokio::fs::remove_file(&tmp).await;
     tracing::info!("restored workbook {name} from a backup ({} files)", report.files);
     s.notify_all(&json!({ "type": "workbooks" }));
     Ok(Json(json!({ "workbook": info, "report": report })).into_response())
