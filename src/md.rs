@@ -183,6 +183,10 @@ pub fn page_to_markdown(blocks: &[Block]) -> String {
 }
 
 /// File name used for the Markdown mirror, following Logseq's conventions.
+/// `/` becomes `___`. `_`, `%`, the reserved characters, and controls are
+/// percent-encoded as their UTF-8 bytes, so two page names never share a
+/// file. `page_name_from_file` turns `___` back into `/` before decoding
+/// `%XX`, which is why a literal underscore must not survive as `_`.
 pub fn mirror_path(name: &str, journal_day: Option<i64>) -> String {
     if let Some(day) = journal_day {
         return format!(
@@ -194,13 +198,21 @@ pub fn mirror_path(name: &str, journal_day: Option<i64>) -> String {
     }
     let mut file = String::new();
     for c in name.chars() {
-        match c {
-            '/' => file.push_str("___"),
-            '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*' => {
-                let _ = write!(file, "%{:02X}", u32::from(c));
+        if c == '/' {
+            file.push_str("___");
+            continue;
+        }
+        let encode = c == '_'
+            || c == '%'
+            || matches!(c, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*')
+            || c.is_control();
+        if encode {
+            let mut buf = [0; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                let _ = write!(file, "%{b:02X}");
             }
-            c if c.is_control() => {}
-            c => file.push(c),
+        } else {
+            file.push(c);
         }
     }
     if file.starts_with('.') {
@@ -525,6 +537,16 @@ mod tests {
         assert_eq!(page_name_from_file("pages", "50%é").as_deref(), Some("50%é"));
         assert_eq!(page_name_from_file("journals", "2026_11_11").as_deref(), Some("Nov 11th, 2026"));
         assert_eq!(page_name_from_file("journals", "notes"), None);
+        assert_eq!(mirror_path("a/b", None), "pages/a___b.md");
+        assert_eq!(mirror_path("a___b", None), "pages/a%5F%5F%5Fb.md");
+        assert_eq!(mirror_path("a%5Fb", None), "pages/a%255Fb.md");
+        assert_ne!(mirror_path("a:b", None), mirror_path("a%3Ab", None));
+        assert_eq!(mirror_path("x", Some(20261111)), "journals/2026_11_11.md");
+        for name in ["a/b", "a___b", "a%5Fb", "a:b", "a%3Ab", "a/b: c", "a\nb", ".hidden", "50%é"] {
+            let path = mirror_path(name, None);
+            let stem = path.strip_prefix("pages/").unwrap().strip_suffix(".md").unwrap();
+            assert_eq!(page_name_from_file("pages", stem).as_deref(), Some(name), "{path}");
+        }
         assert!(is_task("TODO buy milk", &["TODO".into()]));
         assert!(!is_task("TODOS", &["TODO".into()]));
     }

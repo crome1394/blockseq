@@ -239,7 +239,8 @@ CRDTs (conflict-free merge structures):
   to `blockseq.db.partial` and renamed to `blockseq.db` only after every file
   is saved; a failed import removes the partial file, leaves the Markdown, and
   is tried again on the next open. Then the mirror rewrites the files in
-  Blockseq's format.
+  Blockseq's format: `/` as `___`, and `_`, `%`, reserved characters, and
+  controls percent-encoded, so each page name has its own file.
 - **Tasks.** `config.json` lists the status words. A block whose first word is
   one gets a `refs` row to `task` with `tag = 2` (implied, not in the text), so
   the *task* page shows every task and `GET /api/tasks` can list them. When

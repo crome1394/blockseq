@@ -397,11 +397,24 @@ pub fn rename_page(conn: &Connection, from: &str, to: &str, task_words: &[String
     Ok(out)
 }
 
+/// Shared by save and rename. The name is already trimmed. A journal date is
+/// allowed here: a journal is saved under that name. Rename rejects dates,
+/// and renaming a journal, on its own.
+fn reject_page_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.starts_with('#')
+        || name.contains("[[")
+        || name.contains("]]")
+        || name.chars().any(char::is_control)
+    {
+        bail!("names can't be empty, start with #, or contain [[ ]] or control characters");
+    }
+    Ok(())
+}
+
 fn rename_page_inner(conn: &Connection, from: &str, to: &str, task_words: &[String]) -> Result<RenameOutcome> {
     let to = to.trim();
-    if to.is_empty() || to.contains('\n') || to.contains("[[") || to.contains("]]") || to.starts_with('#') {
-        bail!("names can't be empty, start with # or contain [[ ]]");
-    }
+    reject_page_name(to)?;
     if md::parse_journal_name(to).is_some() {
         bail!("that name is a journal date");
     }
@@ -750,9 +763,7 @@ fn save_page_inner(
 ) -> Result<SaveOutcome> {
     validate_blocks(blocks)?;
     let name = name.trim();
-    if name.is_empty() {
-        bail!("page name is empty");
-    }
+    reject_page_name(name)?;
     let sp = Savepoint::begin(conn, "save_page")?;
     let tx = conn;
     let now = now_ms();
@@ -1334,6 +1345,22 @@ mod tests {
         assert_eq!(busy, 5000);
         drop(read);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_uses_the_rename_name_rules_except_journal_dates() {
+        let c = mem();
+        for name in ["", "  ", "#tag", "see [[x]]", "a]]b", "has\nnewline", "has\u{7f}del"] {
+            assert!(save_page(&c, name, 0, &[block("a", None, "x")], &[]).is_err(), "{name:?}");
+        }
+        assert!(matches!(
+            save_page(&c, "Nov 11th, 2026", 0, &[block("j", None, "today")], &[]).unwrap(),
+            SaveOutcome::Saved(_)
+        ));
+        save_page(&c, "Notes", 0, &[block("n", None, "x")], &[]).unwrap();
+        assert!(rename_page(&c, "Notes", "Nov 12th, 2026", &[]).is_err());
+        assert!(rename_page(&c, "Notes", "#nope", &[]).is_err());
+        assert!(rename_page(&c, "Notes", "Fine name", &[]).is_ok());
     }
 
     #[test]
