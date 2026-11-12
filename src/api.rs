@@ -252,6 +252,11 @@ pub async fn put_page(
                 Json(json!({ "error": "some blocks belong to another page", "foreign_ids": ids })),
             )
                 .into_response(),
+            SaveOutcome::Deleted => (
+                StatusCode::CONFLICT,
+                Json(json!({ "deleted": true, "page": null, "blocks": [] })),
+            )
+                .into_response(),
         })
     })
     .await

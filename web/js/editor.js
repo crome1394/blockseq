@@ -717,10 +717,13 @@ export class PageEditor {
 
   renderConflict() {
     const bar = el('div', 'conflict');
-    bar.append(el('span', '', 'This page was changed on another device while you were editing it.'));
+    const gone = this.conflict.deleted;
+    bar.append(el('span', '', gone
+      ? 'This page was deleted on another device while you were editing it.'
+      : 'This page was changed on another device while you were editing it.'));
     const diff = el('button', '', 'Show differences');
     diff.addEventListener('click', () => this.showConflictDiff());
-    const theirs = el('button', '', 'Use their version');
+    const theirs = el('button', '', gone ? 'Leave it deleted' : 'Use their version');
     theirs.addEventListener('click', () => this.useTheirs());
     const mine = el('button', 'primary', 'Keep mine');
     mine.addEventListener('click', () => this.keepMine());
@@ -2122,9 +2125,11 @@ export class PageEditor {
           this.idWaits = 0;
           this.saveAgain = true;
         }
-      } else if (r.status === 409) {
-        this.conflict = r.data.page;
-        this.conflictData = { name: r.data.page.name, page: r.data.page, blocks: r.data.blocks };
+      } else if (r.status === 409 && r.data?.deleted) {
+        // The page was deleted or renamed. Version 0 lets Keep mine create it
+        // again; Leave it deleted discards this edit.
+        this.conflict = { name: this.name, version: 0, deleted: true };
+        this.conflictData = { name: this.name, page: null, blocks: [] };
         const caret = this.ta?.selectionStart;
         const editing = this.editing;
         this.render();

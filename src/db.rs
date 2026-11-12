@@ -170,6 +170,9 @@ pub enum SaveOutcome {
     /// Some block ids already belong to other pages (e.g. a pasted copy).
     /// Nothing was saved; the client gives those blocks new ids.
     ForeignIds(Vec<String>),
+    /// The page is gone and the client still holds an older version, so this
+    /// save would undo a delete or a rename. Nothing was written.
+    Deleted,
 }
 
 /// SQLite's quick integrity check: "ok", or what is wrong.
@@ -661,8 +664,13 @@ fn save_page_inner(
             return Ok(SaveOutcome::Conflict(p, current));
         }
         Some(p) => p,
-        // Missing page: either new, or deleted on another device. Either way
-        // the user's typing wins and the page is (re)created.
+        // A client that already had a version is looking at a page that was
+        // deleted or renamed. Recreating it here would undo that. A new page
+        // (base_version 0) and an explicit Keep mine (a history reason) still
+        // create the row.
+        None if base_version != 0 && history_reason.is_none() => {
+            return Ok(SaveOutcome::Deleted);
+        }
         None => {
             let p = PageMeta {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -1272,6 +1280,15 @@ mod tests {
 
         delete_page(&c, "test").unwrap();
         assert!(get_page(&c, "Test").unwrap().is_none());
+        // A tab that still has the old version must not recreate the page.
+        assert!(matches!(save_page(&c, "Test", 2, &[block("a", None, "still typing")], &[]).unwrap(), SaveOutcome::Deleted));
+        assert!(get_page(&c, "Test").unwrap().is_none());
+        // Keep mine (a noted save) is allowed to bring it back.
+        assert!(matches!(
+            save_page_noting(&c, "Test", 2, &[block("a", None, "still typing")], &[], "replaced by Keep mine").unwrap(),
+            SaveOutcome::Saved(_)
+        ));
+        delete_page(&c, "Test").unwrap();
         assert!(backlinks(&c, "world").unwrap().is_empty());
     }
 
