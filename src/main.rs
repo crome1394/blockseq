@@ -9,6 +9,10 @@
 //!                      on localhost; required to listen on other addresses
 //!                      unless `BLOCKSEQ_HOSTS` is set)
 //!   `BLOCKSEQ_MAX_UPLOAD_MB`  largest file upload in MB (default 256)
+//!   `BLOCKSEQ_EXPOSE_PATHS`  set to 1 to include full server paths in API
+//!                      responses (assets, workbooks, usage). Unset keeps
+//!                      paths relative to the data folder. A direct localhost
+//!                      connection still receives an asset's full path.
 //!   `BLOCKSEQ_TRUSTED_PROXIES`  reverse proxy addresses whose X-Forwarded-For
 //!                      is used for the wrong-password limit (optional)
 //!   `BLOCKSEQ_HOSTS`     host names to serve, comma-separated (optional; IP
@@ -53,6 +57,8 @@ pub struct AppState {
     pub password: Option<String>,
     /// Largest upload accepted, in bytes (`BLOCKSEQ_MAX_UPLOAD_MB`).
     pub max_upload: u64,
+    /// Include absolute server paths in API responses (`BLOCKSEQ_EXPOSE_PATHS`).
+    pub expose_paths: bool,
     /// Host names served (`BLOCKSEQ_HOSTS`); empty = any.
     pub allowed_hosts: Vec<String>,
     /// Reverse proxies whose X-Forwarded-For is believed (`BLOCKSEQ_TRUSTED_PROXIES`).
@@ -109,6 +115,18 @@ async fn static_file(uri: Uri) -> Response {
 
 /// Largest upload accepted when `BLOCKSEQ_MAX_UPLOAD_MB` is unset, in MB.
 const DEFAULT_MAX_UPLOAD_MB: u64 = 256;
+
+/// `1`, `true`, `yes`, or `on`. Anything else, including unset, is off.
+fn flag_on(value: Option<&str>) -> bool {
+    value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => flag_on(Some(&value)),
+        Err(_) => false,
+    }
+}
 
 /// True when `addr` is this machine only (`127.0.0.1`, `::1`, `localhost`).
 /// `0.0.0.0` and `::` are not: they accept connections from other hosts.
@@ -246,6 +264,7 @@ async fn main() -> Result<()> {
         event_subs: Arc::new(api::EventSubs::new(api::MAX_EVENT_SUBSCRIBERS)),
         password,
         max_upload: max_upload_mb * 1024 * 1024,
+        expose_paths: env_flag("BLOCKSEQ_EXPOSE_PATHS"),
         allowed_hosts,
         trusted_proxies: auth::parse_proxies(&std::env::var("BLOCKSEQ_TRUSTED_PROXIES").unwrap_or_default()),
         limiter: auth::Limiter::default(),
@@ -308,10 +327,11 @@ async fn main() -> Result<()> {
     // What the optional settings were read as, so a typo shows in the log.
     let list = |v: Vec<String>, empty: &str| if v.is_empty() { empty.to_string() } else { v.join(", ") };
     tracing::info!(
-        "password: {} · host names: {} · trusted proxies: {}",
+        "password: {} · host names: {} · trusted proxies: {} · server paths: {}",
         if state.password.is_some() { "on" } else { "off" },
         list(state.allowed_hosts.clone(), "any"),
         list(state.trusted_proxies.iter().map(ToString::to_string).collect(), "none"),
+        if state.expose_paths { "full" } else { "relative" },
     );
     axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown_signal(state.clone()))
@@ -332,5 +352,17 @@ mod tests {
         assert!(!listen_is_loopback("0.0.0.0:3030"));
         assert!(!listen_is_loopback("[::]:3030"));
         assert!(!listen_is_loopback("10.0.0.5:3030"));
+    }
+
+    #[test]
+    fn expose_paths_flag_accepts_the_common_on_values() {
+        assert!(flag_on(Some("1")));
+        assert!(flag_on(Some(" true ")));
+        assert!(flag_on(Some("YES")));
+        assert!(flag_on(Some("on")));
+        assert!(!flag_on(None));
+        assert!(!flag_on(Some("")));
+        assert!(!flag_on(Some("0")));
+        assert!(!flag_on(Some("false")));
     }
 }

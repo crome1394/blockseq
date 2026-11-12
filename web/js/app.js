@@ -809,9 +809,11 @@ async function openWorkbookDialog(selectId = workbook()) {
     row.setAttribute('role', 'option');
     const note = w.id === workbook() ? 'open now' : w.kind === 'logseq' ? 'Logseq graph · imports on open' : w.kind === 'empty' ? 'new' : '';
     const label = el('span', 'wb-label-col');
-    const where = w.path === '.' ? 'data folder' : w.path;
+    const where = w.absolute || (w.path === '.' ? 'data folder' : w.path);
     label.append(el('span', 'wb-row-name', w.name), el('span', 'wb-path', where));
-    label.lastChild.title = 'Where this workbook is stored, relative to the data folder';
+    label.lastChild.title = w.absolute
+      ? 'Where this workbook is stored on the server'
+      : 'Where this workbook is stored, relative to the data folder';
     row.append(label, el('span', 'muted small', note));
     // Click selects, double-click (or Enter) opens. The server opens (and,
     // for a Logseq graph, imports) it on first use.
@@ -848,8 +850,10 @@ function deleteWorkbookDialog(id) {
   }
   const body = el('div', 'dialog-form');
   body.append(el('p', '', `Delete the workbook “${w.name}”: its pages, journals and files.`));
-  const parent = w.path.includes('/') ? w.path.replace(/[/\\][^/\\]*$/, '') : 'workbooks';
-  body.append(el('p', 'muted small', `Nothing is erased: the folder is moved to ${parent}/.trash/ inside the data folder, where it can be moved back (or removed for good). Consider downloading a backup first (Settings → Backup).`));
+  const parent = w.absolute
+    ? `${w.absolute.replace(/[/\\][^/\\]*$/, '')}/.trash/`
+    : `${w.path.includes('/') ? w.path.replace(/[/\\][^/\\]*$/, '') : 'workbooks'}/.trash/ inside the data folder`;
+  body.append(el('p', 'muted small', `Nothing is erased: the folder is moved to ${parent}, where it can be moved back (or removed for good). Consider downloading a backup first (Settings → Backup).`));
   const label = el('label', 'field');
   label.append(el('span', '', `Type the name to confirm: ${w.name}`));
   const input = el('input');
@@ -939,8 +943,9 @@ function showUsage(u) {
   if (!box || !u) return;
   box.hidden = false;
   box.querySelector('.usage-value').textContent = formatSize(u.total);
+  const where = u.absolute || (u.folder && u.folder !== '.' ? u.folder : '');
   box.title = `${workbookName(workbook())} uses ${formatSize(u.total)} on the server`
-    + `${u.folder && u.folder !== '.' ? ` (${u.folder})` : ''}:\n`
+    + `${where ? ` (${where})` : ''}:\n`
     + `• assets/ (uploaded files): ${formatSize(u.files)}\n`
     + `• database, with page history: ${formatSize(u.database)}\n`
     + `• Markdown copies and other: ${formatSize(u.other)}`;
@@ -1018,8 +1023,8 @@ async function assetsView(seq) {
       }
       const name = el('td', 'col-name asset-name', a.name);
       const pathCell = el('td', 'asset-path');
-      // absolute is set only for a direct localhost connection, so the copy
-      // button can paste a path a file manager on this machine understands.
+      // absolute is the full server path for a direct connection on this
+      // machine, and for every client when BLOCKSEQ_EXPOSE_PATHS is set.
       const shown = a.absolute || a.path;
       const pathText = el('code', '', shown);
       const copy = el('button', 'inline-copy', '');

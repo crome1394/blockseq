@@ -45,6 +45,9 @@ BLOCKSEQ_ADDR=127.0.0.1:3030
 # limit see each real client instead of the proxy. Example:
 #BLOCKSEQ_TRUSTED_PROXIES=10.0.0.1
 #BLOCKSEQ_MAX_UPLOAD_MB=256
+# Set to 1 to show full server paths in the browser (Assets, workbooks).
+# Leave unset to show paths relative to the data folder.
+#BLOCKSEQ_EXPOSE_PATHS=1
 EOF
   chmod 640 /etc/blockseq.env
 fi

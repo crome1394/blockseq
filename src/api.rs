@@ -482,13 +482,17 @@ pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
 }
 
 /// Calendar days, favourites, last change, and the workbook's disk usage.
-pub async fn sidebar(Wb(wb): Wb) -> ApiResult {
+pub async fn sidebar(State(s): Shared, Wb(wb): Wb) -> ApiResult {
+    let expose = s.expose_paths;
     blocking(move || {
         let side = db::sidebar(&wb.read())?;
         let mut usage = serde_json::to_value(wb.usage())?;
         // Relative to the data folder. Main is the folder itself.
         let folder = if wb.id == MAIN { ".".to_string() } else { format!("workbooks/{}", wb.id) };
         usage["folder"] = json!(folder);
+        if expose {
+            usage["absolute"] = json!(absolute_display(&wb.dir));
+        }
         Ok(Json(json!({
             "journal_days": side.journal_days,
             "favorites": side.favorites,
@@ -939,7 +943,6 @@ pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap)
 }
 
 /// True for a browser on this machine, with no reverse proxy in front.
-/// That is the only case that may see an absolute file path.
 fn local_admin(peer: std::net::IpAddr, headers: &HeaderMap) -> bool {
     peer.is_loopback()
         && headers.get("x-forwarded-for").is_none()
@@ -947,12 +950,47 @@ fn local_admin(peer: std::net::IpAddr, headers: &HeaderMap) -> bool {
         && headers.get("forwarded").is_none()
 }
 
+/// Absolute paths are included for that direct connection, and for every
+/// client when the operator set `BLOCKSEQ_EXPOSE_PATHS`. A reverse proxy
+/// never looks like the direct connection, so the flag is what reaches a
+/// browser that comes in through Caddy on another machine.
+fn reveal_paths(expose: bool, peer: std::net::IpAddr, headers: &HeaderMap) -> bool {
+    expose || local_admin(peer, headers)
+}
+
+fn absolute_display(path: &std::path::Path) -> String {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()).display().to_string()
+}
+
+/// `path` stays relative to the data folder. `absolute` is added only when
+/// the operator opted in with `BLOCKSEQ_EXPOSE_PATHS`.
+fn workbook_json(info: &crate::workbooks::WorkbookInfo, dir: Option<&std::path::Path>, expose: bool) -> serde_json::Value {
+    let mut body = json!({
+        "id": info.id,
+        "name": info.name,
+        "kind": info.kind,
+        "path": info.path,
+    });
+    if expose
+        && let Some(dir) = dir
+    {
+        body["absolute"] = json!(absolute_display(dir));
+    }
+    body
+}
+
 /// Files in the workbook's assets folder, newest first, with the pages that
-/// mention each one. `path` is relative to the workbook. A direct localhost
-/// connection also gets `absolute`, for the copy button.
-pub async fn list_assets(Wb(wb): Wb, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> ApiResult {
-    let local = local_admin(peer.ip(), &headers);
-    let dir = if local { Some(std::path::absolute(wb.assets_dir()).unwrap_or_else(|_| wb.assets_dir())) } else { None };
+/// mention each one. `path` is relative to the workbook. `absolute` is set
+/// for a direct localhost connection, and for every client when
+/// `BLOCKSEQ_EXPOSE_PATHS` is set, so the copy button can paste a real path.
+pub async fn list_assets(
+    State(s): Shared,
+    Wb(wb): Wb,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> ApiResult {
+    let show = reveal_paths(s.expose_paths, peer.ip(), &headers);
+    let dir = if show { Some(std::path::absolute(wb.assets_dir()).unwrap_or_else(|_| wb.assets_dir())) } else { None };
     let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.read())?, assets::list(&wb.assets_dir())))).await?;
     let out: Vec<_> = list
         .into_iter()
@@ -1010,7 +1048,15 @@ pub async fn list_workbooks(State(s): Shared) -> ApiResult {
     if let (Some(name), Some(first)) = (main_name, list.first_mut()) {
         first.name = name;
     }
-    Ok(Json(list).into_response())
+    let expose = s.expose_paths;
+    let out: Vec<_> = list
+        .iter()
+        .map(|info| {
+            let dir = s.workbooks.dir_of(&info.id);
+            workbook_json(info, dir.as_deref(), expose)
+        })
+        .collect();
+    Ok(Json(out).into_response())
 }
 
 #[derive(Deserialize)]
@@ -1041,7 +1087,8 @@ pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) 
     };
     tracing::info!("renamed workbook {} to {}", q.id, info.name);
     s.notify_all(&json!({ "type": "workbooks", "renamed": { "from": q.id, "to": info.id } }));
-    Ok(Json(info).into_response())
+    let dir = s.workbooks.dir_of(&info.id);
+    Ok(Json(workbook_json(&info, dir.as_deref(), s.expose_paths)).into_response())
 }
 
 #[derive(Deserialize)]
@@ -1058,16 +1105,22 @@ pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiRe
     let rel = crate::workbooks::relative_path(&root, &trash);
     tracing::info!("deleted workbook {}: moved to {}", q.id, trash.display());
     s.notify_all(&json!({ "type": "workbooks", "deleted": q.id }));
-    // Relative to the data folder. The absolute path stays in the log.
-    let trash = if rel == "." { "workbooks/.trash".to_string() } else { rel };
-    Ok(Json(json!({ "trash": trash })).into_response())
+    // `trash` stays relative to the data folder. `absolute` is the real
+    // folder, and only when the operator opted in.
+    let shown = if rel == "." { "workbooks/.trash".to_string() } else { rel };
+    let mut body = json!({ "trash": shown });
+    if s.expose_paths {
+        body["absolute"] = json!(absolute_display(&trash));
+    }
+    Ok(Json(body).into_response())
 }
 
 pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
     let state = s.clone();
     let info = blocking(move || Ok(state.workbooks.create(&q.name)?)).await?;
     s.notify_all(&json!({ "type": "workbooks" }));
-    Ok(Json(info).into_response())
+    let dir = s.workbooks.dir_of(&info.id);
+    Ok(Json(workbook_json(&info, dir.as_deref(), s.expose_paths)).into_response())
 }
 
 pub async fn get_config(State(s): Shared) -> ApiResult {
@@ -1357,7 +1410,8 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
     let _ = tokio::fs::remove_file(&tmp).await;
     tracing::info!("restored workbook {name} from a backup ({} files)", report.files);
     s.notify_all(&json!({ "type": "workbooks" }));
-    Ok(Json(json!({ "workbook": info, "report": report })).into_response())
+    let dir = s.workbooks.dir_of(&info.id);
+    Ok(Json(json!({ "workbook": workbook_json(&info, dir.as_deref(), s.expose_paths), "report": report })).into_response())
 }
 
 /// Pages holding encrypted blocks (the browser re-encrypts them after an import).
@@ -1526,6 +1580,11 @@ mod tests {
         headers.remove("x-forwarded-for");
         headers.insert("x-forwarded-host", "notes.example.com".parse().unwrap());
         assert!(!local_admin("127.0.0.1".parse().unwrap(), &headers));
+        // The opt-in ignores the proxy headers. Without it, a forwarded
+        // connection still sees no absolute path.
+        assert!(reveal_paths(true, "10.0.0.5".parse().unwrap(), &headers));
+        assert!(!reveal_paths(false, "127.0.0.1".parse().unwrap(), &headers));
+        assert!(reveal_paths(false, "127.0.0.1".parse().unwrap(), &HeaderMap::new()));
     }
 
     #[test]

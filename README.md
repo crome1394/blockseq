@@ -65,11 +65,12 @@ Settings are environment variables (on a server: `/etc/blockseq.env`):
 | `BLOCKSEQ_DATA`     | `./data`       | Where the workbooks are stored                  |
 | `BLOCKSEQ_PASSWORD` | unset          | Password for the local port only. The password people type belongs on the TLS proxy (Caddy) |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `256`      | Largest file you can upload, in MB              |
+| `BLOCKSEQ_EXPOSE_PATHS` | unset      | Set to `1` to show full server paths in the browser (Assets, workbooks, the usage tooltip). Unset keeps paths relative to the data folder. A browser on this machine, with no proxy headers, still sees an asset's full path |
 | `BLOCKSEQ_HOSTS`    | unset          | Host names to answer to, comma-separated (IP addresses and localhost always work). Blocks "DNS rebinding" by other websites; set it to your HTTPS name, e.g. `notes.example.com` |
 | `BLOCKSEQ_TRUSTED_PROXIES` | unset   | Your reverse proxy's IP address(es), comma-separated; the wrong-password limit then sees each real client instead of the proxy |
 
 On start, the log shows how these were read, e.g.
-`password: on · host names: notes.example.com · trusted proxies: 10.0.0.1`.
+`password: on · host names: notes.example.com · trusted proxies: 10.0.0.1 · server paths: relative`.
 
 ## Deploy on a Linux server or container
 

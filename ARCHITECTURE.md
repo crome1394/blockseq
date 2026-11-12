@@ -269,7 +269,7 @@ CRDTs (conflict-free merge structures):
   | `DELETE /api/page?name=` | `delete_page` | 204 / 404 |
   | `POST /api/page/ensure?name=` | `ensure_page` | create an empty page if missing (calendar) |
   | `POST /api/assets` | `upload_asset` | raw bytes of any file, streamed to disk (cap `BLOCKSEQ_MAX_UPLOAD_MB`, default 256); `X-Filename` optional; returns path and kind |
-  | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them; `path` is `assets/<file>` |
+  | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them; `path` is `assets/<file>`; `absolute` for a direct localhost connection, or for every client when `BLOCKSEQ_EXPOSE_PATHS` is set |
   | `DELETE /api/assets?name=` | `delete_asset` | removes the file |
   | `GET /assets/<name>` | `get_asset` | streamed, `Range` support (video seeking), cached forever, `nosniff`; `assets::serve_policy` decides type and inline vs download (HTML/SVG/unknown always download, with `sandbox` CSP; PDFs stay inline under that same sandbox) |
   | `PUT /api/block?id=` | `put_block` | change one block's text (task list status changes); saves the page |
@@ -501,7 +501,7 @@ device ──LAN───────────────────┤
                  Blockseq server/LXC: systemd service, user `blockseq`
                  /usr/local/bin/blockseq
                  /var/lib/blockseq/{blockseq.db, pages/, journals/, assets/, workbooks/}
-                 /etc/blockseq.env (BLOCKSEQ_ADDR, _PASSWORD, _HOSTS, _TRUSTED_PROXIES)
+                 /etc/blockseq.env (BLOCKSEQ_ADDR, _PASSWORD, _HOSTS, _TRUSTED_PROXIES, _EXPOSE_PATHS)
 ```
 
 The systemd unit runs as an unprivileged user with `ProtectSystem=strict`
@@ -537,8 +537,11 @@ error chain stays in the log. `GET /api/health` reports `ok` or `error` for
 the settings file and each database, with no filesystem paths. Workbook
 folders, the sidebar usage folder, asset paths and the trash location are
 relative to the data folder (`assets/<file>`, `workbooks/<name>`). An
-asset's absolute path is added only for a direct localhost connection with
-no forwarded-host headers, so the copy button on that machine still works.
+asset's absolute path is added for a direct localhost connection with no
+forwarded-host headers, so the copy button on that machine still works.
+`BLOCKSEQ_EXPOSE_PATHS` (1, true, yes, or on) also adds `absolute` on asset
+lists, workbook entries, the delete response, and sidebar usage, for every
+client. The relative `path` field stays.
 
 ## Known limits and extension points
 
