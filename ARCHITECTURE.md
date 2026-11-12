@@ -115,7 +115,8 @@ favorite    INT (0/1)
   `pages.favorite` and `refs.tag`, and marks existing tag refs by re-reading
   every block's text. v7 added `blocks.search_id`, the rowid of the block's row in
   `blocks_fts` (whose `block_id` column FTS5 cannot index), so a save deletes
-  search rows directly.
+  search rows directly. v8 added `pages.block_count`, kept by `save_page` (also for a
+  page that loses blocks to a merge), so All pages reads stored counts.
 
 ### Markdown mirror
 

@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS pages (
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
     favorite    INTEGER NOT NULL DEFAULT 0,
-    words       INTEGER NOT NULL DEFAULT 0
+    words       INTEGER NOT NULL DEFAULT 0,
+    block_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS pages_journal ON pages(journal_day);
 
@@ -81,7 +82,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
 "#;
 
 /// Current schema version, stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
@@ -286,7 +287,20 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 7 {
         migrate_v7(conn)?;
     }
+    if version < 8 {
+        migrate_v8(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    Ok(())
+}
+
+/// v8: each page stores its block count, so All pages does not count every
+/// page's blocks on each load.
+fn migrate_v8(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "pages", "block_count")? {
+        conn.execute_batch("ALTER TABLE pages ADD COLUMN block_count INTEGER NOT NULL DEFAULT 0")?;
+    }
+    conn.execute_batch("UPDATE pages SET block_count = (SELECT COUNT(*) FROM blocks WHERE page_id = pages.id)")?;
     Ok(())
 }
 
@@ -946,12 +960,18 @@ fn save_page_inner(
         "DELETE FROM blocks_fts WHERE rowid IN (SELECT search_id FROM blocks WHERE page_id = ?1)",
         [&page.id],
     )?;
+    // Pages that lose a block to this one (a merge) get their counts redone below.
+    let mut losing: HashSet<String> = HashSet::new();
     {
+        let mut from = tx.prepare("SELECT page_id FROM blocks WHERE id = ?1 AND page_id <> ?2")?;
         let mut del_moved = tx.prepare(
             "DELETE FROM blocks_fts WHERE rowid = (SELECT search_id FROM blocks WHERE id = ?1 AND page_id <> ?2)",
         )?;
         for b in blocks {
-            del_moved.execute(params![b.id, page.id])?;
+            if let Some(other) = from.query_row(params![b.id, page.id], |r| r.get::<_, String>(0)).optional()? {
+                losing.insert(other);
+                del_moved.execute(params![b.id, page.id])?;
+            }
         }
     }
     tx.execute("DELETE FROM blocks WHERE page_id = ?1", [&page.id])?;
@@ -1004,9 +1024,20 @@ fn save_page_inner(
     let version = page.version + 1;
     let words: i64 = blocks.iter().map(|b| word_count(&b.content)).sum();
     tx.execute(
-        "UPDATE pages SET version = ?1, updated_at = ?2, words = ?3 WHERE id = ?4",
-        params![version, now, words, page.id],
+        "UPDATE pages SET version = ?1, updated_at = ?2, words = ?3, block_count = ?4 WHERE id = ?5",
+        params![version, now, words, i64::try_from(blocks.len())?, page.id],
     )?;
+    for other in &losing {
+        let left: Vec<String> = tx
+            .prepare("SELECT content FROM blocks WHERE page_id = ?1")?
+            .query_map([other], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let words: i64 = left.iter().map(|c| word_count(c)).sum();
+        tx.execute(
+            "UPDATE pages SET words = ?1, block_count = ?2 WHERE id = ?3",
+            params![words, i64::try_from(left.len())?, other],
+        )?;
+    }
     sp.commit()?;
     Ok(SaveOutcome::Saved(PageMeta {
         version,
@@ -1337,7 +1368,7 @@ pub fn list_pages(conn: &Connection) -> Result<Vec<PageSummary>> {
     }
     let mut stmt = conn.prepare(
         "SELECT p.id, p.name, p.journal_day, p.created_at, p.updated_at,
-                (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id), p.favorite, p.words
+                p.block_count, p.favorite, p.words
          FROM pages p ORDER BY p.updated_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -2104,6 +2135,58 @@ mod tests {
         save_page(&c, "Old", v, &[block("o1", None, "fresh")], &[]).unwrap();
         assert_index_in_step(&c);
         assert!(search(&c, "legacy", 10).unwrap().blocks.is_empty());
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stored block and word counts match the blocks each page holds.
+    fn assert_counts_in_step(c: &Connection) {
+        let wrong: Vec<(String, i64, i64)> = c
+            .prepare(
+                "SELECT p.name, p.block_count, (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id) FROM pages p
+                 WHERE p.block_count <> (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id)",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        for p in list_pages(c).unwrap() {
+            let page = get_page(c, &p.name).unwrap().unwrap();
+            let words: i64 = get_blocks(c, &page.id).unwrap().iter().map(|b| word_count(&b.content)).sum();
+            assert_eq!(p.words, words, "{}", p.name);
+        }
+    }
+
+    #[test]
+    fn page_block_counts_follow_saves_and_merges() {
+        let c = mem();
+        save_page(&c, "A", 0, &[block("a1", None, "one two"), block("a2", Some("a1"), "three")], &[]).unwrap();
+        save_page(&c, "B", 0, &[block("b1", None, "four")], &[]).unwrap();
+        assert_counts_in_step(&c);
+        let v = get_page(&c, "A").unwrap().unwrap().version;
+        save_page(&c, "A", v, &[block("a1", None, "one")], &[]).unwrap();
+        assert_counts_in_step(&c);
+        rename_page(&c, "B", "A", &[]).unwrap();
+        assert_counts_in_step(&c);
+        let a = list_pages(&c).unwrap().into_iter().find(|p| p.name == "A").unwrap();
+        assert_eq!(a.block_count, 2);
+    }
+
+    #[test]
+    fn upgrade_to_v8_counts_existing_blocks() {
+        let dir = std::env::temp_dir().join(format!("bq-open-v7-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blockseq.db");
+        {
+            let c = open(&path).unwrap();
+            save_page(&c, "Old", 0, &[block("o1", None, "x"), block("o2", None, "y")], &[]).unwrap();
+            c.execute_batch("UPDATE pages SET block_count = 0; PRAGMA user_version = 7;").unwrap();
+        }
+        let c = open(&path).unwrap();
+        assert_counts_in_step(&c);
+        assert_eq!(list_pages(&c).unwrap()[0].block_count, 2);
         drop(c);
         let _ = std::fs::remove_dir_all(&dir);
     }
