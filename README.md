@@ -218,6 +218,13 @@ use letters, digits, spaces, `-`, `_` and `.`.
 
 ### Keeping data safe over time
 
+- **Page history.** Earlier versions of every page are kept: while you edit,
+  one every 10 minutes, and always before a big removal, a "Keep mine" in a
+  conflict, a restore, a merge or a deletion (up to 100 per page). Open a
+  page's **⋯ → History…** to preview a version and **Restore** it; the version
+  it replaces is kept too, so a restore can be undone. Deleted pages can be
+  brought back from **All pages → Recently deleted…**. Encrypted blocks stay
+  encrypted in the history.
 - **Saves are checked.** Each save carries the page version it started from;
   a page changed on another device shows a conflict instead of being
   overwritten. Status changes from the task list are refused if the task

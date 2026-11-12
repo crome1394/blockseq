@@ -44,9 +44,14 @@ async function getJson(url, opts) {
 export const api = {
   page: (name) => getJson(`/api/page?name=${enc(name)}`),
   // Resolves to {ok, status, data}; status 409 means the page changed elsewhere.
-  savePage: (name, baseVersion, blocks, opts) =>
-    request('PUT', `/api/page?name=${enc(name)}`, { base_version: baseVersion, blocks }, opts),
+  // `extra`: more body fields, e.g. { overwrite: true } for "Keep mine".
+  savePage: (name, baseVersion, blocks, opts, extra = {}) =>
+    request('PUT', `/api/page?name=${enc(name)}`, { base_version: baseVersion, blocks, ...extra }, opts),
   deletePage: (name) => request('DELETE', `/api/page?name=${enc(name)}`),
+  history: (name) => getJson(`/api/history?name=${enc(name)}`),
+  historyVersion: (id) => getJson(`/api/history/version?id=${enc(id)}`),
+  deletedPages: () => getJson('/api/history/deleted'),
+  restoreVersion: (id) => request('POST', `/api/history/restore?id=${enc(id)}`),
   ensurePage: (name) => request('POST', `/api/page/ensure?name=${enc(name)}`),
   renamePage: (name, to) => request('POST', `/api/page/rename?name=${enc(name)}&to=${enc(to)}`),
   setFavorite: (name, on) => request('POST', `/api/page/favorite?name=${enc(name)}&on=${on}`),

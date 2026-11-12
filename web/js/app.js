@@ -10,6 +10,7 @@ import { decorateCode } from './code.js';
 import { onSettingChange, getSetting, setSetting } from './settings.js';
 import { settingsForm } from './settings-ui.js';
 import { importDialog } from './backup-ui.js';
+import { historyDialog, deletedPagesDialog } from './history-ui.js';
 import { Calendar } from './calendar.js';
 import { workbook, setWorkbook, withWb } from './workbook.js';
 import { loadStatuses, statusOf, withStatus, badgeHtml, taskTitle } from './tasks.js';
@@ -162,6 +163,7 @@ async function pageView(name, seq, blockId) {
     showMenu(e.clientX - 160, e.clientY, [
       [fav ? 'Remove from favorites' : 'Add to favorites', () => star.click()],
       ...(isJournal || data.name.toLowerCase() === 'task' ? [] : [['Rename…', () => renameDialog(data)]]),
+      ['History…', () => historyDialog(data.name)],
       [isJournal ? 'Delete journal' : 'Delete page', () => deletePage(data.name, isJournal), 'danger'],
     ]);
   });
@@ -205,7 +207,7 @@ function renderBacklinks(container, groups) {
 
 async function deletePage(name, journal = false) {
   const what = journal ? 'journal' : 'page';
-  if (!confirm(`Delete the ${what} "${name}" from the server? This cannot be undone.`)) return;
+  if (!confirm(`Delete the ${what} "${name}"? You can bring it back from All pages → Recently deleted.`)) return;
   for (const ed of editors) if (ed.lower === name.toLowerCase()) { ed.dirty = false; ed.dispose(); }
   const r = await api.deletePage(name);
   if (r.ok || r.status === 404) {
@@ -307,6 +309,10 @@ async function allPagesView(seq) {
   if (seq !== routeSeq) return;
   const header = el('div', 'page-header');
   header.append(el('h1', 'page-title', 'All pages'));
+  const deletedBtn = el('button', 'link-button', 'Recently deleted…');
+  deletedBtn.type = 'button';
+  deletedBtn.addEventListener('click', () => deletedPagesDialog());
+  header.append(deletedBtn);
   const controls = el('div', 'list-controls');
   const filter = el('input', 'filter');
   filter.type = 'search';

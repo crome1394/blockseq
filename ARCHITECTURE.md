@@ -45,6 +45,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/dates.js` | Journal page names (`Nov 11th, 2026`) and day numbers |
 | `web/js/code.js` | Built-in syntax highlighter, code block decoration (line numbers, copy), live-edit backdrop |
 | `web/js/settings.js` | Per-browser preferences (localStorage), setting categories |
+| `web/js/history-ui.js` | Page history dialog (versions, preview, restore) and Recently deleted |
 | `web/js/dom.js` | `el()` helper shared by the UI modules |
 | `web/js/backup-ui.js` | Settings → Backup: download, import, re-encrypting restored blocks |
 | `web/js/settings-ui.js` | Settings screen: categories, task-status editor, key-binding editor |
@@ -172,6 +173,15 @@ CRDTs (conflict-free merge structures):
   such ids unless called with `allow_moves` (only the page-merge in
   `rename_page` does), so a pasted copy can never take blocks from another
   page.
+- **Page history** (`db.rs` "page history", schema v3 `page_history`, keyed
+  by `name_lower` so deleted pages keep theirs; renames move it). Inside the
+  save's savepoint, `maybe_snapshot` keeps the replaced blocks (JSON, as
+  stored: ciphertext for #Encrypted) if the newest kept version is >10 min
+  old, the save removes 5+ blocks or >30%/200+ chars, or a reason is given
+  (`save_page_noting`: Keep mine via `overwrite: true`; restore; merge;
+  `delete_page`). Identical consecutive versions are skipped; 100 per page.
+  `restore_version` saves a kept version through `save_page_inner` (keeping
+  the replaced one) after giving blocks whose ids now live elsewhere new ids.
 - **Local drafts.** Each attempt first stores the payload (`flatten({forSave})`,
   after `sealSecrets`, so ciphertext only) in `localStorage` under
   `blockseq.draft:<wb>:<page>`, removed once saved. `load()` offers a draft

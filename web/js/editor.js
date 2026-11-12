@@ -730,6 +730,7 @@ export class PageEditor {
     mine.addEventListener('click', () => {
       this.version = this.conflict.version;
       this.conflict = null;
+      this.overwriteNext = true; // the server keeps their version in the history
       this.render();
       this.save();
     });
@@ -2035,9 +2036,11 @@ export class PageEditor {
       await this.sealSecrets();
       const sending = this.flatten({ forSave: true });
       saveDraft(this.name, this.version, sending);
-      const r = await api.savePage(this.name, this.version, sending, opts);
+      const extra = this.overwriteNext ? { overwrite: true } : {};
+      const r = await api.savePage(this.name, this.version, sending, opts, extra);
       if (r.status === 200) {
         this.idWaits = 0;
+        if (extra.overwrite) this.overwriteNext = false;
         this.version = r.data.page.version;
         this.offline = false;
         if (this.changeSeq === seq) {

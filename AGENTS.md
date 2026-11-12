@@ -64,6 +64,9 @@ cargo build --release              # release build embeds web/ in the binary
   `api::update_config` / `Config::save`, and never fall back to defaults when
   it can't be read.
 - Write the Markdown mirror while holding the workbook's database lock.
+- Anything that replaces or deletes page content must leave the old version
+  in `page_history` (save_page does it by policy; pass a reason with
+  `save_page_noting` / `snapshot` for explicit overwrites).
 - Workbooks are separate: never read or write another workbook's folder or
   database from a request for one workbook. Deleting moves to
   `workbooks/.trash/`; never erase a workbook outright.
