@@ -393,6 +393,12 @@ its path on the server (copy button next to it) and
 a thumbnail, size, date and the pages that use it, and buttons to open,
 download or delete. *Only unused* finds files no block links to any more.
 
+**Task list by keyboard:** **t** opens the task list with the keyboard in it
+(or moves there if it's already open). **↑ ↓** (or **j k**) move, **Space**
+(or Ctrl+Enter) sets the next status, **s** (or Ctrl+Shift+Enter) picks one,
+**Enter** opens the task with the cursor in it, **g e** goes back to the editor
+and **Esc** closes the list. **g l** locks or unlocks encrypted blocks.
+
 **Task statuses:** use `/` and the status name, or press **Ctrl+Enter** to step
 through the statuses (**Ctrl+Shift+Enter** opens a picker). Click a status badge
 to change it. Setting a status adds `#task` to the end of the line (shown on the

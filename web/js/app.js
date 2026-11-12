@@ -13,8 +13,8 @@ import { importDialog } from './backup-ui.js';
 import { historyDialog, deletedPagesDialog } from './history-ui.js';
 import { Calendar } from './calendar.js';
 import { workbook, setWorkbook, withWb } from './workbook.js';
-import { loadStatuses, statusOf, withStatus, badgeHtml, taskTitle } from './tasks.js';
-import { ACTIONS, keyFor, comboOf, prettyKey } from './keys.js';
+import { loadStatuses, statusOf, withStatus, badgeHtml, taskTitle, nextStatus } from './tasks.js';
+import { ACTIONS, keyFor, comboOf, prettyKey, matches } from './keys.js';
 import { openPane, closePane, isPaneShowing, paneKind } from './pane.js';
 import { openFilePane } from './pdfview.js';
 import { downloadImage } from './images.js';
@@ -74,8 +74,9 @@ async function route() {
       const rest = hash.slice(6);
       const q = rest.indexOf('?');
       const name = decodeURIComponent(q === -1 ? rest : rest.slice(0, q));
-      const block = q === -1 ? null : new URLSearchParams(rest.slice(q + 1)).get('b');
-      await pageView(name, seq, block);
+      const params = new URLSearchParams(q === -1 ? '' : rest.slice(q + 1));
+      // &edit=1 also puts the cursor in that block (from the task list).
+      await pageView(name, seq, params.get('b'), params.get('edit') === '1');
     }
     else if (hash === '/all') { calendar.select(null); await allPagesView(seq); }
     else if (hash === '/assets') { calendar.select(null); await assetsView(seq); }
@@ -136,7 +137,7 @@ async function journalsView(seq) {
 
 // ---- single page -----------------------------------------------------------
 
-async function pageView(name, seq, blockId) {
+async function pageView(name, seq, blockId, editBlock = false) {
   const data = await api.page(name);
   if (seq !== routeSeq) return;
   calendar.select(data.page?.journal_day ?? null);
@@ -181,7 +182,7 @@ async function pageView(name, seq, blockId) {
   main.replaceChildren(header, body, refs);
   const editor = new PageEditor(body, data);
   renderBacklinks(refs, data.backlinks);
-  if (blockId) editor.reveal(blockId);
+  if (blockId) editor.reveal(blockId, { edit: editBlock });
   view = {
     refresh: async () => {
       try { renderBacklinks(refs, (await api.page(name)).backlinks); } catch { /* offline */ }
@@ -589,7 +590,8 @@ window.addEventListener('beforeunload', (e) => {
 const ACTION_FNS = {
   search: () => { searchInput.focus(); searchInput.select(); },
   toggleSidebar: () => toggleSidebar(),
-  toggleTasks: () => toggleTasks(),
+  toggleTasks: () => toggleTasks({ fromKey: true }),
+  focusEditor: () => focusEditor(),
   goJournals: () => { location.hash = '#/journals'; },
   goAllPages: () => { location.hash = '#/all'; },
   goAssets: () => { location.hash = '#/assets'; },
@@ -1047,16 +1049,48 @@ function refreshTasks() {
   tasksTimer = setTimeout(renderTasks, 300);
 }
 
-function toggleTasks() {
-  if (isPaneShowing('tasks')) { closePane(); return; }
+// The shortcut (t) opens the list with the keyboard in it; if the list is
+// already open but you're elsewhere, it moves the keyboard there instead.
+function toggleTasks({ fromKey = false } = {}) {
+  if (isPaneShowing('tasks')) {
+    const body = document.querySelector('.tasks-pane');
+    if (fromKey && body && !body.contains(document.activeElement)) { focusTasks(); return; }
+    closePane();
+    return;
+  }
   const body = el('div', 'tasks-pane');
   openPane({ kind: 'tasks', title: 'Tasks', body });
-  renderTasks();
+  renderTasks({ focus: true });
 }
 
-async function renderTasks() {
+let taskFocusId = null; // the task row the keyboard is on
+
+function focusTasks() {
+  const list = document.querySelector('.tasks-pane .task-list');
+  if (!list) return;
+  const rows = [...list.querySelectorAll('.task-row')];
+  (rows.find((r) => r.dataset.id === taskFocusId) || rows[0] || list).focus();
+}
+
+// "Go to the editor": the page or journal you were working in.
+function focusEditor() {
+  const live = [...editors].filter((ed) => !ed.disposed && ed.container.isConnected);
+  const ed = live.includes(activeEditor()) ? activeEditor() : live[0];
+  if (ed) ed.focusForKeyboard();
+  else toast('No page open to edit');
+}
+
+async function setTaskStatus(t, word) {
+  const r = await api.putBlock(t.id, withStatus(t.content, word), t.content);
+  if (r.status === 409) toast('That task was changed elsewhere; the list is refreshed, try again');
+  else if (!r.ok) toast(r.data?.error || 'Could not change the status');
+  await renderTasks({ focus: true });
+}
+
+async function renderTasks({ focus = false } = {}) {
   const body = document.querySelector('.tasks-pane');
   if (!body) return;
+  const keepFocus = focus || body.contains(document.activeElement);
   let tasks;
   try { tasks = await api.tasks(); } catch (e) { body.replaceChildren(el('p', 'error', e.message)); return; }
   const showDone = !!getSetting('tasksShowDone');
@@ -1071,6 +1105,10 @@ async function renderTasks() {
   const open = items.filter((t) => !t.st.done).length;
   controls.append(el('span', 'muted small', `${open} open`), label);
   const list = el('div', 'task-list');
+  list.tabIndex = -1;
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Tasks');
+  const byId = new Map();
   let lastPage = null;
   for (const t of items) {
     if (t.st.done && !showDone) continue;
@@ -1082,14 +1120,15 @@ async function renderTasks() {
     }
     const row = el('div', 'task-row' + (t.st.done ? ' done' : ''));
     row.innerHTML = `${badgeHtml(t.st)}<span class="task-text">${inline(taskTitle(t.content))}</span>`;
+    row.tabIndex = -1;
+    row.dataset.id = t.id;
+    row.setAttribute('role', 'option');
+    byId.set(t.id, t);
+    row.addEventListener('focus', () => { taskFocusId = t.id; });
     row.querySelector('.status-badge').addEventListener('click', (e) => {
       e.stopPropagation();
-      showStatusPicker(e.clientX, e.clientY, t.st.word, async (word) => {
-        const r = await api.putBlock(t.id, withStatus(t.content, word), t.content);
-        if (r.status === 409) toast('That task was changed elsewhere; the list is refreshed, try again');
-        else if (!r.ok) toast(r.data?.error || 'Could not change the status');
-        renderTasks();
-      });
+      taskFocusId = t.id;
+      showStatusPicker(e.clientX, e.clientY, t.st.word, (word) => setTaskStatus(t, word));
     });
     row.addEventListener('click', (e) => {
       if (e.target.closest('a')) return;
@@ -1098,7 +1137,37 @@ async function renderTasks() {
     list.append(row);
   }
   if (!list.children.length) list.append(el('p', 'muted', items.length ? 'No open tasks.' : 'No tasks yet. Start a block with TODO (or press Ctrl+Enter in a block).'));
-  body.replaceChildren(controls, list);
+
+  // Keyboard: ↑/↓ (j/k) move, Space or Ctrl+Enter next status, s or
+  // Ctrl+Shift+Enter choose one, Enter opens the task in the editor.
+  list.addEventListener('keydown', (e) => {
+    const rows = [...list.querySelectorAll('.task-row')];
+    const i = rows.indexOf(document.activeElement);
+    if (!rows.length) return;
+    const go = (j) => { e.preventDefault(); rows[Math.max(0, Math.min(rows.length - 1, j))].focus(); };
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if ((e.key === 'ArrowDown' || (plain && e.key === 'j'))) return go(i + 1);
+    if ((e.key === 'ArrowUp' || (plain && e.key === 'k'))) return go(i < 0 ? 0 : i - 1);
+    if (e.key === 'Home') return go(0);
+    if (e.key === 'End') return go(rows.length - 1);
+    if (i < 0) return;
+    const t = byId.get(rows[i].dataset.id);
+    if (matches(e, 'statusPicker') || (plain && e.key === 's')) {
+      e.preventDefault();
+      const r = rows[i].querySelector('.status-badge').getBoundingClientRect();
+      showStatusPicker(r.left, r.bottom, t.st.word, (word) => setTaskStatus(t, word));
+    } else if (matches(e, 'cycleStatus') || (plain && e.key === ' ')) {
+      e.preventDefault();
+      setTaskStatus(t, nextStatus(t.st.word));
+    } else if (plain && e.key === 'Enter') {
+      e.preventDefault();
+      location.hash = `${pageHref(t.page_name)}?b=${t.id}&edit=1`;
+    }
+  });
+  const hint = el('div', 'tasks-keys muted small');
+  hint.textContent = `↑ ↓ move · Space next status · s choose · Enter edit · ${prettyKey(keyFor('focusEditor'))} editor · Esc close`;
+  body.replaceChildren(controls, list, hint);
+  if (keepFocus) focusTasks();
 }
 
 // ---- statuses --------------------------------------------------------------------

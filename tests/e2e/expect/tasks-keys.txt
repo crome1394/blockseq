@@ -1,0 +1,8 @@
+t focuses the list: true
+down: bravo task
+space -> bravo is now: DOING | still on: bravo task
+s opens the picker: true
+charlie is now: DONE
+enter -> editing: TODO alpha task
+t again focuses the open list: true | pane open: true
+g e -> editing: true

@@ -1587,7 +1587,8 @@ export class PageEditor {
   }
 
   // Scrolls to a block (opening collapsed parents) and flashes it.
-  reveal(id) {
+  // Scrolls to a block and flashes it; with `edit`, puts the cursor in it.
+  reveal(id, { edit = false } = {}) {
     const node = this.findNode(id);
     if (!node) return toast('That block is no longer on this page');
     for (let n = node.parent; n && n !== this.root; n = n.parent) n.collapsed = false;
@@ -1595,6 +1596,17 @@ export class PageEditor {
     node.el.scrollIntoView({ block: 'center' });
     node.el.classList.add('flash');
     setTimeout(() => node.el?.classList.remove('flash'), 2000);
+    if (edit) this.edit(node, 'end');
+  }
+
+  // Puts the cursor back where you last edited on this page, or at the end
+  // of its first block (for "go to the editor").
+  focusForKeyboard() {
+    const last = this.lastEdited && this.findNode(this.lastEdited.id);
+    const node = last || this.root.children[0];
+    if (!node) return;
+    node.el?.scrollIntoView({ block: 'nearest' });
+    this.edit(node, 'end');
   }
 
   exportBlock(node) {
@@ -2676,7 +2688,11 @@ function positionBar() {
   if (r.top - h - gap >= minTop) top = r.top - h - gap;
   else if (r.bottom + gap <= maxTop) top = r.bottom + gap;
   else top = maxTop;
-  const left = Math.max(8, Math.min(r.left - 4, window.innerWidth - w - 8));
+  // Stay left of the side pane when it is open (the bar scrolls if narrow).
+  const pane = document.getElementById('pane');
+  const right = pane && !pane.classList.contains('hidden') ? pane.getBoundingClientRect().left : window.innerWidth;
+  bar.el.style.maxWidth = `${Math.max(160, right - 16)}px`;
+  const left = Math.max(8, Math.min(r.left - 4, right - Math.min(w, right - 16) - 8));
   const offscreen = r.bottom < 0 || r.top > window.innerHeight;
   bar.el.style.top = `${Math.round(top)}px`;
   bar.el.style.left = `${Math.round(left)}px`;

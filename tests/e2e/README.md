@@ -25,6 +25,7 @@ at the end.
 | workbooks | Workbook folders shown, delete with typed confirmation (to `.trash`), Main protected |
 | history | Page history: view and restore versions, bring back a deleted page, Keep mine keeps the other version |
 | logseq-macros | `{{embed}}` of pages and blocks, query/macro chips, self-embed stops |
+| tasks-keys | Task list by keyboard: t, arrows, Space / s for status, Enter to edit, g e |
 | csp | Security headers; images, PDFs, embeds, maths and code still work under the Content-Security-Policy; cross-site POST refused |
 | math-builder | Palette, slots, problems and fixes, hover mapping, editing formulas in place |
 | maths-render | LaTeX rendering, calendar week start, timestamps |
