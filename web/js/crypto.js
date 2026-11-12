@@ -36,6 +36,11 @@ const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
 
 async function derive(secret, salt, rounds) {
+  // The server stores this count and the terminal reset runs it. Above the
+  // password wrap this app creates, refuse before WebCrypto spends the time.
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > PW_ROUNDS) {
+    throw new Error('unsupported encryption settings');
+  }
   const base = await crypto.subtle.importKey('raw', enc.encode(secret), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: rounds },
     base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);

@@ -1101,9 +1101,9 @@ pub struct EncryptionBody {
 /// someone who can unlock the current key may replace its wrapped copies,
 /// and the key itself can't change (that would make every block unreadable).
 pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) -> ApiResult {
-    use crate::crypto::{proof_hash, same_secret};
+    use crate::crypto::{iterations_accepted, proof_hash, same_secret};
     let e = &body.encryption;
-    if e.version != 1 || e.iterations < 100_000 || e.rk_iterations < 10_000 {
+    if e.version != 1 || !iterations_accepted(e.iterations, e.rk_iterations) {
         return Err(bad("unsupported encryption settings"));
     }
     update_config(&s, move |cfg| {

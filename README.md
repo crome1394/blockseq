@@ -509,6 +509,8 @@ password or unlock, including on pages you don't have open.
   once: save it in a password manager or print it. Without the password *or* the
   recovery key, encrypted blocks cannot be read by anyone, including the server.
 - **Change it** in *Settings → Security* (needs the current password).
+- The server refuses a key-derivation count above the 600,000 rounds a
+  password uses, so a crafted setting cannot stall unlocking or a reset.
 - **Forgot it?** Use *Forgot password…* in Settings with the recovery key, or on
   the server:
 

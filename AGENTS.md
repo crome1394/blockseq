@@ -92,7 +92,9 @@ cargo build --release              # release build embeds web/ in the binary
   change once a proof hash exists.
 - Do not weaken the key derivation (PBKDF2-SHA256, 600k rounds for passwords)
   or change the formats without a version bump; `web/js/crypto.js` and
-  `src/crypto.rs` must stay byte-compatible.
+  `src/crypto.rs` must stay byte-compatible. Reject a count above 600,000
+  (`crypto::iterations_accepted`, and `derive` before it runs). Do not run a
+  stored count that exceeds it.
 - Use WebCrypto and the RustCrypto crates (`aes-gcm`, `pbkdf2`, `sha2`) only;
   never hand-roll cryptography.
 

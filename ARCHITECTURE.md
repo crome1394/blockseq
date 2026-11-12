@@ -339,9 +339,12 @@ CRDTs (conflict-free merge structures):
   Locking saves first (`beforeLock`, still with the key), then drops the
   children and undo history (`afterLock`). Copies of open encrypted blocks
   carry the ciphertext, not the children. `PUT /api/encryption` only accepts a
-  new wrapping from a client that sends the current check. The terminal
-  command (`src/crypto.rs`, `blockseq reset-encryption-password`) unwraps the
-  key with the recovery key and re-wraps it with a new password; its formats
+  new wrapping from a client that sends the current check, and only when both
+  round counts are between their floors (100,000 password, 10,000 recovery)
+  and 600,000. The terminal command (`src/crypto.rs`,
+  `blockseq reset-encryption-password`) unwraps the key with the recovery key
+  and re-wraps it with a new password. It refuses a stored count above 600,000
+  before it runs, and the browser does the same before unlocking. Its formats
   must match `crypto.js`.
 - **Backups** (`src/backup.rs`, `backup-ui.js`). Export, while holding the
   workbook's connection, takes a `VACUUM INTO` snapshot and copies `pages/`,

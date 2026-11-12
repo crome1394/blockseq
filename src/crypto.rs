@@ -16,11 +16,30 @@ use crate::config::{Config, Encryption};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 pub const PASSWORD_ITERATIONS: u32 = 600_000;
+/// Lowest password-wrap count `PUT /api/encryption` will store.
+const MIN_PASSWORD_ITERATIONS: u32 = 100_000;
+/// Lowest recovery-wrap count `PUT /api/encryption` will store.
+const MIN_RECOVERY_ITERATIONS: u32 = 10_000;
 
-fn derive(secret: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
+/// True when both counts are in the range a new setup may store.
+/// The password wrap this app creates uses [`PASSWORD_ITERATIONS`]. A higher
+/// count is refused: the terminal reset would pin a core, and the browser
+/// would hang while unlocking.
+pub fn iterations_accepted(iterations: u32, rk_iterations: u32) -> bool {
+    (MIN_PASSWORD_ITERATIONS..=PASSWORD_ITERATIONS).contains(&iterations)
+        && (MIN_RECOVERY_ITERATIONS..=PASSWORD_ITERATIONS).contains(&rk_iterations)
+}
+
+/// Derives a wrapping key. A count of zero, or above [`PASSWORD_ITERATIONS`],
+/// is refused before any work starts. Counts below the API floor still run:
+/// tests and a setup stored before that floor use them, and they are cheap.
+fn derive(secret: &str, salt: &[u8], iterations: u32) -> Result<[u8; 32]> {
+    if iterations == 0 || iterations > PASSWORD_ITERATIONS {
+        bail!("unsupported encryption settings");
+    }
     let mut out = [0u8; 32];
     pbkdf2::pbkdf2_hmac::<Sha256>(secret.as_bytes(), salt, iterations, &mut out);
-    out
+    Ok(out)
 }
 
 fn random<const N: usize>() -> Result<[u8; N]> {
@@ -83,7 +102,7 @@ fn wrap_key(kek: &[u8; 32], key: &[u8]) -> Result<(String, String)> {
 /// Unlocks the key with a recovery key and wraps it with a new password.
 pub fn reset_with_recovery(enc: &Encryption, recovery: &str, new_password: &str) -> Result<Encryption> {
     let rk_salt = B64.decode(&enc.rk_salt).context("bad recovery salt")?;
-    let kek = derive(&normalize_recovery_key(recovery), &rk_salt, enc.rk_iterations);
+    let kek = derive(&normalize_recovery_key(recovery), &rk_salt, enc.rk_iterations)?;
     let Some(key) = unwrap_key(&kek, &enc.rk_iv, &enc.rk_data) else {
         bail!("that recovery key doesn't match");
     };
@@ -91,7 +110,7 @@ pub fn reset_with_recovery(enc: &Encryption, recovery: &str, new_password: &str)
         bail!("the stored key check doesn't match; config.json may be damaged");
     }
     let salt = random::<16>()?;
-    let pw_kek = derive(new_password, &salt, PASSWORD_ITERATIONS);
+    let pw_kek = derive(new_password, &salt, PASSWORD_ITERATIONS)?;
     let (pw_iv, pw_data) = wrap_key(&pw_kek, &key)?;
     Ok(Encryption {
         salt: B64.encode(salt),
@@ -143,7 +162,7 @@ pub fn reset_command(data_dir: &Path) -> Result<()> {
     let recovery = prompt("Recovery key: ", false)?;
     // Check the recovery key before asking for a new password.
     let rk_salt = B64.decode(&enc.rk_salt).context("bad recovery salt")?;
-    if unwrap_key(&derive(&normalize_recovery_key(&recovery), &rk_salt, enc.rk_iterations), &enc.rk_iv, &enc.rk_data).is_none() {
+    if unwrap_key(&derive(&normalize_recovery_key(&recovery), &rk_salt, enc.rk_iterations)?, &enc.rk_iv, &enc.rk_data).is_none() {
         bail!("that recovery key doesn't match");
     }
     let password = prompt("New password: ", true)?;
@@ -180,9 +199,9 @@ mod tests {
         let key = [7u8; 32];
         let rk = "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567";
         let rk_salt = [1u8; 16];
-        let (rk_iv, rk_data) = wrap_key(&derive(&normalize_recovery_key(rk), &rk_salt, 1000), &key).unwrap();
+        let (rk_iv, rk_data) = wrap_key(&derive(&normalize_recovery_key(rk), &rk_salt, 1000).unwrap(), &key).unwrap();
         let salt = [2u8; 16];
-        let (pw_iv, pw_data) = wrap_key(&derive("old password", &salt, 1000), &key).unwrap();
+        let (pw_iv, pw_data) = wrap_key(&derive("old password", &salt, 1000).unwrap(), &key).unwrap();
         let enc = Encryption {
             version: 1, salt: B64.encode(salt), iterations: 1000, pw_iv, pw_data,
             rk_salt: B64.encode(rk_salt), rk_iterations: 1000, rk_iv, rk_data, check: key_check(&key),
@@ -190,7 +209,7 @@ mod tests {
         };
         assert!(reset_with_recovery(&enc, "wrong key", "x").is_err());
         let new = reset_with_recovery(&enc, "abcd efgh ijkl mnop qrst uvwx yz23 4567", "new password 1").unwrap();
-        let kek = derive("new password 1", &B64.decode(&new.salt).unwrap(), new.iterations);
+        let kek = derive("new password 1", &B64.decode(&new.salt).unwrap(), new.iterations).unwrap();
         assert_eq!(unwrap_key(&kek, &new.pw_iv, &new.pw_data).unwrap(), key);
         assert_eq!(new.rk_data, enc.rk_data); // recovery key still works
         assert_eq!(new.proof_hash.as_deref(), Some(proof_hash(&key_proof(&key))).as_deref());
@@ -204,5 +223,17 @@ mod tests {
         assert_eq!(key_proof(&key), "D5phvSi/oT+5Figy4kmGgo9VFDAG/2rVHN6vDfjR/hM=");
         assert_eq!(proof_hash(&key_proof(&key)), "NwmlNiAxlX0ZFK+RZXbvaxZNJHp2xx2auN0eR1JP6IY=");
         assert!(same_secret("abc", "abc") && !same_secret("abc", "abd") && !same_secret("abc", "ab"));
+    }
+
+    #[test]
+    fn too_many_rounds_are_refused() {
+        assert!(derive("pw", &[1u8; 16], 0).is_err());
+        assert!(derive("pw", &[1u8; 16], PASSWORD_ITERATIONS + 1).is_err());
+        assert!(iterations_accepted(PASSWORD_ITERATIONS, 100_000));
+        assert!(iterations_accepted(100_000, 10_000));
+        assert!(!iterations_accepted(PASSWORD_ITERATIONS + 1, 100_000));
+        assert!(!iterations_accepted(99_999, 100_000));
+        assert!(!iterations_accepted(PASSWORD_ITERATIONS, 9_999));
+        assert!(!iterations_accepted(PASSWORD_ITERATIONS, PASSWORD_ITERATIONS + 1));
     }
 }
