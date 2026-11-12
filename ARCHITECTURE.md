@@ -285,7 +285,7 @@ CRDTs (conflict-free merge structures):
   | `GET /api/journals?before=&limit=` | `journals` | newest first, with blocks |
   | `GET /api/search?q=&limit=` | `search` | pages by name, blocks containing all words |
   | `GET /api/block?id=` | `get_block` | content and page name, for `((refs))` |
-  | `GET /api/events` | `events` | SSE, 15 s keep-alive |
+  | `GET /api/events` | `events` | SSE, 15 s keep-alive; at most 32 subscribers per process, and a new one closes the oldest |
   | `GET /*` | `static_file` | embedded `web/`, `Cache-Control: no-cache` |
 
   Page names go in a query parameter rather than the path, so names containing

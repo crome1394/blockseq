@@ -48,6 +48,8 @@ pub struct AppState {
     pub workbooks: workbooks::Registry,
     pub config: RwLock<config::Config>,
     pub events: broadcast::Sender<String>,
+    /// Live-update streams. A new tab past the cap closes the oldest one.
+    pub event_subs: Arc<api::EventSubs>,
     pub password: Option<String>,
     /// Largest upload accepted, in bytes (`BLOCKSEQ_MAX_UPLOAD_MB`).
     pub max_upload: u64,
@@ -241,6 +243,7 @@ async fn main() -> Result<()> {
         workbooks: workbooks::Registry::new(data_dir.clone()),
         config: RwLock::new(config),
         events: broadcast::channel(256).0,
+        event_subs: Arc::new(api::EventSubs::new(api::MAX_EVENT_SUBSCRIBERS)),
         password,
         max_upload: max_upload_mb * 1024 * 1024,
         allowed_hosts,
