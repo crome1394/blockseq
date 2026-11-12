@@ -1,7 +1,7 @@
 // Keyboard shortcuts that can be changed in Settings > Keyboard.
 // A binding is "Ctrl+K", "Ctrl+Shift+Enter", "?" or a two-key sequence "g j".
 
-import { getSetting, setSetting } from './settings.js';
+import { getSetting } from './settings.js';
 
 // [id, description, default, group, needsNoField]
 // needsNoField: only when not typing in a block or box (single-key shortcuts).
@@ -28,16 +28,6 @@ export function defaultKey(id) {
 
 export function keyFor(id) {
   return getSetting('keys')?.[id] ?? defaultKey(id);
-}
-
-export function setKey(id, combo) {
-  const keys = { ...(getSetting('keys') || {}) };
-  if (combo === defaultKey(id)) delete keys[id]; else keys[id] = combo;
-  setSetting('keys', keys);
-}
-
-export function resetKeys() {
-  setSetting('keys', {});
 }
 
 const MODIFIERS = new Set(['Control', 'Shift', 'Alt', 'Meta']);

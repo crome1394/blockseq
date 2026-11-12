@@ -2,7 +2,6 @@ import puppeteer from "npm:puppeteer-core@23.11.1";
 const S = Deno.args[0];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const BASE = "http://127.0.0.1:3939";
-const F = "`".repeat(3);
 const PW = "correct horse battery";
 const name = "Secret " + Date.now();
 const page = async () => (await (await fetch(`${BASE}/api/page?name=${encodeURIComponent(name)}`)).json()).blocks;

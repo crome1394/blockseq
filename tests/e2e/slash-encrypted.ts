@@ -28,7 +28,7 @@ console.log("editing child:", await p.evaluate(() => {
 }));
 await p.keyboard.type("password: hunter2");
 await p.keyboard.press("Escape"); await p.keyboard.press("Escape"); await sleep(1500);
-let b = await server();
+const b = await server();
 console.log("server:", b.length, "block(s) | label:", JSON.stringify(b[0].content.split("\n")[0]), "| plaintext:", JSON.stringify(b).includes("hunter2"));
 await p.screenshot({ path: S + "/slashenc.png", clip: { x: 230, y: 40, width: 870, height: 160 } });
 

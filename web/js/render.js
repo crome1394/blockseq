@@ -65,7 +65,7 @@ function fileChip(url, label, index, md) {
     + '<button type="button" class="file-menu" title="File options">⋮</button></span>';
 }
 
-function mediaHtml(url, alt, meta, index) {
+function mediaHtml(url, alt, index) {
   const kind = fileKind(url);
   const label = alt || decodeURIComponent(url.split('?')[0].split('/').pop());
   if (kind === 'video' || kind === 'audio') {
@@ -267,7 +267,7 @@ export function inline(text) {
       out += pdfHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);
     }
     else if (g.imgUrl !== undefined && fileKind(g.imgUrl) !== 'image' && isAsset(g.imgUrl)) {
-      out += mediaHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);
+      out += mediaHtml(assetUrl(g.imgUrl), g.imgAlt, imageIndex++);
     }
     else if (g.imgUrl !== undefined) {
       const align = imageAlign(g.imgMeta);
@@ -423,7 +423,6 @@ function renderLines(text, prefix) {
 
 // Admonitions, written the way Logseq does: #+BEGIN_TIP … #+END_TIP.
 const ADMON_SRC = '^#\\+BEGIN_(NOTE|TIP|IMPORTANT|CAUTION|WARNING|PINNED|QUOTE)[^\\n]*\\n?([\\s\\S]*?)\\n?^#\\+END_\\1[ \\t]*$';
-export const ADMON_KINDS = ['tip', 'note', 'important', 'caution', 'warning', 'pinned'];
 const svg = (d) => `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ADMON_ICONS = {
   tip: svg('M9 18h6M10 21h4M12 3a6 6 0 0 0-3.8 10.6c.6.6.8 1.3.8 2.4h6c0-1.1.2-1.8.8-2.4A6 6 0 0 0 12 3zM12 7v0'),

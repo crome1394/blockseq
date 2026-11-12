@@ -1,5 +1,4 @@
 import puppeteer from "npm:puppeteer-core@23.11.1";
-const S = Deno.args[0];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const BASE = "http://127.0.0.1:3939";
 const name = "CSP " + Date.now();

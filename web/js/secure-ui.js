@@ -84,7 +84,7 @@ function newPasswordFields(body) {
 }
 
 // First-time setup, then shows the recovery key once.
-export async function setupDialog() {
+export function setupDialog() {
   if (needsHttps()) return;
   const body = el('div', 'dialog-form');
   body.append(el('p', 'small', 'This password unlocks every #Encrypted block in every workbook. Blocks are encrypted in your browser; the server only stores scrambled text.'));

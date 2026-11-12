@@ -497,13 +497,7 @@ html.no-favorites .star { display: none; }
 .page-table .col-name { min-width: 160px; }
 .page-table .col-tags .tag { display: inline-block; margin: 0 4px 2px 0; font-size: 12px; padding: 0 6px; border: 1px solid var(--accent); border-radius: 4px; white-space: nowrap; }
 .page-table .col-created_at, .page-table .col-updated_at { white-space: nowrap; color: var(--muted); }
-.fav-mark { color: var(--busy); font-size: 12px; }
 @media (max-width: 760px) { .page-table .col-created_at { display: none; } }
-.page-list { display: flex; flex-direction: column; }
-.page-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 10px; border-radius: 6px; color: var(--text); }
-.page-row:hover { background: var(--panel); }
-.page-row .meta { color: var(--muted); font-size: 13px; white-space: nowrap; }
-.page-row .name { overflow-wrap: anywhere; }
 
 .muted { color: var(--muted); }
 .error { color: var(--danger); }
@@ -985,9 +979,6 @@ textarea.code-edit.live::selection { background: rgba(100, 150, 255, 0.35); colo
 .block-ref.missing { color: var(--danger); border-bottom-style: dashed; cursor: default; }
 .block-ref .rendered, .block-ref .rendered > .body, .block-ref .rendered > .body > div { display: inline; }
 
-
-.m-todo, .m-later { color: var(--busy); }
-.m-doing, .m-now { color: var(--accent); }
 .is-done { color: var(--muted); }
 .is-done > .body > div:first-child { text-decoration: line-through; }
 

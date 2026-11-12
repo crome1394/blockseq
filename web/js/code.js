@@ -591,11 +591,11 @@ export class CodeEditor {
       // A wrapped line is several rows tall; its number takes the same height.
       if (this.o.wrap) n.style.height = `${rows[i]?.offsetHeight || 0}px`;
     });
-    if (!this.o.wrap) this.followCaret(line);
+    if (!this.o.wrap) this.followCaret();
   }
 
   // Scrolls the editor sideways so the cursor stays visible.
-  followCaret(line) {
+  followCaret() {
     const v = this.ta.value;
     const lineStart = v.lastIndexOf('\n', this.ta.selectionStart - 1) + 1;
     const before = v.slice(lineStart, this.ta.selectionStart).replace(/\t/g, '    ');

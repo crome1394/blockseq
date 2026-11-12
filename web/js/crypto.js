@@ -211,7 +211,7 @@ async function decryptWith(k, blob) {
 
 export async function decryptText(blob) {
   if (!key) throw new Error('locked');
-  return decryptWith(key, blob);
+  return await decryptWith(key, blob);
 }
 
 // ---- re-encrypting a restored backup ----
