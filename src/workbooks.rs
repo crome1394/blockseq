@@ -122,11 +122,19 @@ pub fn valid_id(id: &str) -> bool {
 pub struct Registry {
     root: PathBuf,
     open: Mutex<HashMap<String, std::sync::Arc<Workbook>>>,
+    /// One gate per workbook id: opening (maybe importing) a workbook, or
+    /// moving its folder, holds only that workbook's gate, so requests for
+    /// other workbooks never wait behind a slow import.
+    gates: Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>,
 }
 
 impl Registry {
     pub fn new(root: PathBuf) -> Registry {
-        Registry { root, open: Mutex::new(HashMap::new()) }
+        Registry { root, open: Mutex::new(HashMap::new()), gates: Mutex::new(HashMap::new()) }
+    }
+
+    fn gate(&self, id: &str) -> std::sync::Arc<Mutex<()>> {
+        self.gates.lock().entry(id.to_string()).or_default().clone()
     }
 
     pub fn dir_of(&self, id: &str) -> Option<PathBuf> {
@@ -226,6 +234,9 @@ impl Registry {
     /// database is checkpointed and held while the folder moves, and old
     /// handles are retired. On failure the workbook stays open as it was.
     fn move_closed(&self, id: &str, src: &Path, dst: &Path) -> Result<()> {
+        // Not while the workbook is being opened.
+        let gate = self.gate(id);
+        let _moving = gate.lock();
         let mut open = self.open.lock();
         let wb = open.remove(id);
         let result = {
@@ -283,8 +294,14 @@ impl Registry {
     /// Returns an open workbook, opening (and if needed importing) it first.
     /// Blocking: call from spawn_blocking.
     pub fn get(&self, id: &str, task_words: &[String]) -> Result<Option<std::sync::Arc<Workbook>>> {
-        let mut open = self.open.lock();
-        if let Some(wb) = open.get(id) {
+        if let Some(wb) = self.open.lock().get(id) {
+            return Ok(Some(wb.clone()));
+        }
+        // Only this workbook waits while it opens; someone else may have
+        // opened it while we waited for the gate.
+        let gate = self.gate(id);
+        let _opening = gate.lock();
+        if let Some(wb) = self.open.lock().get(id) {
             return Ok(Some(wb.clone()));
         }
         let Some(dir) = self.dir_of(id) else { return Ok(None) };
@@ -311,7 +328,7 @@ impl Registry {
         }
         let count = wb.rebuild_mirror()?;
         tracing::info!("workbook {id}: {count} pages in {}", wb.dir.display());
-        open.insert(id.to_string(), wb.clone());
+        self.open.lock().insert(id.to_string(), wb.clone());
         Ok(Some(wb))
     }
 
@@ -515,6 +532,25 @@ mod tests {
         assert!(entries.iter().any(|n| n == "pages/Main page.md"));
         assert!(!entries.iter().any(|n| n.contains("workbooks/") || n.contains("Other page") || n.contains("pic.png")), "{entries:?}");
         drop((main, other, reg));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_slow_open_does_not_block_other_workbooks() {
+        let root = std::env::temp_dir().join(format!("bq-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = std::sync::Arc::new(Registry::new(root.clone()));
+        reg.create("Slow").unwrap();
+        reg.get(MAIN, &[]).unwrap();
+        // Hold Slow's gate as if it were importing a big graph.
+        let gate = reg.gate("Slow");
+        let held = gate.lock();
+        let r2 = reg.clone();
+        let other = std::thread::spawn(move || r2.get(MAIN, &[]).unwrap().is_some());
+        assert!(other.join().unwrap(), "Main was blocked by Slow's open");
+        drop(held);
+        assert!(reg.get("Slow", &[]).unwrap().is_some());
+        drop(reg);
         std::fs::remove_dir_all(root).unwrap();
     }
 
