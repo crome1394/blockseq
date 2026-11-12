@@ -1,0 +1,8 @@
+maths drawn: true
+code highlighted: true
+format bar shown: true
+saved: "plain block edited in firefox"
+slash menu rows: 14
+settings open: true
+workbook menu open: true
+problems: none

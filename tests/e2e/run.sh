@@ -40,6 +40,8 @@ TESTS=("$@")
 if [[ ${#TESTS[@]} -eq 0 ]]; then
   # Order matters a little: encryption sets the password the others use.
   TESTS=(encryption slash-encrypted review-fixes csp workbooks history logseq-macros math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted)
+  # A second browser engine, when Firefox is installed (FIREFOX=/path to choose).
+  if [[ -x "${FIREFOX:-/usr/bin/firefox}" ]]; then TESTS+=(firefox); fi
 fi
 # A test passes when the script exits cleanly, prints no page errors, and
 # prints every line listed in expect/<name>.txt (fixed text, anywhere).

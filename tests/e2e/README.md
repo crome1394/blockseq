@@ -34,6 +34,7 @@ at the end.
 | sidebar | Favourites, calendar dots and last-saved time from `/api/sidebar` |
 | draft | Edits made while the server is down survive a closed tab and can be restored |
 | draft-encrypted | Those drafts never hold #Encrypted plaintext |
+| firefox | The main features in Firefox (runs when Firefox is installed; FIREFOX=/path) |
 | tweet | Embedded X posts resize (needs the internet; not in the default set) |
 | backup | Export/import across servers with different passwords (needs three servers on 3941-3943; not in the default set) |
 
