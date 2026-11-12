@@ -360,7 +360,9 @@ html.wide main { max-width: none; }
 .fav-empty { padding: 0 8px; }
 
 #sidebar nav { display: flex; flex-direction: column; gap: 2px; }
-#sidebar nav a { color: var(--text); padding: 5px 8px; border-radius: 6px; font-size: 15px; }
+#sidebar nav a { color: var(--text); padding: 5px 8px; border-radius: 6px; font-size: 15px; display: flex; align-items: center; gap: 9px; }
+#sidebar nav a .nav-icon { flex: none; color: var(--muted); }
+#sidebar nav a.active .nav-icon { color: var(--accent); }
 #sidebar nav a:hover { background: var(--border); }
 #sidebar nav a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
@@ -383,7 +385,7 @@ html.wide main { max-width: none; }
 .cal-nav { font-size: 16px; color: var(--muted) !important; }
 .cal-head button:hover { background: var(--border); }
 .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
-.cal-wd { color: var(--muted); font-size: 11px; padding: 2px 0; }
+.cal-wd { color: var(--danger); font-size: 11px; font-weight: 600; padding: 2px 0; }
 .cal-day {
   position: relative;
   border: none;
@@ -1506,3 +1508,9 @@ html.wide .embed-wrap { width: 860px; }
 .page-table th.col-words { text-align: right; }
 #lock-toggle { font-size: 15px; filter: grayscale(0.4); }
 #lock-toggle.open { filter: none; background: color-mix(in srgb, var(--busy) 18%, transparent); }
+
+/* LaTeX maths (math.js renders it as MathML). */
+math.math { font-family: 'STIX Two Math', 'Latin Modern Math', 'Cambria Math', math; font-size: 1.12em; }
+math.math[display="block"] { margin: 6px 0; padding: 2px 0; overflow-x: auto; overflow-y: hidden; max-width: 100%; }
+.math-display { overflow-x: auto; }
+math.math merror { color: var(--danger); background: none; border: 0; }

@@ -1026,6 +1026,7 @@ onSettingChange((name) => {
   applySettings();
   if (['linksNewTab', 'codeFold', 'codeFoldLines', 'codeFoldShow'].includes(name)) for (const ed of editors) if (!ed.editing && !ed.codeEdit) ed.render?.();
   if (name === 'favorites') refreshFavorites(true);
+  if (name === 'weekStart') calendar.render();
   // Layout may have changed (width, theme fonts): redraw threading lines.
   requestAnimationFrame(() => { for (const ed of editors) ed.updateThread(); });
 });

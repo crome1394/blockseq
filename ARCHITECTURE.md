@@ -34,6 +34,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/index.html`, `web/app.css` | Page shell and styles (light/dark via `prefers-color-scheme`) |
 | `web/js/app.js` | Hash router, views (journals, page, all pages), search box, live updates, unload handling |
 | `web/js/editor.js` | `PageEditor` outliner, `[[`/`((` autocomplete, block-ref loading, popup menu |
+| `web/js/math.js` | LaTeX → MathML converter (tokenizer + recursive parser; no third-party code) |
 | `web/js/render.js` | Block text → HTML, pasted-outline parser |
 | `web/js/api.js` | API client, UUID generator, per-tab client id, page-name cache |
 | `web/js/ui.js` | Toast, clipboard fallback, save-status indicator |

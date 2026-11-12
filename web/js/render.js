@@ -1,5 +1,6 @@
 // Turns block text (Logseq-flavoured Markdown) into HTML for display.
 
+import { texToMathML } from './math.js';
 import { getSetting } from './settings.js';
 import { withWb } from './workbook.js';
 import { statusOf, badgeHtml } from './tasks.js';
@@ -133,6 +134,12 @@ let linkIndex = 0; // [name](../assets/…) file links, counted separately
 const INLINE = [
   '``(?<code2>[^\\n]+?)``',
   '`(?<code>[^`\\n]+)`',
+  // LaTeX maths: $$…$$ and \[…\] (display), \(…\) and $…$ (inline). A lone
+  // $ needs text right inside it and no digit after it, so "$5 and $10" stays text.
+  '\\$\\$(?<mathD>[^$\\n]+?)\\$\\$',
+  '\\\\\\[(?<mathD2>.+?)\\\\\\]',
+  '\\\\\\((?<mathI>.+?)\\\\\\)',
+  '(?<![\\\\\\w$])\\$(?<mathI2>[^\\s$](?:[^$\\n]*?[^\\s$\\\\])?)\\$(?![\\w$])',
   '\\{\\{(?:video|youtube|vimeo)\\s+(?<embed>[^}\\s]+)\\s*\\}\\}',
   '!\\[(?<imgAlt>[^\\]\\n]*)\\]\\((?<imgUrl>[^)\\s]+)\\)(?:\\{(?<imgMeta>[^}\\n]*)\\})?',
   '\\[(?<linkText>[^\\]]+)\\]\\((?<linkUrl>[^)\\s]+)\\)',
@@ -180,6 +187,8 @@ export function inline(text) {
       out += `<span class="code-copyable"><code>${esc(code)}</code><button type="button" class="inline-copy" data-copy="${esc(code)}" title="Copy" aria-label="Copy">${COPY_ICON}</button></span>`;
     }
     else if (g.code !== undefined) out += `<code>${esc(g.code)}</code>`;
+    else if (g.mathD !== undefined || g.mathD2 !== undefined) out += texToMathML(g.mathD ?? g.mathD2, true);
+    else if (g.mathI !== undefined || g.mathI2 !== undefined) out += texToMathML(g.mathI ?? g.mathI2, false);
     else if (g.embed !== undefined) out += embedHtml(g.embed);
     else if (g.imgUrl !== undefined && /\.pdf$/i.test(g.imgUrl.split('?')[0])) {
       out += pdfHtml(assetUrl(g.imgUrl), g.imgAlt, g.imgMeta, imageIndex++);
@@ -359,6 +368,27 @@ function renderAdmonition(kind, inner) {
   return `<div class="admonition adm-${kind}"><span class="adm-icon" title="${kind}">${ADMON_ICONS[kind]}</span><div class="adm-body">${body}</div></div>`;
 }
 
+// Display maths spanning several lines ($$ or \[ on one line, the closing
+// one later). One-line maths is handled by inline().
+function renderMathLines(text, prefix) {
+  const re = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g;
+  let out = '';
+  let last = 0;
+  let first = true;
+  let m;
+  while ((m = re.exec(text))) {
+    if (!m[0].includes('\n')) continue;
+    const before = text.slice(last, m.index).replace(/\n$/, '');
+    if (before || (first && prefix)) out += renderLines(before, first ? prefix : '');
+    first = false;
+    out += `<div class="math-display">${texToMathML(m[1] ?? m[2], true)}</div>`;
+    last = re.lastIndex;
+    if (text[last] === '\n') last++;
+  }
+  if (last < text.length || first) out += renderLines(text.slice(last), first ? prefix : '');
+  return out;
+}
+
 // Text between code fences: admonitions, then ordinary lines.
 function renderBody(text, prefix) {
   const re = new RegExp(ADMON_SRC, 'gim');
@@ -368,13 +398,13 @@ function renderBody(text, prefix) {
   let m;
   while ((m = re.exec(text))) {
     const before = text.slice(last, m.index).replace(/\n$/, '');
-    if (before || (first && prefix)) out += renderLines(before, first ? prefix : '');
+    if (before || (first && prefix)) out += renderMathLines(before, first ? prefix : '');
     first = false;
     out += renderAdmonition(m[1], m[2]);
     last = re.lastIndex;
     if (text[last] === '\n') last++;
   }
-  if (last < text.length || first) out += renderLines(text.slice(last), first ? prefix : '');
+  if (last < text.length || first) out += renderMathLines(text.slice(last), first ? prefix : '');
   return out;
 }
 

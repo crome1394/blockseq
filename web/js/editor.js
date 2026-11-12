@@ -25,6 +25,10 @@ import { getSetting } from './settings.js';
 
 export const editors = new Set();
 
+const pad2 = (n) => String(n).padStart(2, '0');
+const timeNow = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+const timestamp = () => `[[${journalName(new Date())}]] ${timeNow()}`;
+
 const SAVE_DELAY = 600;
 const HISTORY_LIMIT = 200;
 // A #quote tag on a block shows it and its children as a quotation.
@@ -1379,6 +1383,33 @@ export class PageEditor {
     }
   }
 
+  // Adds "[[Nov 11th, 2026]] 14:32": at the cursor while editing, otherwise at
+  // the end of the first line (before any tags, so they stay on the right).
+  addTimestamp(node) {
+    const stamp = timestamp();
+    if (this.editing === node && this.ta) {
+      const { selectionStart: a, selectionEnd: b, value } = this.ta;
+      const pad = a > 0 && !/\s/.test(value[a - 1]) ? ' ' : '';
+      this.checkpoint();
+      this.replaceText(node, this.ta, a, b, pad + stamp);
+      this.ta.focus();
+      return;
+    }
+    this.beginOp();
+    const text = node.content;
+    const nl = text.indexOf('\n');
+    const first = nl === -1 ? text : text.slice(0, nl);
+    let value;
+    if (!first.trim()) value = stamp + text.slice(first.length);
+    else if (first.startsWith('```') || /^\s*\|/.test(first)) value = `${stamp}\n${text}`;
+    else {
+      const tags = /((?:\s+(?:#\[\[[^\]\n]+\]\]|#[^\s#,.!?;:()[\]"'`]+))*)\s*$/.exec(first);
+      const cut = tags.index;
+      value = `${first.slice(0, cut)} ${stamp}${first.slice(cut)}${text.slice(first.length)}`;
+    }
+    this.applyValue(node, value);
+  }
+
   // Sets or clears a managed property (colour, heading, list type).
   setProp(node, key, value) {
     this.beginOp();
@@ -1690,6 +1721,8 @@ export class PageEditor {
       { element: colors },
       { element: heads },
       '-',
+      { label: 'Add timestamp', fn: () => this.addTimestamp(node) },
+      '-',
       { label: 'Copy block ref', fn: () => { copyText(`((${node.id}))`); toast('Block ref copied'); } },
       { label: 'Copy block URL', fn: () => { copyText(this.blockUrl(node)); toast('Block URL copied'); } },
       { label: 'Copy / Export as…', fn: () => this.exportBlock(node) },
@@ -1883,6 +1916,9 @@ const SLASH_COMMANDS = [
   { id: 'file', label: 'Upload file', hint: 'video, audio, documents…' },
   { id: 'video', label: 'Embed video', hint: 'YouTube or Vimeo link' },
   { id: 'today', label: 'Today', hint: "today's journal" },
+  { id: 'time', label: 'Current time', hint: 'e.g. 14:32' },
+  { id: 'timestamp', label: 'Timestamp', hint: "today's journal + time" },
+  { id: 'math', label: 'Math (LaTeX)', hint: '$$ … $$' },
   { id: 'tomorrow', label: 'Tomorrow' },
   { id: 'yesterday', label: 'Yesterday' },
 ];
@@ -1953,6 +1989,9 @@ function runSlash(editor, node, ta, cmd, at) {
     case 'image':
       return pickImages().then((files) => { if (files.length) editor.insertImages(node, files, at); });
     case 'today': return editor.replaceText(node, ta, at, at, day(0));
+    case 'time': return editor.replaceText(node, ta, at, at, timeNow());
+    case 'timestamp': return editor.replaceText(node, ta, at, at, timestamp());
+    case 'math': return editor.replaceText(node, ta, at, at, '$$$$', 2);
     case 'tomorrow': return editor.replaceText(node, ta, at, at, day(1));
     case 'yesterday': return editor.replaceText(node, ta, at, at, day(-1));
     default:

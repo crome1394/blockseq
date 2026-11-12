@@ -3,8 +3,10 @@
 
 import { api } from './api.js';
 import { journalDay } from './dates.js';
+import { getSetting } from './settings.js';
 
 const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 export class Calendar {
   constructor(container, onPick) {
@@ -66,17 +68,21 @@ export class Calendar {
 
     const grid = document.createElement('div');
     grid.className = 'cal-grid';
-    for (const w of WEEKDAYS) {
+    // Settings → Appearance → First day of the week (0 = Sunday).
+    const start = Number(getSetting('weekStart')) || 0;
+    for (let i = 0; i < 7; i++) {
+      const wd = (start + i) % 7;
       const c = document.createElement('div');
       c.className = 'cal-wd';
-      c.textContent = w;
+      c.textContent = WEEKDAYS[wd];
+      c.title = DAY_NAMES[wd];
       grid.append(c);
     }
     // Always six weeks, so the calendar keeps the same height (and its header
     // stays put) from month to month. Days of the months before and after
     // fill the gaps, faded.
     for (let i = 0; i < 42; i++) {
-      const date = new Date(this.year, this.month, 1 - first.getDay() + i);
+      const date = new Date(this.year, this.month, 1 - ((first.getDay() - start + 7) % 7) + i);
       const day = journalDay(date);
       const cell = button('cal-day', String(date.getDate()), date.toDateString(), () => this.onPick(date));
       if (date.getMonth() !== this.month) cell.classList.add('other-month');

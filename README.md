@@ -9,7 +9,8 @@ and you use them from any browser on your LAN or tailnet.
   copied onto the server are imported
 - Task statuses you define (Backlog, Todo, Doing, In Review, Done, Cancelled),
   colour-coded, with a task list in a side pane
-- Markdown formatting, code blocks, tables, numbered lists, admonitions
+- Markdown formatting, code blocks, tables, numbered lists, admonitions,
+  LaTeX maths
   (tip, note, warning…), quote blocks
 - `/` commands, undo/redo, tags at the end of a line shown on the right,
   `#` tag suggestions as you type
@@ -22,6 +23,7 @@ and you use them from any browser on your LAN or tailnet.
   as a link or a full preview, or opened in a side pane. An Assets page lists
   every file
 - Sidebar calendar: pick any date to open (or create) that day's journal
+  (first day of the week in Settings → Sidebar)
 - Autosave, live refresh on other devices, and a prompt if two devices edit
   the same page at once
 - Every page is also written as a Logseq-format `.md` file, so your notes are
@@ -272,7 +274,9 @@ Inside a table, Enter adds a row; Enter on an empty row ends the table.
 Enter on an empty numbered item ends the list.
 
 Click or right-click a bullet for the block menu: colours, headings (H1–H6, or
-auto-sized by depth), copy block ref, copy block URL (opens the page scrolled to
+auto-sized by depth), add timestamp (`[[Nov 11th, 2026]] 14:32`, at the cursor
+while editing, otherwise at the end of the first line before any tags; also
+`/timestamp`, and `/time` for just the time), copy block ref, copy block URL (opens the page scrolled to
 that block), copy/export as Markdown or plain text, cut, delete, number list,
 and expand/collapse all.
 
@@ -318,6 +322,17 @@ struck out. A block you type as `TODO …` by hand also counts as a task. Define
 **Task list:** the ☑ icon at the top right (or **t**) opens the open tasks in
 the side pane, grouped by page. Tick *Show completed* to include finished ones.
 Click a task to jump to it, or its badge to change its status.
+
+**Maths (LaTeX):** `\[ … \]` or `$$ … $$` for a centred formula (it may span
+several lines), `\( … \)` or `$ … $` inside a sentence; `/math` inserts
+`$$$$`. Example:
+`\[\text{Percentage Change} = \frac{\text{New Value} - \text{Old Value}}{\text{Old Value}} \times 100\]`.
+It is drawn by the browser's built-in MathML, converted by Blockseq's own
+`math.js`: fractions, roots, sub/superscripts, Greek letters, operators and
+arrows, `\text`, `\sum`/`\int`/`\lim` with limits, `\left…\right`,
+accents, `\mathbb` and friends, and `matrix`/`pmatrix`/`bmatrix`/`cases`/
+`aligned` environments. Unknown commands show in red. A single `$` needs text
+right inside it, so prices like "$5 and $10" stay plain text.
 
 **Admonitions:** `/tip`, `/note`, `/important`, `/caution`, `/warning` and
 `/pinned` insert a box like Logseq's (stored as `#+BEGIN_TIP … #+END_TIP`).

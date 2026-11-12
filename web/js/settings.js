@@ -16,6 +16,7 @@ const DEFAULTS = {
   codeFoldLines: 20, // "long" means more lines than this
   codeFoldShow: 6, // lines shown while a code block is folded
   commentColor: 'yellow', // colour of comments in code blocks
+  weekStart: '0', // first day of the week in the calendar (0 = Sunday … 6 = Saturday)
 };
 
 const listeners = new Set();
@@ -81,6 +82,7 @@ export const CATEGORIES = [
     ['codeFoldShow', 'Lines to show when folded', 'How many lines of a folded code block stay visible.', { number: true, min: 1, max: 200 }],
   ] },
   { id: 'sidebar', label: 'Sidebar', options: [
+    ['weekStart', 'First day of the week', 'The day the sidebar calendar starts each week on.', [['0', 'Sunday'], ['1', 'Monday'], ['2', 'Tuesday'], ['3', 'Wednesday'], ['4', 'Thursday'], ['5', 'Friday'], ['6', 'Saturday']]],
     ['favorites', 'Favorites in the sidebar', 'Show starred pages in the sidebar. Star a page with ☆ next to its title.'],
   ] },
   { id: 'tasks', label: 'Tasks', custom: true },
