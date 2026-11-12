@@ -55,8 +55,33 @@ fi
 systemctl daemon-reload
 systemctl enable blockseq >/dev/null
 systemctl restart blockseq
-sleep 1
-systemctl --no-pager --lines=5 status blockseq
+
+# Wait for the new process to answer. It upgrades the main workbook's database
+# before it starts listening, so a healthy answer means the upgrade went
+# through. A process that dies right after the restart fails the install here
+# instead of looking fine.
+ADDR="$(sed -n 's/^[[:space:]]*BLOCKSEQ_ADDR=//p' /etc/blockseq.env | tail -n 1 | tr -d '"'"'"' ')"
+ADDR="${ADDR:-127.0.0.1:3030}"
+PORT="${ADDR##*:}"
+HOST="${ADDR%:*}"
+case "$HOST" in 0.0.0.0|"[::]"|"") HOST=127.0.0.1 ;; esac
+URL="http://$HOST:$PORT/api/health"
+HEALTH=""
+for _ in $(seq 60); do
+  if HEALTH="$(curl -sf --max-time 5 "$URL")"; then break; fi
+  HEALTH=""
+  systemctl is-failed --quiet blockseq && break
+  sleep 1
+done
+systemctl --no-pager --lines=5 status blockseq || true
 echo
-echo "Blockseq is running. Data lives in /var/lib/blockseq; settings in /etc/blockseq.env."
-echo "Health check: curl -s http://127.0.0.1:3030/api/health"
+if [[ -z "$HEALTH" ]]; then
+  echo "Blockseq did not report healthy at $URL after the restart." >&2
+  echo "See: journalctl -u blockseq -n 50" >&2
+  if [[ -n "${STAMP:-}" ]]; then
+    echo "The backup taken before this upgrade is in $BACKUPS/pre-upgrade-$STAMP" >&2
+  fi
+  exit 1
+fi
+echo "Blockseq is running and healthy: $HEALTH"
+echo "Data lives in /var/lib/blockseq; settings in /etc/blockseq.env."

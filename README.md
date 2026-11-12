@@ -135,7 +135,9 @@ cargo build --release
 Rebuild, copy the new binary (or rsync the source and rebuild), then run
 `install.sh` again. It first backs up every workbook to
 `/var/backups/blockseq/pre-upgrade-<date>/` (the last 10 are kept), then
-replaces the binary and keeps your data and `/etc/blockseq.env`.
+replaces the binary and keeps your data and `/etc/blockseq.env`. After the
+restart it waits up to a minute for `/api/health` to answer and fails, naming
+that backup, if the new version does not come up healthy.
 
 ## HTTPS with Caddy
 
