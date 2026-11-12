@@ -210,13 +210,13 @@ pub fn free_bytes(path: &Path) -> std::io::Result<u64> {
     })?;
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: `c` is a nul-terminated path, and `st` is a writable statvfs buffer.
-    let rc = unsafe { libc::statvfs(c.as_ptr(), &mut st) };
+    let rc = unsafe { libc::statvfs(c.as_ptr(), &raw mut st) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let unit = u64::try_from(st.f_frsize).unwrap_or(0);
-    let blocks = u64::try_from(st.f_bavail).unwrap_or(u64::MAX);
-    Ok(unit.saturating_mul(blocks))
+    // On this target both fields are already `u64` (filesystem block size and
+    // blocks available to this user).
+    Ok(st.f_frsize.saturating_mul(st.f_bavail))
 }
 
 /// `free` can accept `need` more bytes, after `reserved` already promised to
@@ -440,7 +440,7 @@ impl Registry {
         // Only this workbook waits while it opens; someone else may have
         // opened it while we waited for the gate.
         let gate = self.gate(id);
-        let _opening = gate.lock();
+        let opening = gate.lock();
         if let Some(wb) = self.open.lock().get(id) {
             return Ok(Some(wb.clone()));
         }
@@ -485,7 +485,7 @@ impl Registry {
         // Publish before the mirror rewrite so other requests are not stuck
         // on this gate for the whole graph. The lock is dropped first.
         self.open.lock().insert(id.to_string(), wb.clone());
-        drop(_opening);
+        drop(opening);
         let count = wb.rebuild_mirror()?;
         tracing::info!("workbook {id}: {count} pages in {}", wb.dir.display());
         Ok(Some(wb))
@@ -634,7 +634,7 @@ fn open_imported(dir: &Path, db_path: &Path, task_words: &[String]) -> Result<(C
 }
 
 /// A save during import counts only when the page was actually written.
-fn require_saved(outcome: db::SaveOutcome, path: &Path) -> Result<()> {
+fn require_saved(outcome: &db::SaveOutcome, path: &Path) -> Result<()> {
     match outcome {
         db::SaveOutcome::Saved(_) => Ok(()),
         db::SaveOutcome::Conflict(_, _) => bail!("{} was not imported: it conflicted with a page already saved", path.display()),
@@ -706,7 +706,7 @@ fn import_logseq(conn: &Connection, dir: &Path, task_words: &[String]) -> Result
             } else {
                 db::save_page(conn, &name, 0, &blocks, task_words)?
             };
-            require_saved(outcome, &path).with_context(|| format!("importing {}", path.display()))?;
+            require_saved(&outcome, &path).with_context(|| format!("importing {}", path.display()))?;
             pages += 1;
         }
     }
@@ -727,7 +727,8 @@ fn import_logseq(conn: &Connection, dir: &Path, task_words: &[String]) -> Result
         }
     let mut report = format!("{pages} pages, {favorites} favorites, {skipped} files skipped");
     if merged > 0 {
-        report.push_str(&format!(", {merged} files merged into a page of the same name"));
+        use std::fmt::Write as _;
+        let _ = write!(report, ", {merged} files merged into a page of the same name");
     }
     Ok(report)
 }

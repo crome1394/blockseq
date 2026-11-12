@@ -205,7 +205,10 @@ mod tests {
     fn a_full_lockout_map_drops_the_oldest_client() {
         let l = Limiter::default();
         let t0 = Instant::now();
-        let ip_at = |i: u32| IpAddr::from([10, (i >> 16) as u8, (i >> 8) as u8, i as u8]);
+        let ip_at = |i: u32| {
+            let octet = |shift| u8::try_from((i >> shift) & 0xff_u32).expect("masked to one byte");
+            IpAddr::from([10, octet(16), octet(8), octet(0)])
+        };
         for i in 0..u32::try_from(MAX_CLIENTS).unwrap() {
             let when = t0 + Duration::from_millis(u64::from(i));
             let ip = ip_at(i);

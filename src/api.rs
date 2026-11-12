@@ -78,8 +78,8 @@ fn classify(e: &anyhow::Error) -> ApiError {
 }
 
 fn is_storage(err: &(dyn std::error::Error + 'static)) -> bool {
-    if let Some(sql) = err.downcast_ref::<rusqlite::Error>() {
-        if matches!(
+    if let Some(sql) = err.downcast_ref::<rusqlite::Error>()
+        && matches!(
             sql.sqlite_error_code(),
             Some(
                 rusqlite::ffi::ErrorCode::DiskFull
@@ -88,14 +88,14 @@ fn is_storage(err: &(dyn std::error::Error + 'static)) -> bool {
                     | rusqlite::ffi::ErrorCode::SystemIoFailure
                     | rusqlite::ffi::ErrorCode::ReadOnly
             )
-        ) {
-            return true;
-        }
+        )
+    {
+        return true;
     }
-    if let Some(io) = err.downcast_ref::<std::io::Error>() {
-        if io.kind() == std::io::ErrorKind::StorageFull || io.raw_os_error() == Some(28) {
-            return true;
-        }
+    if let Some(io) = err.downcast_ref::<std::io::Error>()
+        && (io.kind() == std::io::ErrorKind::StorageFull || io.raw_os_error() == Some(28))
+    {
+        return true;
     }
     let text = err.to_string().to_ascii_lowercase();
     text.contains("disk full")
@@ -1167,32 +1167,29 @@ pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) 
             if body.encryption.check != existing.check {
                 return Err(forbidden());
             }
-            match &existing.proof_hash {
-                Some(stored) => {
-                    let given = body.proof.as_deref().map(proof_hash).unwrap_or_default();
-                    if !same_secret(&given, stored) || body.encryption.proof_hash.as_ref() != Some(stored) {
-                        return Err(forbidden());
-                    }
+            if let Some(stored) = &existing.proof_hash {
+                let given = body.proof.as_deref().map(proof_hash).unwrap_or_default();
+                if !same_secret(&given, stored) || body.encryption.proof_hash.as_ref() != Some(stored) {
+                    return Err(forbidden());
                 }
+            } else {
                 // Setups from before proof_hash: `check` is public (GET returns
                 // it), so it may only attach a proof. The wraps stay as they
                 // are; changing them needs the proof, once one is stored.
-                None => {
-                    if !same_secret(body.check.as_deref().unwrap_or_default(), &existing.check) {
-                        return Err(forbidden());
-                    }
-                    if body.encryption.proof_hash.is_none()
-                        || body.encryption.salt != existing.salt
-                        || body.encryption.iterations != existing.iterations
-                        || body.encryption.pw_iv != existing.pw_iv
-                        || body.encryption.pw_data != existing.pw_data
-                        || body.encryption.rk_salt != existing.rk_salt
-                        || body.encryption.rk_iterations != existing.rk_iterations
-                        || body.encryption.rk_iv != existing.rk_iv
-                        || body.encryption.rk_data != existing.rk_data
-                    {
-                        return Err(forbidden());
-                    }
+                if !same_secret(body.check.as_deref().unwrap_or_default(), &existing.check) {
+                    return Err(forbidden());
+                }
+                if body.encryption.proof_hash.is_none()
+                    || body.encryption.salt != existing.salt
+                    || body.encryption.iterations != existing.iterations
+                    || body.encryption.pw_iv != existing.pw_iv
+                    || body.encryption.pw_data != existing.pw_data
+                    || body.encryption.rk_salt != existing.rk_salt
+                    || body.encryption.rk_iterations != existing.rk_iterations
+                    || body.encryption.rk_iv != existing.rk_iv
+                    || body.encryption.rk_data != existing.rk_data
+                {
+                    return Err(forbidden());
                 }
             }
         } else if body.encryption.proof_hash.is_none() {
@@ -1395,12 +1392,11 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
         .await?;
         // The browser treats imported-key.json as a foreign key and would
         // re-encrypt. Remove it once the server itself holds that key.
-        if matches!(outcome, backup::KeyOutcome::Adopted | backup::KeyOutcome::Same) {
-            if let Err(e) = tokio::fs::remove_file(&key_file).await
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(e.into());
-            }
+        if matches!(outcome, backup::KeyOutcome::Adopted | backup::KeyOutcome::Same)
+            && let Err(e) = tokio::fs::remove_file(&key_file).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e.into());
         }
         if outcome == backup::KeyOutcome::Adopted {
             s.notify_all(&json!({ "type": "encryption" }));
@@ -1566,7 +1562,7 @@ mod tests {
         let path = export_zip_path(uuid::Uuid::nil());
         assert!(path.starts_with(std::env::temp_dir()));
         assert_eq!(path.file_name().and_then(|s| s.to_str()), Some("blockseq-export-00000000-0000-0000-0000-000000000000.zip"));
-        assert!(std::path::Path::new("/var/lib/blockseq").join(path.file_name().unwrap()) != path);
+        assert_ne!(std::path::Path::new("/var/lib/blockseq").join(path.file_name().unwrap()), path);
     }
 
     #[test]

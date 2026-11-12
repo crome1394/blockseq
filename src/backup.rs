@@ -31,11 +31,11 @@ const FOLDERS: [&str; 6] = ["pages", "journals", "assets", "logseq", "draws", "w
 /// Upper bound on the bytes [`stage_snapshot`] writes for `dir`.
 /// Other workbooks sitting next to Main are not included.
 pub fn snapshot_bytes(dir: &Path) -> u64 {
-    let mut n = std::fs::metadata(dir.join(DB_FILE)).map(|m| m.len()).unwrap_or(0);
+    let mut n = std::fs::metadata(dir.join(DB_FILE)).map_or(0, |m| m.len());
     for suffix in ["-wal", "-shm"] {
-        n = n.saturating_add(std::fs::metadata(dir.join(format!("{DB_FILE}{suffix}"))).map(|m| m.len()).unwrap_or(0));
+        n = n.saturating_add(std::fs::metadata(dir.join(format!("{DB_FILE}{suffix}"))).map_or(0, |m| m.len()));
     }
-    n = n.saturating_add(std::fs::metadata(dir.join(IMPORTED_KEY)).map(|m| m.len()).unwrap_or(0));
+    n = n.saturating_add(std::fs::metadata(dir.join(IMPORTED_KEY)).map_or(0, |m| m.len()));
     for folder in FOLDERS {
         n = n.saturating_add(crate::workbooks::tree_bytes(&dir.join(folder)));
     }
@@ -153,24 +153,23 @@ them with the password (or recovery key) you used when the backup was made.
 pub fn stage_snapshot(dir: &Path, stage: &Path, writer: Option<&Connection>) -> Result<PathBuf> {
     std::fs::create_dir_all(stage)?;
     let db_copy = stage.join(DB_FILE);
-    match writer {
-        Some(conn) => snapshot(conn, &db_copy)?,
+    if let Some(conn) = writer {
+        snapshot(conn, &db_copy)?;
+    } else {
         // Hold the write transaction across the file copy too. VACUUM INTO
-        // cannot run inside it; the online backup can.
-        None => {
-            // One connection holds the write lock so a save waits. A second
-            // copies the database: the backup API refuses the connection that
-            // owns the transaction, and VACUUM INTO cannot run inside one.
-            let hold = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
-            crate::db::set_busy_timeout(&hold)?;
-            hold.execute_batch("BEGIN IMMEDIATE")?;
-            let src = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
-            crate::db::set_busy_timeout(&src)?;
-            src.backup("main", &db_copy, rusqlite::backup::NO_PROGRESS).context("copying the database")?;
-            copy_mirror(dir, stage)?;
-            hold.execute_batch("COMMIT")?;
-            return Ok(db_copy);
-        }
+        // cannot run inside it; the online backup can. One connection holds
+        // the write lock so a save waits. A second copies the database: the
+        // backup API refuses the connection that owns the transaction, and
+        // VACUUM INTO cannot run inside one.
+        let hold = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
+        crate::db::set_busy_timeout(&hold)?;
+        hold.execute_batch("BEGIN IMMEDIATE")?;
+        let src = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
+        crate::db::set_busy_timeout(&src)?;
+        src.backup("main", &db_copy, rusqlite::backup::NO_PROGRESS).context("copying the database")?;
+        copy_mirror(dir, stage)?;
+        hold.execute_batch("COMMIT")?;
+        return Ok(db_copy);
     }
     copy_mirror(dir, stage)?;
     Ok(db_copy)
@@ -485,7 +484,7 @@ mod tests {
         std::fs::create_dir_all(tmp.join("workbooks/Other")).unwrap();
         std::fs::write(tmp.join("workbooks/Other/big.bin"), vec![0u8; 50_000]).unwrap();
         let n = snapshot_bytes(&tmp);
-        assert!(n < 50_000 && n >= 5, "{n}");
+        assert!((5..50_000).contains(&n), "{n}");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
