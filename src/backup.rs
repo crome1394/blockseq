@@ -1,8 +1,10 @@
 //! Backups: a whole workbook as one zip file, and restoring such a zip (or a
 //! zipped Logseq graph) as a new workbook.
 //!
-//! A backup holds a consistent copy of the database, the Markdown mirror and
-//! assets, and `config.json`. #Encrypted blocks stay encrypted: the zip only
+//! A backup holds one moment of the database, the Markdown mirror and assets,
+//! plus `config.json`. Those are copied together while saves are held off; the
+//! zip is built from that copy, so compression does not mix in a later save.
+//! #Encrypted blocks stay encrypted: the zip only
 //! has the scrambled text and the *wrapped* key (see config.rs), so it is no
 //! more readable than the server itself, and your password or recovery key
 //! opens it again after a restore.
@@ -125,8 +127,65 @@ workbook; nothing existing is changed.
 them with the password (or recovery key) you used when the backup was made.
 ";
 
+/// Copies the database and the mirrored folders into `stage` as one moment.
+/// Returns the database file inside `stage`.
+///
+/// Pass the live writer and hold its lock until this returns, so a save cannot
+/// change the database or the Markdown between the two copies. With `writer`
+/// left unset (the command-line export, which has no workbook lock), a write
+/// transaction is held across both copies instead. The caller zips `stage`
+/// after releasing the lock. The file copy is not fsynced.
+pub fn stage_snapshot(dir: &Path, stage: &Path, writer: Option<&Connection>) -> Result<PathBuf> {
+    std::fs::create_dir_all(stage)?;
+    let db_copy = stage.join(DB_FILE);
+    match writer {
+        Some(conn) => snapshot(conn, &db_copy)?,
+        // Hold the write transaction across the file copy too. VACUUM INTO
+        // cannot run inside it; the online backup can.
+        None => {
+            // One connection holds the write lock so a save waits. A second
+            // copies the database: the backup API refuses the connection that
+            // owns the transaction, and VACUUM INTO cannot run inside one.
+            let hold = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
+            crate::db::set_busy_timeout(&hold)?;
+            hold.execute_batch("BEGIN IMMEDIATE")?;
+            let src = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
+            crate::db::set_busy_timeout(&src)?;
+            src.backup("main", &db_copy, rusqlite::backup::NO_PROGRESS).context("copying the database")?;
+            copy_mirror(dir, stage)?;
+            hold.execute_batch("COMMIT")?;
+            return Ok(db_copy);
+        }
+    }
+    copy_mirror(dir, stage)?;
+    Ok(db_copy)
+}
+
+/// Copies pages, journals, assets and the other mirrored folders. Hidden and
+/// temp files are left out, the same way the zip walks them.
+fn copy_mirror(dir: &Path, stage: &Path) -> Result<()> {
+    for folder in FOLDERS {
+        let mut files = Vec::new();
+        walk(&dir.join(folder), &mut files);
+        for path in files {
+            let rel = path.strip_prefix(dir).with_context(|| format!("copying {}", path.display()))?;
+            let to = stage.join(rel);
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&path, &to).with_context(|| format!("copying {}", path.display()))?;
+        }
+    }
+    let imported = dir.join(IMPORTED_KEY);
+    if imported.is_file() {
+        std::fs::copy(&imported, stage.join(IMPORTED_KEY))?;
+    }
+    Ok(())
+}
+
 /// Writes the backup zip of the workbook folder `dir` to `out`.
 /// `db_copy` is a snapshot made with [`snapshot`]; `config` is config.json.
+/// `dir` should be a [`stage_snapshot`] copy when a save might still be running.
 pub fn write_zip(workbook: &str, dir: &Path, db_copy: &Path, config: &Path, out: &Path) -> Result<()> {
     let file = std::fs::File::create(out).with_context(|| format!("creating {}", out.display()))?;
     let mut zip = ZipWriter::new(std::io::BufWriter::new(file));
@@ -386,10 +445,12 @@ pub fn export_command(data_dir: &Path, args: &[String]) -> Result<()> {
         let dir = registry.dir_of(&id).filter(|d| d.join(DB_FILE).is_file())
             .with_context(|| format!("no workbook called {id}"))?;
         let out = out_dir.join(file_name(&id));
-        let tmp = out_dir.join(format!(".{}.db", uuid::Uuid::new_v4()));
-        let result = snapshot_file(&dir.join(DB_FILE), &tmp)
-            .and_then(|()| write_zip(&id, &dir, &tmp, &data_dir.join("config.json"), &out));
-        let _ = std::fs::remove_file(&tmp);
+        let stage = std::env::temp_dir().join(format!("blockseq-snap-{}", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let db_copy = stage_snapshot(&dir, &stage, None)?;
+            write_zip(&id, &stage, &db_copy, &data_dir.join("config.json"), &out)
+        })();
+        let _ = std::fs::remove_dir_all(&stage);
         result?;
         let size = std::fs::metadata(&out).map_or(0, |m| m.len());
         eprintln!("{id}: {} ({:.1} MB)", out.display(), size as f64 / 1_048_576.0);
@@ -446,6 +507,54 @@ mod tests {
         assert!(!dest.join("config.json").exists());
         // Too small a limit is refused.
         assert!(import_zip(&zip, &tmp.join("dest2"), None, 2).is_err());
+        std::fs::remove_dir_all(&tmp)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_zip_keeps_the_staged_moment() -> Result<()> {
+        let tmp = std::env::temp_dir().join(format!("bq-stage-{}", uuid::Uuid::new_v4()));
+        let src = tmp.join("src");
+        std::fs::create_dir_all(src.join("pages"))?;
+        std::fs::create_dir_all(src.join("assets"))?;
+        std::fs::write(src.join("pages/Hello.md"), "- first\n")?;
+        std::fs::write(src.join("assets/pic.png"), [1u8, 2, 3])?;
+        std::fs::write(src.join("assets/.upload-x.part"), "nope")?;
+        let conn = crate::db::open(&src.join(DB_FILE))?;
+        let block = crate::db::Block { id: "a".into(), parent_id: None, content: "first".into(), collapsed: false };
+        crate::db::save_page(&conn, "Hello", 0, &[block], &[])?;
+        let stage = tmp.join("stage");
+        let db_copy = stage_snapshot(&src, &stage, Some(&conn))?;
+        // A save after the copy must not appear in a zip of that copy.
+        std::fs::write(src.join("pages/Hello.md"), "- second\n")?;
+        std::fs::write(src.join("assets/pic.png"), [9u8, 9, 9])?;
+        std::fs::write(src.join("pages/Later.md"), "- later\n")?;
+        let page = crate::db::get_page(&conn, "Hello")?.unwrap();
+        let later = crate::db::Block { id: "a".into(), parent_id: None, content: "second".into(), collapsed: false };
+        crate::db::save_page(&conn, "Hello", page.version, &[later], &[])?;
+        let cfg = Config { encryption: None, ..Config::default() };
+        cfg.save(&tmp.join("config.json"))?;
+        let zip = tmp.join("b.zip");
+        write_zip("src", &stage, &db_copy, &tmp.join("config.json"), &zip)?;
+        let dest = tmp.join("dest");
+        import_zip(&zip, &dest, None, 1 << 30)?;
+        assert_eq!(std::fs::read_to_string(dest.join("pages/Hello.md"))?, "- first\n");
+        assert_eq!(std::fs::read(dest.join("assets/pic.png"))?, [1, 2, 3]);
+        assert!(!dest.join("pages/Later.md").exists());
+        assert!(!dest.join("assets/.upload-x.part").exists());
+        let saved = crate::db::open(&dest.join(DB_FILE))?;
+        let restored = crate::db::get_page(&saved, "Hello")?.unwrap();
+        assert_eq!(crate::db::get_blocks(&saved, &restored.id)?[0].content, "first");
+
+        // The command-line path (no live writer) stages the same way.
+        let stage2 = tmp.join("stage2");
+        let db_copy2 = stage_snapshot(&src, &stage2, None)?;
+        let zip2 = tmp.join("b2.zip");
+        write_zip("src", &stage2, &db_copy2, &tmp.join("config.json"), &zip2)?;
+        let dest2 = tmp.join("dest-now");
+        import_zip(&zip2, &dest2, None, 1 << 30)?;
+        assert_eq!(std::fs::read_to_string(dest2.join("pages/Hello.md"))?, "- second\n");
+        drop((conn, saved));
         std::fs::remove_dir_all(&tmp)?;
         Ok(())
     }

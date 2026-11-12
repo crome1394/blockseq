@@ -336,11 +336,13 @@ CRDTs (conflict-free merge structures):
   command (`src/crypto.rs`, `blockseq reset-encryption-password`) unwraps the
   key with the recovery key and re-wraps it with a new password; its formats
   must match `crypto.js`.
-- **Backups** (`src/backup.rs`, `backup-ui.js`). Export takes a `VACUUM INTO`
-  snapshot while holding the workbook's connection, then zips it with
-  `pages/`, `journals/`, `assets/`, `logseq/` (no hidden or temp files),
-  `config.json` and a `blockseq-backup.json` manifest (`format: 1`) into a
-  hidden temp file that is unlinked once opened and streamed. Media and
+- **Backups** (`src/backup.rs`, `backup-ui.js`). Export, while holding the
+  workbook's connection, takes a `VACUUM INTO` snapshot and copies `pages/`,
+  `journals/`, `assets/`, `logseq/` (no hidden or temp files) into a temp
+  folder. The zip is built from that copy, so a save during compression cannot
+  mix two moments. `config.json` and a `blockseq-backup.json` manifest
+  (`format: 1`) go in too. The zip is a hidden temp file in the data folder
+  that is unlinked once opened and streamed. Media and
   archives are stored, the rest deflated. Import streams the upload to disk,
   unpacks only known paths (via `enclosed_name`, so no traversal; a single
   wrapping folder is stripped) into `workbooks/.import-<uuid>/`, caps the

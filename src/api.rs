@@ -1069,18 +1069,22 @@ fn file_body(mut file: tokio::fs::File, limit: Option<u64>) -> Body {
 /// Downloads the whole workbook as a backup zip (see backup.rs).
 pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
     let id = uuid::Uuid::new_v4();
-    // Hidden names in the data folder: never listed, served or backed up.
-    let tmp_db = s.root.join(format!(".export-{id}.db"));
+    // Hidden name in the data folder: never listed, served or backed up.
     let tmp_zip = s.root.join(format!(".export-{id}.zip"));
     let config = s.root.join("config.json");
-    let db_path = wb.dir.join("blockseq.db");
     let (wb2, zip_path) = (wb.clone(), tmp_zip.clone());
     let made = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        // A separate connection copies the database, so a save is not stuck
-        // behind the whole file. The zip is built after that copy finishes.
-        let result = backup::snapshot_file(&db_path, &tmp_db)
-            .and_then(|()| backup::write_zip(&wb2.id, &wb2.dir, &tmp_db, &config, &zip_path));
-        let _ = std::fs::remove_file(&tmp_db);
+        // Copy the database and the files under the writer lock, into a temp
+        // folder. The zip is built from that folder after the lock is released.
+        let stage = std::env::temp_dir().join(format!("blockseq-snap-{id}"));
+        let result = (|| {
+            let db_copy = {
+                let conn = wb2.db.lock();
+                backup::stage_snapshot(&wb2.dir, &stage, Some(&conn))?
+            };
+            backup::write_zip(&wb2.id, &stage, &db_copy, &config, &zip_path)
+        })();
+        let _ = std::fs::remove_dir_all(&stage);
         result
     })
     .await
