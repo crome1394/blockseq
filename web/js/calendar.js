@@ -25,7 +25,7 @@ export class Calendar {
   async refresh() {
     try {
       const side = await api.sidebar();
-      document.dispatchEvent(new CustomEvent('blockseq:last-change', { detail: { at: side.newest } }));
+      document.dispatchEvent(new CustomEvent('blockseq:last-change', { detail: { at: side.newest, usage: side.usage } }));
       this.days = new Set(side.journal_days);
       this.render();
     } catch { /* offline: keep the old dots */ }

@@ -378,8 +378,20 @@ pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
     read_json(wb, db::list_pages).await
 }
 
+/// Calendar days, favourites, last change, and the workbook's disk usage.
 pub async fn sidebar(Wb(wb): Wb) -> ApiResult {
-    read_json(wb, db::sidebar).await
+    blocking(move || {
+        let side = db::sidebar(&wb.db.lock())?;
+        let usage = wb.usage();
+        Ok(Json(json!({
+            "journal_days": side.journal_days,
+            "favorites": side.favorites,
+            "newest": side.newest,
+            "usage": usage,
+        }))
+        .into_response())
+    })
+    .await
 }
 
 pub async fn names(Wb(wb): Wb) -> ApiResult {
@@ -566,6 +578,7 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
             return Err(e.into());
         }
     };
+    wb.forget_usage();
     s.notify(&wb, json!({ "type": "assets", "name": name, "client": client_id(&headers) }));
     Ok(Json(json!({ "name": name, "path": format!("../assets/{name}"), "kind": assets::kind_of(&name) }))
         .into_response())
@@ -719,6 +732,7 @@ pub async fn delete_asset(
     }
     match tokio::fs::remove_file(wb.assets_dir().join(&q.name)).await {
         Ok(()) => {
+            wb.forget_usage();
             s.notify(&wb, json!({ "type": "assets", "name": q.name, "client": client_id(&headers) }));
             Ok(StatusCode::NO_CONTENT.into_response())
         }

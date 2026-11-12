@@ -35,7 +35,13 @@
   </aside>
   <main id="main"></main>
   <header id="topbar" class="topbar">
-    <div class="topbar-side"></div>
+    <div class="topbar-side">
+      <!-- Disk space this workbook uses (details in the tooltip) -->
+      <span id="usage" class="usage" hidden>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3v12c0 1.7-3.6 3-8 3s-8-1.3-8-3zM4 6c0 1.7 3.6 3 8 3s8-1.3 8-3M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <span class="usage-value"></span>
+      </span>
+    </div>
     <!-- Sync status and when the workbook was last saved -->
     <div class="topbar-center"><div id="status" class="status ok" role="status">Saved</div></div>
     <div class="topbar-side topbar-buttons">

@@ -1144,6 +1144,8 @@ textarea.code-edit.live::selection { background: rgba(100, 150, 255, 0.35); colo
 }
 html.sidebar-hidden .topbar { left: 0; padding-left: 56px; }
 .topbar-buttons { display: flex; justify-content: flex-end; gap: 4px; }
+.usage { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
+.usage[hidden] { display: none; }
 .topbar-center { min-width: 0; }
 .topbar .status { display: flex; align-items: baseline; gap: 8px; padding: 0; font-size: 13px; white-space: nowrap; }
 .topbar .status-time { display: inline; margin-top: 0; }

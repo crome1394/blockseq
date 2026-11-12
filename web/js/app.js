@@ -922,7 +922,20 @@ document.addEventListener('blockseq:open-workbook', async (e) => {
 // Pages were rewritten by this tab outside an editor (re-encryption).
 document.addEventListener('blockseq:resync', () => resyncAll());
 // The calendar loads every page; the newest change is the "last saved" time.
-document.addEventListener('blockseq:last-change', (e) => noteSaved(e.detail.at));
+document.addEventListener('blockseq:last-change', (e) => {
+  noteSaved(e.detail.at);
+  showUsage(e.detail.usage);
+});
+
+// Header: how much space the workbook takes on the server.
+function showUsage(u) {
+  const box = document.getElementById('usage');
+  if (!box || !u) return;
+  box.hidden = false;
+  box.querySelector('.usage-value').textContent = formatSize(u.total);
+  box.title = `${workbookName(workbook())} uses ${formatSize(u.total)} on the server:\n`
+    + `database (with page history) ${formatSize(u.database)}\nfiles ${formatSize(u.files)}\nMarkdown copies and other ${formatSize(u.other)}`;
+}
 
 // Embedded X posts report their height from inside their frame.
 window.addEventListener('message', (e) => {
@@ -943,7 +956,8 @@ window.addEventListener('message', (e) => {
 function formatSize(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
 
 async function assetsView(seq) {

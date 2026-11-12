@@ -31,6 +31,35 @@ pub struct Workbook {
     /// Result of SQLite's quick integrity check when the workbook opened
     /// ("ok" when healthy). Shown by /api/health.
     pub integrity: String,
+    /// Disk usage, measured at most every `USAGE_TTL` (see `usage`).
+    usage_cache: Mutex<Option<(std::time::Instant, Usage)>>,
+}
+
+/// Space a workbook takes on disk, in bytes.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct Usage {
+    /// blockseq.db with its write-ahead log (includes the page history).
+    pub database: u64,
+    /// Uploaded files (assets/).
+    pub files: u64,
+    /// Everything else: the Markdown copies, Logseq folders, settings.
+    pub other: u64,
+    pub total: u64,
+}
+
+const USAGE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Total size of regular files under `dir` (symlinks not followed).
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +76,42 @@ pub struct WorkbookInfo {
 pub const TRASH: &str = ".trash";
 
 impl Workbook {
+    /// How much space the workbook uses. Main's folder holds the other
+    /// workbooks (workbooks/), which aren't counted. Cached for a little
+    /// while: walking a big assets folder after every save would be waste.
+    pub fn usage(&self) -> Usage {
+        let mut cache = self.usage_cache.lock();
+        if let Some((at, u)) = *cache
+            && at.elapsed() < USAGE_TTL
+        {
+            return u;
+        }
+        let mut u = Usage::default();
+        for entry in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                match name.as_str() {
+                    "workbooks" if self.id == MAIN => {}
+                    "assets" => u.files += dir_size(&path),
+                    _ => u.other += dir_size(&path),
+                }
+            } else if kind.is_file() {
+                let size = entry.metadata().map_or(0, |m| m.len());
+                if name.starts_with(DB_FILE) { u.database += size } else { u.other += size }
+            }
+        }
+        u.total = u.database + u.files + u.other;
+        *cache = Some((std::time::Instant::now(), u));
+        u
+    }
+
+    /// Measure again next time (after an upload or a deletion).
+    pub fn forget_usage(&self) {
+        *self.usage_cache.lock() = None;
+    }
+
     fn is_retired(&self) -> bool {
         self.retired.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -319,7 +384,7 @@ impl Registry {
         if pruned > 0 {
             tracing::info!("workbook {id}: removed {pruned} empty, unlinked pages");
         }
-        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: std::sync::atomic::AtomicBool::default(), integrity });
+        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: std::sync::atomic::AtomicBool::default(), integrity, usage_cache: Mutex::new(None) });
         if import {
             let report = import_logseq(&wb, task_words)?;
             tracing::info!("workbook {id}: imported Logseq graph ({report})");
@@ -550,6 +615,28 @@ mod tests {
         drop(held);
         assert!(reg.get("Slow", &[]).unwrap().is_some());
         drop(reg);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn usage_counts_this_workbook_only() {
+        let root = std::env::temp_dir().join(format!("bq-usage-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let reg = Registry::new(root.clone());
+        let main = reg.get(MAIN, &[]).unwrap().unwrap();
+        std::fs::write(root.join("assets/a.bin"), vec![0u8; 1000]).unwrap();
+        reg.create("Other").unwrap();
+        std::fs::write(root.join("workbooks/Other/big.bin"), vec![0u8; 50_000]).unwrap();
+        let u = main.usage();
+        assert_eq!(u.files, 1000);
+        assert!(u.database > 0);
+        assert_eq!(u.other, 0, "other workbooks counted: {u:?}");
+        // Cached until forgotten.
+        std::fs::write(root.join("assets/b.bin"), vec![0u8; 500]).unwrap();
+        assert_eq!(main.usage().files, 1000);
+        main.forget_usage();
+        assert_eq!(main.usage().files, 1500);
+        drop((main, reg));
         std::fs::remove_dir_all(root).unwrap();
     }
 
