@@ -4,35 +4,37 @@
 // versioning (the server answers 409 if another device saved first).
 
 import { el } from './dom.js';
-import { api, uuid, getPageNames } from './api.js';
+import { uuid } from './api.js';
 import {
-  renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
-  isVideoUrl, mathSpans, tweetId, renderOutline, pageLink,
-} from './render.js';
+  renderContent, parseOutline, splitProps, joinProps, findFences, isPureCode, isVideoUrl, mathSpans, tweetId } from './render.js';
 import {
-  imageFiles, uploadImage, pickImages, imageAt, withAlign, withMeta, withoutImage, withoutFileLink,
-  openLightbox, copyImage, downloadImage,
-} from './images.js';
-import { getStatuses, statusOf, statusPrefix, stripStatus, withStatus, nextStatus, statusStyle, hasTaskTag } from './tasks.js';
+  imageFiles, uploadImage, openLightbox } from './images.js';
+import { statusOf, statusPrefix, withStatus, nextStatus, hasTaskTag } from './tasks.js';
 import { matches } from './keys.js';
 import { openPdfPane, openFilePane } from './pdfview.js';
-import { ENCRYPTED_TAG, isUnlocked, available as cryptoAvailable, encryptText, decryptText } from './crypto.js';
-import { unlockDialog } from './secure-ui.js';
-import { rekeyDialog } from './backup-ui.js';
+import { isUnlocked } from './crypto.js';
+
 import { openMathBuilder } from './mathbuilder.js';
 import { journalName } from './dates.js';
 import { toast, copyText, openModal } from './ui.js';
-import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
+import { decorateCode, highlightForEditor } from './code.js';
 import { getSetting } from './settings.js';
 import { readDrafts, removeDraft, sameBlocks } from './drafts.js';
 import { editors, installSync } from './sync.js';
+import { closeAutocomplete, handleAutocompleteKey, updateAutocomplete } from './autocomplete.js';
+import { bar, hideBar, positionBar } from './formatbar.js';
+import { closeMenu, showStatusPicker } from './menus.js';
+import { hydrateRefs } from './refs.js';
+import { installBlockMenus } from './blockmenus.js';
+import { installCodeBlocks } from './codeblocks.js';
+import { installSecrets } from './secrets.js';
+import { installFormatBar } from './formatbar.js';
 
 export { editors };
 
-
 const pad2 = (n) => String(n).padStart(2, '0');
-const timeNow = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
-const timestamp = () => `[[${journalName(new Date())}]] ${timeNow()}`;
+export const timeNow = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+export const timestamp = () => `[[${journalName(new Date())}]] ${timeNow()}`;
 
 // Wraps LaTeX from the builder in delimiters, keeping the style an edited
 // formula already used (\[ \] or $$ $$).
@@ -49,14 +51,16 @@ function mathSource(tex, display, old) {
 const HISTORY_LIMIT = 200;
 // A #quote tag on a block shows it and its children as a quotation.
 const QUOTE_TAG = /(^|\s)#quote(?=\s|$)/i;
-const NUMBERED = 'logseq.order-list-type';
-const COLOR = 'background-color';
-const HEADING = 'heading';
-const ALIGN = 'text-align';
-const COLORS = ['yellow', 'red', 'pink', 'green', 'blue', 'purple', 'gray'];
+export const NUMBERED = 'logseq.order-list-type';
+export const COLOR = 'background-color';
+export const HEADING = 'heading';
+export const ALIGN = 'text-align';
+export const COLORS = ['yellow', 'red', 'pink', 'green', 'blue', 'purple', 'gray'];
 
 // The editor the user touched last; keyboard undo outside a block goes here.
 let lastEditor = null;
+// The editor used last (moved methods set it through this).
+export function noteActive(ed) { lastEditor = ed; }
 // The editor that has blocks selected (only one at a time).
 let selectedEditor = null;
 // Text we last put on the clipboard from selected blocks.
@@ -186,7 +190,7 @@ export function activeEditor() {
   return lastEditor && editors.has(lastEditor) && !lastEditor.disposed ? lastEditor : null;
 }
 
-function makeNode(content = '', id = uuid(), props = {}) {
+export function makeNode(content = '', id = uuid(), props = {}) {
   return { id, content, props, collapsed: false, children: [], parent: null };
 }
 
@@ -214,11 +218,11 @@ function inAdmonition(text, pos) {
   return !/\n#\+END_/i.test(before.slice(begin)) && /\n#\+END_/i.test(text.slice(pos - 1));
 }
 
-function inFence(text, pos) {
+export function inFence(text, pos) {
   return ((text.slice(0, pos).match(/^```/gm) || []).length) % 2 === 1;
 }
 
-function lineAt(text, pos) {
+export function lineAt(text, pos) {
   const start = text.lastIndexOf('\n', pos - 1) + 1;
   const endIdx = text.indexOf('\n', pos);
   const end = endIdx === -1 ? text.length : endIdx;
@@ -286,143 +290,6 @@ export class PageEditor {
   // A block tagged #Encrypted keeps its own text readable; its children are
   // stored as one encrypted outline in its hidden `encrypted::` property.
   // `node.unsealed` means the children are decrypted in memory right now.
-
-  // Every #Encrypted block, innermost first (so nested ones seal before the
-  // block that contains them).
-  secretRoots() {
-    const out = [];
-    const walk = (n) => n.children.forEach((c) => {
-      walk(c);
-      if (ENCRYPTED_TAG.test(c.content) || c.props.encrypted) out.push(c);
-    });
-    walk(this.root);
-    return out;
-  }
-
-  // Decrypts every locked encrypted block on the page (when unlocked).
-  async openSecrets() {
-    if (!isUnlocked()) return;
-    if (this.needsSealing()) this.sealNow();
-    let changed = false;
-    for (const r of this.secretRoots()) {
-      if (!r.props.encrypted || r.unsealed) continue;
-      try {
-        const text = await decryptText(r.props.encrypted);
-        if (this.disposed || r.unsealed) return;
-        const kids = text.trim() ? (parseOutline(text, uuid) || []) : [];
-        const existing = new Set(this.flatten().map((b) => b.id));
-        const adopt = (n, parent) => {
-          if (existing.has(n.id)) n.id = uuid();
-          existing.add(n.id);
-          n.parent = parent;
-          const split = splitProps(n.content);
-          n.content = split.content;
-          n.props = split.props;
-          n.children.forEach((c) => adopt(c, n));
-        };
-        kids.forEach((k) => adopt(k, r));
-        r.children = [...kids, ...r.children]; // keep blocks added while locked
-        r.unsealed = true;
-        r.sealedText = text;
-        r.decryptError = false;
-        changed = true;
-      } catch {
-        r.decryptError = true;
-        changed = true;
-      }
-    }
-    if (changed && !this.disposed) {
-      this.refresh(this.editing, this.ta?.selectionStart);
-      // Opening a block may reveal encrypted blocks nested inside it.
-      if (this.secretRoots().some((r) => r.props.encrypted && !r.unsealed && !r.decryptError)) this.openSecrets();
-    }
-  }
-
-  // Before saving: encrypt the children of every #Encrypted block. Children
-  // are only ever sent to the server inside the encrypted property.
-  async sealSecrets() {
-    for (const r of this.secretRoots()) {
-      const tagged = ENCRYPTED_TAG.test(r.content);
-      if (!tagged && r.props.encrypted && r.unsealed) {
-        // Tag removed while unlocked: store the children as normal blocks again.
-        delete r.props.encrypted;
-        r.unsealed = false;
-        this.decorateSecret(r);
-        continue;
-      }
-      if (!tagged || !isUnlocked()) continue;
-      if (r.props.encrypted && !r.unsealed) continue; // still locked
-      const text = r.children.map((c) => subtreeMarkdown(c, { ids: true })).join('\n');
-      if (!r.props.encrypted || text !== r.sealedText) {
-        r.props.encrypted = await encryptText(text);
-        r.sealedText = text;
-      }
-      const was = r.unsealed;
-      r.unsealed = true;
-      if (!was) this.decorateSecret(r);
-    }
-  }
-
-  // #Encrypted blocks whose children are still plain text (tagged before a
-  // password existed, or while locked).
-  needsSealing() {
-    return this.secretRoots().some((r) => ENCRYPTED_TAG.test(r.content) && !r.props.encrypted && r.children.length);
-  }
-
-  // Encrypt such blocks now (needs the key). Resolves once saved.
-  async sealNow() {
-    if (!isUnlocked() || !this.needsSealing()) return;
-    this.dirty = true;
-    this.changeSeq++;
-    await this.save();
-  }
-
-  // After /encrypted: open an empty child for the secret text, and ask to
-  // unlock first if needed so nothing is saved as plain text.
-  startSecretChild(node) {
-    const child = makeNode();
-    this.insertChild(node, child, 0);
-    node.collapsed = false;
-    this.refresh(child, 'end');
-    if (!isUnlocked()) {
-      // The password prompt takes the focus; come back to the child after it.
-      const reopen = () => setTimeout(() => {
-        const n = this.findNode(child.id);
-        if (n && !this.disposed) this.edit(n, 'end');
-      }, 50);
-      document.addEventListener('blockseq:unlocked', reopen, { once: true });
-      unlockDialog();
-    }
-  }
-
-  // Called while locking: save (encrypting with the key one last time).
-  async beforeLock() {
-    if (this.editing && this.secretRoots().some((r) => isInside(this.editing, r))) this.stopEdit();
-    if (this.codeEdit && this.secretRoots().some((r) => isInside(this.codeEdit.node, r))) this.closeCodeEditor();
-    if (this.dirty || this.needsSealing()) {
-      this.dirty = true;
-      await this.save();
-    }
-  }
-
-  // After locking: drop decrypted text from memory (and undo history).
-  afterLock() {
-    let any = false;
-    for (const r of this.secretRoots()) {
-      if (r.props.encrypted && r.unsealed) {
-        if (this.editing && isInside(this.editing, r)) this.stopEdit();
-        r.children = [];
-        r.unsealed = false;
-        r.sealedText = null;
-        any = true;
-      }
-    }
-    if (any) {
-      this.undoStack = [];
-      this.redoStack = [];
-      this.refresh(this.editing, this.ta?.selectionStart);
-    }
-  }
 
   get lower() { return this.name.toLowerCase(); }
 
@@ -600,59 +467,6 @@ export class PageEditor {
     this.decorateSecret(node);
     hydrateRefs(content);
     return wrap;
-  }
-
-  // Lock button, styling and the locked / not-encrypted notice of an
-  // #Encrypted block. Re-run whenever its state changes.
-  decorateSecret(node) {
-    const wrap = node.el;
-    if (!wrap) return;
-    const row = wrap.querySelector(':scope > .block-row');
-    wrap.querySelector(':scope > .secret-box')?.remove();
-    row?.querySelector(':scope > .secret-lock')?.remove();
-    const secret = ENCRYPTED_TAG.test(node.content) || !!node.props.encrypted;
-    wrap.classList.toggle('secret-root', secret);
-    wrap.classList.toggle('unlocked', secret && !!node.unsealed);
-    if (!secret) return;
-    if (node.unsealed && row) {
-      const lockBtn = el('button', 'secret-lock', '🔓 Lock');
-      lockBtn.type = 'button';
-      lockBtn.title = 'Lock all encrypted blocks now';
-      lockBtn.addEventListener('mousedown', (e) => e.preventDefault());
-      lockBtn.addEventListener('click', () => import('./crypto.js').then((m) => m.lock()));
-      row.append(lockBtn);
-    } else if (node.props.encrypted || node.children.length) {
-      wrap.append(this.secretNotice(node));
-    }
-  }
-
-  // The box shown under a locked #Encrypted block (or one not encrypted yet).
-  secretNotice(node) {
-    const box = el('div', 'children secret-box');
-    const btn = el('button', 'secret-unlock');
-    btn.type = 'button';
-    if (!node.props.encrypted) {
-      btn.textContent = isUnlocked()
-        ? '⚠ Encrypting…'
-        : '⚠ Not encrypted yet: these blocks are still stored as plain text. Click to unlock and encrypt them now.';
-      btn.classList.add('warn');
-    } else if (!cryptoAvailable()) {
-      btn.textContent = '🔒 Encrypted. Open Blockseq over HTTPS to unlock it.';
-      btn.disabled = true;
-    } else if (node.decryptError) {
-      btn.textContent = "🔒 Encrypted with a different password (restored from a backup?). Click to re-encrypt it with your current password.";
-      btn.classList.add('warn');
-      btn.addEventListener('mousedown', (e) => e.preventDefault());
-      btn.addEventListener('click', () => rekeyDialog());
-      box.append(btn);
-      return box;
-    } else {
-      btn.textContent = '🔒 Encrypted. Click to unlock.';
-    }
-    btn.addEventListener('mousedown', (e) => e.preventDefault());
-    btn.addEventListener('click', () => unlockDialog());
-    box.append(btn);
-    return box;
   }
 
   rerenderContent(node) {
@@ -1172,102 +986,6 @@ export class PageEditor {
 
   // ---- code editor ---------------------------------------------------------
 
-  // Opens the code editor on the idx-th code fence of a block.
-  openCodeEditor(node, idx, caret = 0) {
-    if (this.editing) this.stopEdit();
-    this.closeCodeEditor();
-    if (!node.contentEl) return;
-    const f = findFences(node.content)[idx];
-    const pre = node.contentEl.querySelector(`pre.code[data-fence="${idx}"]`);
-    if (!f || !pre) return;
-    lastEditor = this;
-    this.burst = false;
-    const ce = new CodeEditor({
-      code: f.code,
-      lang: f.lang,
-      live: getSetting('liveCode'),
-      wrap: getSetting('codeWrap'),
-      onChange: (code) => this.codeChanged(node, idx, code),
-      onLang: (lang) => this.codeLang(node, idx, lang),
-      onExit: () => this.closeCodeEditor(),
-      onNavigate: (dir) => {
-        const vis = this.visible();
-        const target = vis[vis.indexOf(node) + dir];
-        if (!target) return;
-        this.closeCodeEditor();
-        this.edit(target, dir < 0 ? 'end' : 'start');
-      },
-      onUndo: () => this.undo(),
-      onRedo: () => this.redo(),
-      onRaw: () => {
-        this.closeCodeEditor();
-        this.edit(node, 'end', { raw: true });
-      },
-    });
-    pre.replaceWith(ce.el);
-    node.el.classList.add('editing');
-    this.codeEdit = { node, idx, ce };
-    ce.focus(caret);
-    this.updateThread();
-  }
-
-  closeCodeEditor() {
-    const c = this.codeEdit;
-    if (!c) return;
-    this.codeEdit = null;
-    c.ce.close();
-    this.burst = false;
-    c.node.el?.classList.remove('editing');
-    this.rerenderContent(c.node);
-    this.updateThread();
-    if (this.pendingReload && !this.dirty) this.reload();
-  }
-
-  codeChanged(node, idx, code) {
-    if (!this.burst) {
-      this.checkpoint();
-      this.burst = true;
-    }
-    clearTimeout(this.burstTimer);
-    this.burstTimer = setTimeout(() => { this.burst = false; }, 1000);
-    const f = findFences(node.content)[idx];
-    if (f) this.setContent(node, node.content.slice(0, f.codeStart) + code + node.content.slice(f.codeEnd));
-  }
-
-  codeLang(node, idx, lang) {
-    this.beginOp();
-    const f = findFences(node.content)[idx];
-    if (f) this.setContent(node, node.content.slice(0, f.langStart) + lang + node.content.slice(f.langEnd));
-  }
-
-  // Maps a click on a rendered code block to a cursor position in its code
-  // (end of the clicked line).
-  caretFromClick(node, pre, e) {
-    const f = findFences(node.content)[Number(pre.dataset.fence)];
-    if (!f) return 0;
-    // Find the clicked line's row (rows can be taller when lines wrap).
-    const rows = [...pre.querySelectorAll('.lc')];
-    let line = rows.findIndex((r) => e.clientY < r.getBoundingClientRect().bottom);
-    if (line < 0) line = rows.length - 1;
-    const lines = f.code.split('\n');
-    const l = Math.max(0, Math.min(line, lines.length - 1));
-    return lines.slice(0, l + 1).join('\n').length;
-  }
-
-  // Tab / Shift+Tab inside a code fence indents the current line.
-  codeIndent(node, ta, out) {
-    this.beginOp();
-    const pos = ta.selectionStart;
-    const { start } = lineAt(ta.value, pos);
-    if (!out) return this.replaceText(node, ta, pos, pos, '  ');
-    const lead = /^ {1,2}/.exec(ta.value.slice(start))?.[0].length || 0;
-    if (!lead) return;
-    ta.value = ta.value.slice(0, start) + ta.value.slice(start + lead);
-    const p = Math.max(start, pos - lead);
-    ta.setSelectionRange(p, p);
-    this.setContent(node, ta.value);
-  }
-
   // Re-render the whole outline, then put the cursor back.
   refresh(focusNode, caret) {
     this.markDirty();
@@ -1684,263 +1402,10 @@ export class PageEditor {
     toast(parts.length > 1 ? 'Files added' : 'Added');
   }
 
-  showImageMenu(node, index, e) {
-    lastEditor = this;
-    const info = imageAt(node.content, index);
-    if (!info) return;
-    const align = imageAlign(info.meta);
-    const alignItem = (a, label) => ({
-      label: `${label}${align === a ? '  ✓' : ''}`,
-      fn: () => this.changeText(node, withAlign(node.content, index, a)),
-    });
-    const size = imageSize(info.meta);
-    const sizeItem = (s, label) => ({
-      label: `${label}${size === s ? '  ✓' : ''}`,
-      fn: () => this.changeText(node, withMeta(node.content, index, 'size', s || null)),
-    });
-    showMenu(e.clientX, e.clientY, [
-      alignItem('left', 'Align left'),
-      alignItem('center', 'Align center'),
-      alignItem('right', 'Align right'),
-      '-',
-      sizeItem('', 'Fit to width'),
-      sizeItem('original', 'Original size'),
-      sizeItem('half', 'Half size'),
-      sizeItem('quarter', 'Quarter size'),
-      sizeItem('small', 'Very small'),
-      '-',
-      { label: 'Copy image', fn: () => copyImage(info.url) },
-      { label: 'Open in new tab', fn: () => window.open(info.url, '_blank', 'noopener') },
-      { label: 'Download', fn: () => downloadImage(info.url) },
-      '-',
-      { label: 'Delete image', danger: true, fn: () => this.changeText(node, withoutImage(node.content, index)) },
-    ]);
-  }
-
-  showFileMenu(node, wrap, name, e) {
-    lastEditor = this;
-    const url = wrap.dataset.src;
-    const kind = wrap.dataset.kind;
-    const index = Number(wrap.dataset.index);
-    const remove = () => this.changeText(node, wrap.dataset.md === 'link'
-      ? withoutFileLink(node.content, index) : withoutImage(node.content, index));
-    showMenu(e.clientX, e.clientY, [
-      ...(kind === 'other' ? [] : [{ label: 'Open in side pane', fn: () => openFilePane(url, name, kind) }]),
-      { label: 'Open in new tab', fn: () => window.open(url, '_blank', 'noopener') },
-      { label: 'Download', fn: () => downloadImage(url) },
-      '-',
-      { label: 'Remove from block', danger: true, fn: remove },
-    ]);
-  }
-
-  showPdfMenu(node, index, e) {
-    lastEditor = this;
-    const info = imageAt(node.content, index);
-    if (!info) return;
-    const name = info.alt || decodeURIComponent(info.url.split('?')[0].split('/').pop());
-    const view = pdfView(info.meta);
-    showMenu(e.clientX, e.clientY, [
-      { label: `Show as link${view === 'link' ? '  ✓' : ''}`, fn: () => this.changeText(node, withMeta(node.content, index, 'view', null)) },
-      { label: `Show full preview${view === 'preview' ? '  ✓' : ''}`, fn: () => this.changeText(node, withMeta(node.content, index, 'view', 'preview')) },
-      '-',
-      { label: 'Open in side pane', fn: () => openPdfPane(info.url, name) },
-      { label: 'Open in new tab', fn: () => window.open(info.url, '_blank', 'noopener') },
-      { label: 'Download', fn: () => downloadImage(info.url) },
-      '-',
-      { label: 'Remove from block', danger: true, fn: () => this.changeText(node, withoutImage(node.content, index)) },
-    ]);
-  }
-
-  // A text change made from a menu: undoable, cursor kept if editing.
-  changeText(node, value) {
-    this.beginOp();
-    this.applyValue(node, value);
-  }
-
-  showBlockMenu(node, e, opts = {}) {
-    lastEditor = this;
-    const colors = el('div', 'menu-swatches');
-    for (const c of COLORS) {
-      const sw = el('button', `swatch sw-${c}`);
-      sw.title = c;
-      if (node.props[COLOR] === c) sw.classList.add('active');
-      sw.addEventListener('click', () => { closeMenu(); this.setProp(node, COLOR, c); });
-      colors.append(sw);
-    }
-    const none = el('button', 'swatch sw-none');
-    none.title = 'No colour';
-    none.addEventListener('click', () => { closeMenu(); this.setProp(node, COLOR, null); });
-    colors.append(none);
-
-    const heads = el('div', 'menu-headings');
-    const current = /^(#{1,6}) /.exec(stripStatus(node.content))?.[1].length || 0;
-    const headBtn = (label, title, level, active) => {
-      const b = el('button', 'head-btn' + (active ? ' active' : ''), label);
-      b.title = title;
-      b.addEventListener('click', () => { closeMenu(); this.setHeadingStyle(node, level); });
-      heads.append(b);
-    };
-    for (let i = 1; i <= 6; i++) headBtn(`H${i}`, `Heading ${i}`, i, current === i);
-    headBtn('HA', 'Auto heading (size by depth)', 'auto', node.props[HEADING] === 'true');
-    headBtn('H', 'Remove heading', 0, false);
-    heads.lastChild.classList.add('no-head');
-
-    // Text alignment: left is the default, so it clears the property.
-    const aligns = el('div', 'menu-headings menu-align');
-    const alignIcon = (lines) => `<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="${lines}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>`;
-    const ALIGN_ICONS = {
-      left: alignIcon('M3 5h14M3 10h9M3 15h12'),
-      center: alignIcon('M3 5h14M5.5 10h9M4 15h12'),
-      right: alignIcon('M3 5h14M8 10h9M5 15h12'),
-    };
-    const currentAlign = node.props[ALIGN] || 'left';
-    for (const a of ['left', 'center', 'right']) {
-      const b = el('button', 'head-btn' + (currentAlign === a ? ' active' : ''));
-      b.innerHTML = ALIGN_ICONS[a];
-      b.title = `Align ${a}`;
-      b.setAttribute('aria-label', `Align ${a}`);
-      b.addEventListener('click', () => { closeMenu(); this.setProp(node, ALIGN, a === 'left' ? null : a); });
-      aligns.append(b);
-    }
-
-    const entries = [
-      { element: colors },
-      { element: heads },
-      { element: aligns },
-      '-',
-      { label: 'Add timestamp', fn: () => this.addTimestamp(node) },
-      '-',
-      { label: 'Copy block ref', fn: () => { copyText(`((${node.id}))`); toast('Block ref copied'); } },
-      { label: 'Copy block URL', fn: () => { copyText(this.blockUrl(node)); toast('Block URL copied'); } },
-      { label: 'Copy / Export as…', fn: () => this.exportBlock(node) },
-      { label: 'Cut', fn: () => this.cut(node) },
-      { label: 'Delete block', fn: () => this.removeNode(node), danger: true },
-      '-',
-      { label: node.props[NUMBERED] === 'number' ? 'Remove number list' : 'Toggle number list', fn: () => this.toggleNumbered(node) },
-    ];
-    if (node.children.length) {
-      entries.push('-',
-        { label: 'Expand all', shortcut: 'Ctrl ↓', fn: () => this.setCollapsedDeep(node, false) },
-        { label: 'Collapse all', shortcut: 'Ctrl ↑', fn: () => this.setCollapsedDeep(node, true) });
-    }
-    showMenu(e.clientX, e.clientY, entries, opts);
-  }
-
-  // ---- floating format bar ----------------------------------------------------
   //
   // While a block is edited, a small bar floats just above it (or below it
   // when there is no room above, e.g. near the top of the window). Its
   // buttons never take focus, so the cursor and selection stay put.
-
-  showBar(node) {
-    if (!getSetting('formatBar')) return hideBar();
-    if (!bar) bar = makeBar();
-    bar.editor = this;
-    bar.node = node;
-    const code = /^```/.test(node.content);
-    bar.el.classList.toggle('bar-code', code); // no inline marks in code
-    const align = node.props[ALIGN] || 'left';
-    bar.align.innerHTML = ALIGN_SVG[align];
-    bar.align.title = `Text alignment: ${align} (click to change)`;
-    const color = node.props[COLOR];
-    bar.color.dataset.color = color || '';
-    bar.heading.textContent = (() => {
-      const h = /^(#{1,6}) /.exec(stripStatus(node.content))?.[1].length;
-      return h ? `H${h}` : node.props[HEADING] === 'true' ? 'HA' : 'H';
-    })();
-    document.body.append(bar.el);
-    positionBar();
-  }
-
-  // Runs a / command at the cursor, exactly as typing it would.
-  barSlash(cmd) {
-    const node = this.editing;
-    const ta = this.ta;
-    if (!node || !ta) return;
-    this.beginOp();
-    runSlash(this, node, ta, cmd, ta.selectionStart);
-    if (bar?.node === node) positionBar();
-  }
-
-  barAction(action, button) {
-    const node = this.editing;
-    const ta = this.ta;
-    if (!node || !ta) return;
-    const r = button.getBoundingClientRect();
-    const keep = { keepFocus: true };
-    switch (action) {
-      case 'bold': return this.formatText(node, ta, '**');
-      case 'italic': return this.formatText(node, ta, '_');
-      case 'strike': return this.formatText(node, ta, '~~');
-      case 'highlight': return this.formatText(node, ta, '==');
-      case 'code': {
-        const { selectionStart: a, selectionEnd: b } = ta;
-        this.beginOp();
-        if (a === b) return this.replaceText(node, ta, a, b, '``', 1);
-        const sel = ta.value.slice(a, b);
-        return this.replaceText(node, ta, a, b, `\`${sel}\``, 1, 1 + sel.length);
-      }
-      case 'link': {
-        const { selectionStart: a, selectionEnd: b } = ta;
-        const sel = ta.value.slice(a, b);
-        this.beginOp();
-        if (/^https?:\/\/\S+$/.test(sel)) return this.replaceText(node, ta, a, b, `[text](${sel})`, 1, 5);
-        const text = `[${sel || 'text'}](https://)`;
-        return sel ? this.replaceText(node, ta, a, b, text, sel.length + 3, text.length - 1) : this.replaceText(node, ta, a, b, text, 1, 5);
-      }
-      case 'heading': {
-        const entries = [1, 2, 3, 4, 5, 6].map((n) => ({ label: `Heading ${n}`, fn: () => this.setHeadingStyle(node, n) }));
-        entries.push({ label: 'Auto heading (size by depth)', fn: () => this.setHeadingStyle(node, 'auto') }, '-', { label: 'Normal text', fn: () => this.setHeadingStyle(node, 0) });
-        return showMenu(r.left, r.bottom, entries, keep);
-      }
-      case 'align': {
-        const order = ['left', 'center', 'right'];
-        const next = order[(order.indexOf(node.props[ALIGN] || 'left') + 1) % 3];
-        return this.setProp(node, ALIGN, next === 'left' ? null : next);
-      }
-      case 'color': {
-        const sw = el('div', 'menu-swatches');
-        for (const c of [...COLORS, null]) {
-          const b = el('button', c ? `swatch sw-${c}` : 'swatch sw-none');
-          b.title = c || 'No colour';
-          if ((node.props[COLOR] || null) === c) b.classList.add('active');
-          b.addEventListener('click', () => { closeMenu(); this.setProp(node, COLOR, c); });
-          sw.append(b);
-        }
-        return showMenu(r.left, r.bottom, [{ element: sw }], keep);
-      }
-      case 'status':
-        return showStatusPicker(r.left, r.bottom, statusOf(node.content)?.word, (word) => {
-          this.beginOp();
-          this.setMarker(node, word);
-        });
-      case 'math': {
-        const at = ta.selectionStart;
-        const span = mathSpans(ta.value).find((m) => m.start < at && at < m.end);
-        return this.openMath(node, span || null, span ? null : at);
-      }
-      case 'page': case 'blockref': {
-        // Selected text becomes the reference; otherwise start one and search.
-        const { selectionStart: a, selectionEnd: b } = ta;
-        const sel = ta.value.slice(a, b);
-        if (sel && action === 'page') {
-          this.beginOp();
-          return this.replaceText(node, ta, a, b, `[[${sel}]]`);
-        }
-        return this.barSlash(action);
-      }
-      case 'blocks': case 'media': case 'dates': {
-        const entries = BAR_MENUS[action].map((id) => {
-          if (id === '-') return '-';
-          const cmd = SLASH_COMMANDS.find((c) => c.id === id);
-          return { label: cmd.label, shortcut: `/${id}`, fn: () => this.barSlash(id) };
-        });
-        return showMenu(r.left, r.bottom, entries, keep);
-      }
-      case 'more': return this.showBlockMenu(node, { clientX: r.left, clientY: r.bottom }, keep);
-      default:
-    }
-  }
 
   // ---- saving and sync ---------------------------------------------------
 
@@ -1954,6 +1419,10 @@ export class PageEditor {
 }
 
 installSync(PageEditor);
+installFormatBar(PageEditor);
+installSecrets(PageEditor);
+installCodeBlocks(PageEditor);
+installBlockMenus(PageEditor);
 
 function pick(obj, ...keys) {
   const out = {};
@@ -1961,17 +1430,17 @@ function pick(obj, ...keys) {
   return out;
 }
 
-function isInside(node, ancestor) {
+export function isInside(node, ancestor) {
   for (let n = node.parent; n; n = n.parent) if (n === ancestor) return true;
   return false;
 }
 
-function autosize(ta) {
+export function autosize(ta) {
   ta.style.height = 'auto';
   ta.style.height = ta.scrollHeight + 'px';
 }
 
-function subtreeMarkdown(node, opts = {}) {
+export function subtreeMarkdown(node, opts = {}) {
   const lines = [];
   const walk = (n, depth) => {
     const ind = '\t'.repeat(depth);
@@ -1990,589 +1459,4 @@ function subtreeMarkdown(node, opts = {}) {
   };
   walk(node, 0);
   return lines.join('\n');
-}
-
-// ---- block references ((uuid)) ---------------------------------------------
-
-const refCache = new Map();
-
-function findLocalBlock(id) {
-  for (const ed of editors) {
-    const n = ed.findNode(id);
-    if (n) return { id, content: n.content, page_name: ed.name };
-  }
-  return null;
-}
-
-// Fills in {{embed}} boxes: a page's blocks or one block, read-only. Two
-// levels of embeds inside embeds are shown; deeper ones only link, so a page
-// that embeds itself can't loop.
-function hydrateEmbeds(container) {
-  container.querySelectorAll('.embed-box:not([data-loaded])').forEach(async (box) => {
-    box.dataset.loaded = '1';
-    const body = box.querySelector('.embed-body');
-    let depth = 0;
-    for (let n = box.parentElement; n; n = n.parentElement) if (n.classList?.contains('embed-body')) depth++;
-    if (depth >= 2) {
-      body.textContent = 'Embedded again inside an embed: open it to see it.';
-      return;
-    }
-    try {
-      if (box.dataset.embedPage) {
-        const data = await api.page(box.dataset.embedPage);
-        body.classList.remove('muted');
-        if (data.blocks?.length) body.innerHTML = renderOutline(data.blocks);
-        else body.innerHTML = '<span class="muted">This page is empty.</span>';
-      } else {
-        const b = await api.block(box.dataset.embedBlock);
-        if (!b) { body.textContent = 'That block no longer exists.'; return; }
-        body.classList.remove('muted');
-        body.innerHTML = renderContent(b.content);
-        const head = box.querySelector('.embed-head');
-        head.classList.remove('muted', 'small');
-        head.innerHTML = `<span class="muted small">Embedded block from </span>${pageLink(b.page_name)}`;
-      }
-      decorateCode(body);
-      hydrateRefs(body);
-    } catch {
-      body.textContent = 'Could not load it.';
-    }
-  });
-}
-
-export function hydrateRefs(container) {
-  hydrateEmbeds(container);
-  container.querySelectorAll('.block-ref[data-ref]:not([data-page])').forEach(async (span) => {
-    const id = span.dataset.ref;
-    let b = findLocalBlock(id);
-    if (!b) {
-      if (!refCache.has(id)) refCache.set(id, api.block(id).catch(() => null));
-      b = await refCache.get(id);
-      if (!b) refCache.delete(id);
-    }
-    if (!b) { span.classList.add('missing'); return; }
-    span.dataset.page = b.page_name;
-    span.title = b.page_name;
-    const text = stripStatus(b.content).split('\n')[0];
-    // One level only, so refs to refs can't loop.
-    span.innerHTML = renderContent(text, { inlineTags: true }).replace(/class="block-ref"/g, 'class="block-ref nested"');
-  });
-}
-
-export function clearRefCache() { refCache.clear(); }
-
-// ---- slash commands ----------------------------------------------------------
-
-const SLASH_COMMANDS = [
-  { id: 'link', label: 'Link', hint: '[text](url)' },
-  { id: 'page', label: 'Page reference', hint: '[[ ]]' },
-  { id: 'blockref', label: 'Block reference', hint: '(( ))' },
-  { id: 'code', label: 'Code block', hint: '```' },
-  { id: 'table', label: 'Table', hint: '| a | b |' },
-  { id: 'numbered', label: 'Numbered list' },
-  { id: 'h1', label: 'Heading 1', hint: '#' },
-  { id: 'h2', label: 'Heading 2', hint: '##' },
-  { id: 'h3', label: 'Heading 3', hint: '###' },
-  { id: 'quote', label: 'Quote line', hint: '>' },
-  { id: 'quoteblock', label: 'Quote block', hint: '#quote (block and children)' },
-  { id: 'encrypted', label: 'Encrypted block', hint: '#Encrypted (children are encrypted)' },
-  { id: 'tip', label: 'Tip', hint: 'admonition' },
-  { id: 'note', label: 'Note', hint: 'admonition' },
-  { id: 'important', label: 'Important', hint: 'admonition' },
-  { id: 'caution', label: 'Caution', hint: 'admonition' },
-  { id: 'warning', label: 'Warning', hint: 'admonition' },
-  { id: 'pinned', label: 'Pinned', hint: 'admonition' },
-  { id: 'image', label: 'Upload image', hint: 'png, jpg, gif, webp' },
-  { id: 'pdf', label: 'Upload PDF', hint: 'link or preview' },
-  { id: 'file', label: 'Upload file', hint: 'video, audio, documents…' },
-  { id: 'video', label: 'Embed video', hint: 'YouTube or Vimeo link' },
-  { id: 'today', label: 'Today', hint: "today's journal" },
-  { id: 'time', label: 'Current time', hint: 'e.g. 14:32' },
-  { id: 'timestamp', label: 'Timestamp', hint: "today's journal + time" },
-  { id: 'math', label: 'Math (LaTeX)', hint: '$$ … $$' },
-  { id: 'tomorrow', label: 'Tomorrow' },
-  { id: 'yesterday', label: 'Yesterday' },
-];
-
-// A bare "/" shows a short menu: common commands, then groups that open
-// with Enter or →. Typing anything searches every command (slashMatches).
-const SLASH_TOP = ['link', 'page', 'blockref', 'code', 'table', 'numbered', 'quote', 'math', 'encrypted'];
-const SLASH_GROUPS = [
-  { key: 'headings', label: 'Headings', ids: ['h1', 'h2', 'h3'] },
-  { key: 'boxes', label: 'Admonitions & quote block', ids: ['tip', 'note', 'important', 'caution', 'warning', 'pinned', 'quoteblock'] },
-  { key: 'media', label: 'Upload & embed', ids: ['image', 'pdf', 'file', 'video'] },
-  { key: 'dates', label: 'Dates & times', ids: ['today', 'tomorrow', 'yesterday', 'time', 'timestamp'] },
-  { key: 'status', label: 'Task status', ids: null }, // from Settings
-];
-
-function statusCommands() {
-  return getStatuses().map((s) => ({ id: `status:${s.word}`, label: s.label, hint: 'task status', word: s.word }));
-}
-
-function slashMenu(group) {
-  const byId = (id) => SLASH_COMMANDS.find((c) => c.id === id);
-  const row = (c) => ({ label: `${esc(c.label)}${c.hint ? `<span class="cmd-hint">${esc(c.hint)}</span>` : ''}`, value: c.id });
-  if (group) {
-    const g = SLASH_GROUPS.find((x) => x.key === group);
-    const cmds = g.ids ? g.ids.map(byId) : statusCommands();
-    return [{ label: `‹ ${esc(g.label)}`, value: 'back', cls: 'ac-back' }, ...cmds.map(row)];
-  }
-  return [
-    ...SLASH_TOP.map((id) => row(byId(id))),
-    ...SLASH_GROUPS.map((g) => {
-      const names = (g.ids ? g.ids.map((id) => byId(id).label) : statusCommands().map((c) => c.label));
-      const preview = names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : '');
-      return { label: `${esc(g.label)}<span class="cmd-hint">${esc(preview)} ›</span>`, value: `group:${g.key}`, cls: 'ac-group' };
-    }),
-  ];
-}
-
-function slashMatches(query) {
-  const q = query.toLowerCase();
-  // Task statuses come from Settings, so they are added each time.
-  const statusCmds = statusCommands();
-  const hit = (c) => c.id.startsWith(q) || c.label.toLowerCase().includes(q) || c.word?.toLowerCase().startsWith(q);
-  const first = (c) => c.id.startsWith(q) || c.label.toLowerCase().startsWith(q) || !!c.word?.toLowerCase().startsWith(q);
-  return [...SLASH_COMMANDS, ...statusCmds].filter(hit).sort((a, b) => first(b) - first(a));
-}
-
-function runSlash(editor, node, ta, cmd, at) {
-  // `at` is where the "/query" text was; it has already been removed.
-  const day = (offset) => { const d = new Date(); d.setDate(d.getDate() + offset); return `[[${journalName(d)}]]`; };
-  switch (cmd) {
-    case 'link': return editor.replaceText(node, ta, at, at, '[text](https://)', 1, 5);
-    case 'page':
-      editor.replaceText(node, ta, at, at, '[[]]', 2);
-      return updateAutocomplete(editor, node, ta);
-    case 'blockref':
-      editor.replaceText(node, ta, at, at, '(())', 2);
-      return updateAutocomplete(editor, node, ta);
-    case 'code': {
-      const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
-      editor.replaceText(node, ta, at, at, `${lead}\`\`\`\n\n\`\`\``, lead.length + 4);
-      const idx = findFences(node.content).findIndex((f) => f.start === at + lead.length);
-      return editor.openCodeEditor(node, Math.max(0, idx), 0);
-    }
-    case 'table': {
-      const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
-      const t = `${lead}| Column 1 | Column 2 |\n| --- | --- |\n|  |  |`;
-      return editor.replaceText(node, ta, at, at, t, lead.length + 2, lead.length + 10);
-    }
-    case 'tip': case 'note': case 'important': case 'caution': case 'warning': case 'pinned': {
-      const lead = at > 0 && ta.value[at - 1] !== '\n' ? '\n' : '';
-      const kind = cmd.toUpperCase();
-      return editor.replaceText(node, ta, at, at, `${lead}#+BEGIN_${kind}\n\n#+END_${kind}`, lead.length + kind.length + 9);
-    }
-    case 'encrypted': {
-      // This block becomes the readable label; the secret goes in a child.
-      const first = ta.value.split('\n')[0];
-      if (!ENCRYPTED_TAG.test(first)) {
-        const label = first.trim() ? `${first.trimEnd()} ` : 'Encrypted ';
-        editor.replaceText(node, ta, 0, first.length, `${label}#Encrypted`);
-      }
-      return editor.startSecretChild(node);
-    }
-    case 'quoteblock': {
-      const first = ta.value.split('\n')[0];
-      if (/(^|\s)#quote(\s|$)/i.test(first)) return;
-      const pos = first.length;
-      return editor.replaceText(node, ta, pos, pos, `${first.trim() ? ' ' : ''}#quote`, ta.selectionStart - pos);
-    }
-    case 'pdf':
-      return pickImages('application/pdf,.pdf').then((files) => { if (files.length) editor.insertImages(node, files, at); });
-    case 'file':
-      return pickImages('').then((files) => { if (files.length) editor.insertImages(node, files, at); });
-    case 'video':
-      return editor.replaceText(node, ta, at, at, '{{video }}', 8);
-    case 'numbered': return editor.toggleNumbered(node);
-    case 'h1': case 'h2': case 'h3': return editor.setHeading(node, Number(cmd[1]));
-    case 'quote': {
-      const { start } = lineAt(ta.value, at);
-      return editor.replaceText(node, ta, start, start, '> ', ta.selectionStart - start + 2);
-    }
-    case 'image':
-      return pickImages().then((files) => { if (files.length) editor.insertImages(node, files, at); });
-    case 'today': return editor.replaceText(node, ta, at, at, day(0));
-    case 'time': return editor.replaceText(node, ta, at, at, timeNow());
-    case 'timestamp': return editor.replaceText(node, ta, at, at, timestamp());
-    case 'math': {
-      // Inside an existing formula: edit it; otherwise build a new one here.
-      const span = mathSpans(ta.value).find((m) => m.start < at && at < m.end);
-      return editor.openMath(node, span || null, span ? null : at);
-    }
-    case 'tomorrow': return editor.replaceText(node, ta, at, at, day(1));
-    case 'yesterday': return editor.replaceText(node, ta, at, at, day(-1));
-    default:
-      if (cmd.startsWith('status:')) return editor.setMarker(node, cmd.slice(7));
-  }
-}
-
-// ---- autocomplete for [[pages]], ((blocks)) and /commands -------------------
-
-let ac = null;
-
-function closeAutocomplete() {
-  ac?.el.remove();
-  ac = null;
-}
-
-async function updateAutocomplete(editor, node, ta) {
-  const before = ta.value.slice(0, ta.selectionStart);
-  const page = /\[\[([^[\]\n]*)$/.exec(before);
-  const block = !page && /\(\(([^()\n]*)$/.exec(before);
-  const slash = !page && !block && !inFence(ta.value, ta.selectionStart) && /(?:^|\s)\/([\w-]*)$/.exec(before);
-  const tag = !page && !block && !slash && !inFence(ta.value, ta.selectionStart)
-    && /(?:^|\s)#([^\s#,.!?;:()[\]"'`+][^\s#,.!?;:()[\]"'`]*|)$/.exec(before);
-  if (!page && !block && !slash && !tag) return closeAutocomplete();
-  const query = (page || block || slash || tag)[1];
-  const kind = page ? 'page' : block ? 'block' : slash ? 'slash' : 'tag';
-  const seq = (ac?.seq || 0) + 1;
-
-  let items = [];
-  // An open slash group survives until something is typed after the "/".
-  const group = kind === 'slash' && !query && ac?.ta === ta && ac.kind === 'slash' ? ac.group || null : null;
-  if (kind === 'slash') {
-    items = query ? slashMatches(query).map((c) => ({
-      label: `${esc(c.label)}${c.hint ? `<span class="cmd-hint">${esc(c.hint)}</span>` : ''}`,
-      value: c.id,
-    })) : slashMenu(group);
-    if (!items.length) return closeAutocomplete(); // e.g. typing a path like /etc
-  }
-  if (!ac || ac.ta !== ta) {
-    closeAutocomplete();
-    const box = el('div', 'popup autocomplete');
-    document.body.append(box);
-    ac = { el: box, ta, editor, node, items: [], index: 0 };
-  }
-  ac.seq = seq;
-  ac.kind = kind;
-  ac.query = query;
-  ac.group = group;
-
-  if (kind === 'page') {
-    const q = query.toLowerCase();
-    const names = await getPageNames();
-    items = names
-      .filter((n) => n.toLowerCase().includes(q))
-      .sort((a, b) => (b.toLowerCase().startsWith(q) - a.toLowerCase().startsWith(q)) || a.length - b.length)
-      .slice(0, 8)
-      .map((n) => ({ label: esc(n), value: n }));
-    if (q && !names.some((n) => n.toLowerCase() === q)) items.push({ label: `New page: <b>${esc(query)}</b>`, value: query });
-  } else if (kind === 'tag') {
-    // Like Logseq: "New tag …" first, then existing pages that match.
-    const q = query.toLowerCase();
-    const names = await getPageNames();
-    const mark = (n) => {
-      const i = n.toLowerCase().indexOf(q);
-      return q && i >= 0 ? `${esc(n.slice(0, i))}<mark>${esc(n.slice(i, i + q.length))}</mark>${esc(n.slice(i + q.length))}` : esc(n);
-    };
-    const found = names
-      .filter((n) => !/^[A-Z][a-z]{2} \d{1,2}(st|nd|rd|th), \d{4}$/.test(n) && n.toLowerCase().includes(q))
-      .sort((a, b) => (b.toLowerCase().startsWith(q) - a.toLowerCase().startsWith(q)) || a.length - b.length)
-      .slice(0, 7)
-      .map((n) => ({ label: mark(n), value: n }));
-    items = q && !names.some((n) => n.toLowerCase() === q) ? [{ label: `New tag <b>${esc(query)}</b>`, value: query }, ...found] : found;
-    if (!q && !items.length) return closeAutocomplete();
-  } else if (kind === 'block' && query.trim().length >= 2) {
-    try {
-      const res = await api.search(query, 8);
-      items = res.blocks.filter((b) => b.id !== node.id).map((b) => ({
-        label: `${esc(b.content.slice(0, 90))}<small>${esc(b.page_name)}</small>`,
-        value: b.id,
-      }));
-    } catch { items = []; }
-  }
-  if (!ac || ac.seq !== seq) return;
-  if (!items.length) {
-    ac.el.innerHTML = `<div class="hint">${kind === 'page' ? 'Type a page name' : 'Type to search blocks'}</div>`;
-    ac.items = [];
-  } else {
-    ac.items = items;
-    ac.index = 0;
-    ac.el.replaceChildren(...items.map((it, i) => {
-      const row = el('div', `item${it.cls ? ` ${it.cls}` : ''}`);
-      row.innerHTML = it.label;
-      row.addEventListener('mousedown', (e) => { e.preventDefault(); ac.index = i; acceptAutocomplete(e.ctrlKey || e.metaKey); });
-      return row;
-    }));
-    if (kind === 'slash' && !query && !group) {
-      const foot = el('div', 'hint ac-foot');
-      foot.innerHTML = 'Type to search every command · <kbd>→</kbd> opens a group';
-      ac.el.append(foot);
-    }
-    if (kind === 'tag') {
-      const foot = el('div', 'hint ac-foot');
-      foot.innerHTML = '<kbd>Ctrl</kbd> <kbd>⏎</kbd> to put the tag here instead of at the end of the line';
-      ac.el.append(foot);
-    }
-    highlight();
-  }
-  const r = ta.getBoundingClientRect();
-  ac.el.style.left = `${r.left + window.scrollX}px`;
-  ac.el.style.top = `${r.bottom + window.scrollY + 4}px`;
-}
-
-function highlight() {
-  [...ac.el.querySelectorAll('.item')].forEach((c, i) => c.classList.toggle('active', i === ac.index));
-}
-
-function handleAutocompleteKey(e) {
-  if (!ac) return false;
-  if (e.key === 'Escape') { e.preventDefault(); closeAutocomplete(); return true; }
-  if (!ac.items.length) return false;
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    e.preventDefault();
-    ac.index = (ac.index + (e.key === 'ArrowDown' ? 1 : -1) + ac.items.length) % ac.items.length;
-    highlight();
-    return true;
-  }
-  if (e.key === 'Enter' || e.key === 'Tab') {
-    e.preventDefault();
-    acceptAutocomplete(e.ctrlKey || e.metaKey);
-    return true;
-  }
-  if (ac.kind === 'slash' && e.key === 'ArrowRight' && ac.items[ac.index]?.value.startsWith('group:')) {
-    e.preventDefault();
-    openSlashGroup(ac.items[ac.index].value.slice(6));
-    return true;
-  }
-  if (ac.kind === 'slash' && e.key === 'ArrowLeft' && ac.group) {
-    e.preventDefault();
-    openSlashGroup(null);
-    return true;
-  }
-  return false;
-}
-
-// Shows one group of the bare "/" menu (null: back to the top).
-function openSlashGroup(key) {
-  if (!ac) return;
-  const { editor, node, ta } = ac;
-  const from = ac.group;
-  ac.group = key;
-  updateAutocomplete(editor, node, ta).then(() => {
-    // Coming back highlights the group that was open.
-    if (!key && from && ac) {
-      const i = ac.items.findIndex((it) => it.value === `group:${from}`);
-      if (i >= 0) { ac.index = i; highlight(); }
-    } else if (key && ac?.items.length > 1) {
-      ac.index = 1;
-      highlight();
-    }
-  });
-}
-
-function acceptAutocomplete(inline = false) {
-  const { ta, editor, node, kind, query } = ac;
-  const item = ac.items[ac.index];
-  if (!item) return;
-  if (kind === 'slash' && item.value.startsWith('group:')) return openSlashGroup(item.value.slice(6));
-  if (kind === 'slash' && item.value === 'back') return openSlashGroup(null);
-  const pos = ta.selectionStart;
-  closeAutocomplete();
-  if (kind === 'tag') {
-    editor.beginOp();
-    const name = item.value;
-    const token = /^[^\s#,.!?;:()[\]"'`+][^\s#,.!?;:()[\]"'`]*$/.test(name) ? `#${name}` : `#[[${name}]]`;
-    const at = pos - query.length - 1; // where "#query" starts
-    const v = ta.value;
-    const firstEnd = v.indexOf('\n') === -1 ? v.length : v.indexOf('\n');
-    // Default: the tag goes to the end of the first line (shown on the right).
-    if (inline || v.startsWith('```') || at > firstEnd) {
-      const space = /^\s/.test(v.slice(pos)) ? '' : ' ';
-      editor.replaceText(node, ta, at, pos, token + space, token.length + space.length);
-      return;
-    }
-    const lead = at > 0 && v[at - 1] === ' ' ? 1 : 0;
-    let first = v.slice(0, at - lead) + v.slice(pos, firstEnd);
-    const has = new RegExp(`(^|\\s)${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|$)`, 'i').test(first);
-    if (!has) first = first.trimEnd() + (first.trim() ? ' ' : '') + token;
-    ta.value = first + v.slice(firstEnd);
-    const caret = at - lead;
-    ta.setSelectionRange(caret, caret);
-    editor.setContent(node, ta.value);
-    autosize(ta);
-    return;
-  }
-  if (kind === 'slash') {
-    editor.beginOp();
-    const at = pos - query.length - 1; // remove "/query"
-    editor.replaceText(node, ta, at, pos, '');
-    runSlash(editor, node, ta, item.value, at);
-    return;
-  }
-  const close = kind === 'page' ? ']]' : '))';
-  const start = pos - query.length;
-  const rest = ta.value.slice(pos).startsWith(close) ? ta.value.slice(pos + 2) : ta.value.slice(pos);
-  const insert = item.value + close;
-  ta.value = ta.value.slice(0, start) + insert + rest;
-  const caret = start + insert.length;
-  ta.setSelectionRange(caret, caret);
-  editor.setContent(node, ta.value);
-  autosize(ta);
-}
-
-// ---- small popup menu --------------------------------------------------------
-
-// entries: [label, fn, cls] arrays, {label, fn, shortcut, danger} objects,
-// {element} for custom rows, or '-' for a separator.
-// A small menu of coloured status badges; onPick(word or null).
-// ---- format bar (one for the whole page; follows the block being edited) ----
-
-let bar = null;
-const barIcon = (d, extra = '') => `<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>${extra}</svg>`;
-const ALIGN_SVG = {
-  left: barIcon('M3 5h14M3 10h9M3 15h12'),
-  center: barIcon('M3 5h14M5.5 10h9M4 15h12'),
-  right: barIcon('M3 5h14M8 10h9M5 15h12'),
-};
-// [action, label (HTML), title, group]; group "mark" is hidden in code blocks.
-// Everything in the / menu is reachable here: common things as buttons, the
-// rest in small menus that show each item's slash command.
-const BAR_BUTTONS = [
-  ['bold', '<b>B</b>', 'Bold (Ctrl+B)', 'mark'],
-  ['italic', '<i>I</i>', 'Italic (Ctrl+I)', 'mark'],
-  ['strike', '<s>S</s>', 'Strikethrough ~~text~~', 'mark'],
-  ['highlight', '<mark>H</mark>', 'Highlight ==text==', 'mark'],
-  ['code', barIcon('M7 6l-4 4 4 4M13 6l4 4-4 4'), 'Inline code `text`', 'mark'],
-  ['link', barIcon('M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-.9.9M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l.9-.9'), 'Link [text](url)  /link', 'mark'],
-  ['page', '<span class="bar-text">[[ ]]</span>', 'Page reference [[ ]]  /page', 'mark'],
-  ['blockref', '<span class="bar-text">(( ))</span>', 'Block reference (( ))  /blockref', 'mark'],
-  '|',
-  ['heading', 'H', 'Heading  /h1 /h2 /h3'],
-  ['blocks', `${barIcon('M3 4h14v4H3zM3 12h6v4H3zM12 12h5v4h-5z')}<span class="bar-caret">▾</span>`, 'Insert: code block, table, list, quote, encrypted block, admonitions'],
-  ['media', `${barIcon('M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.2 1.2 0 0 1-1.7-1.7l5.6-5.6')}<span class="bar-caret">▾</span>`, 'Upload an image, PDF or file, or embed a video'],
-  ['dates', `${barIcon('M4 5h12v11H4zM4 8.5h12M7.5 3v3M12.5 3v3')}<span class="bar-caret">▾</span>`, 'Dates and times: today, tomorrow, yesterday, current time, timestamp'],
-  ['status', barIcon('M4 10.5l3.5 3.5L16 5.5'), 'Task status (Backlog, Todo, Doing…)'],
-  ['math', '∑', 'Maths (LaTeX) builder  /math'],
-  '|',
-  ['align', '', 'Text alignment'],
-  ['color', '<span class="bar-swatch"></span>', 'Block colour'],
-  ['more', '⋯', 'More (block menu)'],
-];
-
-// Menu groups: slash command ids, '-' for a divider.
-const BAR_MENUS = {
-  blocks: ['code', 'table', 'numbered', 'quote', 'quoteblock', 'encrypted', '-', 'tip', 'note', 'important', 'caution', 'warning', 'pinned'],
-  media: ['image', 'pdf', 'file', 'video'],
-  dates: ['today', 'tomorrow', 'yesterday', '-', 'time', 'timestamp'],
-};
-
-function makeBar() {
-  const root = el('div', 'format-bar');
-  root.setAttribute('role', 'toolbar');
-  root.setAttribute('aria-label', 'Formatting');
-  const b = { el: root, editor: null, node: null };
-  for (const def of BAR_BUTTONS) {
-    if (def === '|') { root.append(el('span', 'bar-sep')); continue; }
-    const [action, label, title, group] = def;
-    const btn = el('button', `bar-btn${group ? ` bar-${group}` : ''}`);
-    btn.type = 'button';
-    btn.innerHTML = label;
-    btn.title = title;
-    btn.setAttribute('aria-label', title);
-    btn.dataset.action = action;
-    btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the cursor
-    btn.addEventListener('click', () => b.editor?.barAction(action, btn));
-    root.append(btn);
-    if (action === 'align') b.align = btn;
-    if (action === 'color') b.color = btn;
-    if (action === 'heading') b.heading = btn;
-  }
-  return b;
-}
-
-function hideBar() {
-  if (!bar) return;
-  bar.el.remove();
-  bar.editor = null;
-  bar.node = null;
-}
-
-// Above the block if it fits below the top of the window, else below it;
-// a block taller than the window keeps the bar pinned at the bottom edge.
-function positionBar() {
-  if (!bar?.node?.contentEl || !bar.el.isConnected) return;
-  const r = bar.node.contentEl.getBoundingClientRect();
-  const h = bar.el.offsetHeight;
-  const w = bar.el.offsetWidth;
-  const gap = 6;
-  // Below the fixed header, not under it.
-  const header = document.getElementById('topbar')?.getBoundingClientRect();
-  const minTop = (header && header.bottom > 0 ? header.bottom : 0) + 6;
-  const maxTop = window.innerHeight - h - 8;
-  let top;
-  if (r.top - h - gap >= minTop) top = r.top - h - gap;
-  else if (r.bottom + gap <= maxTop) top = r.bottom + gap;
-  else top = maxTop;
-  // Stay left of the side pane when it is open (the bar scrolls if narrow).
-  const pane = document.getElementById('pane');
-  const right = pane && !pane.classList.contains('hidden') ? pane.getBoundingClientRect().left : window.innerWidth;
-  bar.el.style.maxWidth = `${Math.max(160, right - 16)}px`;
-  const left = Math.max(8, Math.min(r.left - 4, right - Math.min(w, right - 16) - 8));
-  const offscreen = r.bottom < 0 || r.top > window.innerHeight;
-  bar.el.style.top = `${Math.round(top)}px`;
-  bar.el.style.left = `${Math.round(left)}px`;
-  bar.el.style.visibility = offscreen ? 'hidden' : '';
-  bar.el.classList.toggle('below', top > r.top);
-}
-
-let barFrame = 0;
-const queueBar = () => {
-  if (!bar?.node || barFrame) return;
-  barFrame = requestAnimationFrame(() => { barFrame = 0; positionBar(); });
-};
-window.addEventListener('scroll', queueBar, { capture: true, passive: true });
-window.addEventListener('resize', queueBar);
-
-export function showStatusPicker(x, y, current, onPick, opts = { keepFocus: true }) {
-  const entries = getStatuses().map((st) => {
-    const item = el('div', 'item status-item');
-    const b = el('span', 'status-badge', st.label);
-    b.setAttribute('style', statusStyle(st));
-    item.append(b);
-    if (st.word === current) item.append(el('span', 'check', '✓'));
-    item.addEventListener('click', () => { closeMenu(); onPick(st.word); });
-    return { element: item };
-  });
-  const none = el('div', 'item');
-  none.append(el('span', 'muted', 'No status'));
-  none.addEventListener('click', () => { closeMenu(); onPick(null); });
-  showMenu(x, y, [...entries, '-', { element: none }], opts);
-}
-
-export function showMenu(x, y, entries, opts = {}) {
-  closeMenu();
-  const menu = el('div', 'popup menu');
-  // Opened from the format bar: clicks must not end editing.
-  if (opts.keepFocus) menu.addEventListener('mousedown', (e) => e.preventDefault());
-  for (const entry of entries) {
-    if (entry === '-') { menu.append(el('div', 'menu-sep')); continue; }
-    if (entry.element) { menu.append(entry.element); continue; }
-    const [label, fn, cls] = Array.isArray(entry) ? entry : [entry.label, entry.fn, entry.danger ? 'danger' : ''];
-    const item = el('div', 'item' + (cls ? ` ${cls}` : ''));
-    item.append(el('span', '', label));
-    if (entry.shortcut) item.append(el('kbd', '', entry.shortcut));
-    item.addEventListener('click', () => { closeMenu(); fn(); });
-    menu.append(item);
-  }
-  menu.style.position = 'fixed';
-  document.body.append(menu);
-  const w = menu.offsetWidth;
-  const h = menu.offsetHeight;
-  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - w - 8))}px`;
-  menu.style.top = `${y + h + 14 > window.innerHeight ? Math.max(8, y - h - 6) : y + 6}px`;
-  setTimeout(() => {
-    document.addEventListener('mousedown', onOutside);
-    window.addEventListener('scroll', closeMenu, { once: true, capture: true });
-  }, 0);
-}
-
-function onOutside(e) {
-  if (!e.target.closest('.menu')) closeMenu();
-}
-
-export function closeMenu() {
-  document.querySelector('.menu')?.remove();
-  document.removeEventListener('mousedown', onOutside);
 }

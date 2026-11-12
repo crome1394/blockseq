@@ -43,7 +43,14 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/assets.rs` | Image and PDF uploads: type detection from file bytes, safe names, saving, listing |
 | `web/index.html`, `web/app.css` | Page shell and styles (light/dark via `prefers-color-scheme`) |
 | `web/js/app.js` | Hash router, views (journals, page, all pages), search box, live updates, unload handling |
-| `web/js/editor.js` | `PageEditor` outliner, `[[`/`((` autocomplete, block-ref loading, popup menu |
+| `web/js/editor.js` | `PageEditor` outliner: the block tree, rendering, editing keys, selection, undo |
+| `web/js/secrets.js` | `#Encrypted` blocks in the editor (sealing, opening, locked display), installed on `PageEditor` |
+| `web/js/codeblocks.js` | Editing a code block in place, installed on `PageEditor` |
+| `web/js/blockmenus.js` | Block, image, file and PDF menus, installed on `PageEditor` |
+| `web/js/formatbar.js` | The floating format bar, installed on `PageEditor` |
+| `web/js/autocomplete.js` | Slash menu and `[[`/`((`/`/` suggestions |
+| `web/js/refs.js` | Block references and embeds: loading and caching |
+| `web/js/menus.js` | Popup menu and task status picker |
 | `web/js/sync.js` | Saving and sync, installed on `PageEditor`: autosave with version check, retry policy, conflicts and the diff, keepalive on close |
 | `web/js/drafts.js` | Local drafts in `localStorage` (one per tab, Web Lock liveness) and the keepalive size limit |
 | `web/js/signin.js` | Sign out (header button, Settings → Security) |

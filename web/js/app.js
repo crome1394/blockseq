@@ -5,7 +5,9 @@ import { api, clientId, explain, invalidatePageNames, getPageNames, signingOut }
 import { signOut, showSignOut } from './signin.js';
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
-import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
+import { PageEditor, editors, activeEditor } from './editor.js';
+import { hydrateRefs, clearRefCache } from './refs.js';
+import { showMenu, showStatusPicker } from './menus.js';
 import { toast, updateStatus, setConnected, setLivePaused, openModal, closeModal, copyText, noteSaved, resetSaved } from './ui.js';
 import { decorateCode } from './code.js';
 import { onSettingChange, getSetting, setSetting } from './settings.js';
