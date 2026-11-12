@@ -26,7 +26,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
 | `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import, rename (checkpoints and holds the open database while the folder moves; old handles are marked `retired` so they stop writing Markdown under the old name). Main's display name is `main_name` in `config.json` |
 | `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key). `load` errors on a damaged file (falls back to `config.json.bak`), `save` keeps the previous version as `.bak` and writes durably (`write_durable`: unique temp file, fsync, rename, fsync folder). All API changes go through `api::update_config` under the settings lock |
-| `src/auth.rs` | Optional password (basic auth) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
+| `src/auth.rs` | Optional password for the local port (basic auth, SHA-256 compare) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; the full map drops the oldest client; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
 | `src/guard.rs` | Outermost middleware: refuses cross-site non-GET requests (`Sec-Fetch-Site`, else `Origin` vs `Host`; `X-Forwarded-Host` only when the TCP peer is in `BLOCKSEQ_TRUSTED_PROXIES`) and host names outside `BLOCKSEQ_HOSTS`; adds the CSP (HTML only), `X-Frame-Options`, `Referrer-Policy`, `nosniff` |
 | `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
@@ -281,8 +281,12 @@ CRDTs (conflict-free merge structures):
   Page names go in a query parameter rather than the path, so names containing
   `/` (Logseq namespaces) work.
 - **Password (optional).** If `BLOCKSEQ_PASSWORD` is set, a middleware
-  requires HTTP basic auth on every route (any username, constant-time
-  comparison). Browsers cache the credentials, so `EventSource` works as well.
+  requires HTTP basic auth on every route (any username). Both passwords are
+  hashed with SHA-256 and the 32 bytes are compared. Leave the port on
+  localhost; the password people type belongs on the TLS proxy. Do not publish
+  port 3030. The wrong-password map keeps at most 4096 clients and drops the
+  oldest when it is full. Browsers cache the credentials, so `EventSource`
+  works as well.
 - **Static files** are embedded with `rust-embed`. Debug builds read `web/`
   from disk, so UI edits only need a browser refresh. Release builds bake the
   files in.

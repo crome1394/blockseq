@@ -61,9 +61,9 @@ Settings are environment variables (on a server: `/etc/blockseq.env`):
 
 | Variable            | Default        | Meaning                                         |
 |---------------------|----------------|-------------------------------------------------|
-| `BLOCKSEQ_ADDR`     | `127.0.0.1:3030` | Listen address. A non-local address is refused unless `BLOCKSEQ_PASSWORD` or `BLOCKSEQ_HOSTS` is set |
+| `BLOCKSEQ_ADDR`     | `127.0.0.1:3030` | Listen address. Leave this on localhost and do not publish port 3030. A non-local address is refused unless `BLOCKSEQ_PASSWORD` or `BLOCKSEQ_HOSTS` is set |
 | `BLOCKSEQ_DATA`     | `./data`       | Where the workbooks are stored                  |
-| `BLOCKSEQ_PASSWORD` | unset          | If set, the browser asks for this password      |
+| `BLOCKSEQ_PASSWORD` | unset          | Password for the local port only. The password people type belongs on the TLS proxy (Caddy) |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `2048`     | Largest file you can upload, in MB              |
 | `BLOCKSEQ_HOSTS`    | unset          | Host names to answer to, comma-separated (IP addresses and localhost always work). Blocks "DNS rebinding" by other websites; set it to your HTTPS name, e.g. `notes.example.com` |
 | `BLOCKSEQ_TRUSTED_PROXIES` | unset   | Your reverse proxy's IP address(es), comma-separated; the wrong-password limit then sees each real client instead of the proxy |
@@ -144,17 +144,19 @@ encryption API on secure pages). Caddy can run on the same machine or anywhere
 that reaches it (a separate container, a router or firewall with a Caddy
 package).
 
-A minimal `Caddyfile`:
+A minimal `Caddyfile`, with Caddy on the same machine as Blockseq:
 
 ```
 notes.example.com {
-    reverse_proxy 10.0.0.20:3030
+    reverse_proxy 127.0.0.1:3030
 }
 ```
 
-- Replace `10.0.0.20` with Blockseq's address (or `localhost` if Caddy runs on
-  the same machine). Nothing else is needed: Caddy passes Blockseq's
-  live-update stream (server-sent events) through without buffering.
+- Leave Blockseq on `127.0.0.1:3030`. Do not publish port 3030. The password
+  people type belongs on Caddy (`basic_auth`). `BLOCKSEQ_PASSWORD` only covers
+  programs on this machine that connect to the local port.
+- Caddy passes Blockseq's live-update stream (server-sent events) through
+  without buffering.
 - **Certificates.** For a name reachable from the internet, Caddy gets a
   certificate automatically. For a name that only exists inside your network,
   use the DNS-01 challenge with your DNS provider's Caddy module (Let's Encrypt
@@ -172,11 +174,9 @@ notes.example.com {
   To find Caddy's address, open the site through Caddy and run
   `ss -tn state established '( sport = :3030 )'` on the Blockseq server; it's
   the address in the right-hand column (without the port).
-- **Restrict who can reach it.** If the name is reachable from the internet,
-  set `BLOCKSEQ_PASSWORD` (or add authentication in Caddy). Inside your
-  network, you can also limit the site to your subnets with Caddy's
-  `remote_ip` matcher, and stop clients bypassing Caddy by allowing port 3030
-  only from Caddy's address (e.g. the Proxmox firewall).
+- **Restrict who can reach it.** Port 3030 stays on localhost, so Caddy is
+  the only door. Put the login on Caddy. Inside your network you can also
+  limit the site to your subnets with Caddy's `remote_ip` matcher.
 
 **Over a VPN (e.g. Tailscale or WireGuard):** devices on the VPN reach Caddy
 like any other client once the VPN routes to its network and resolves the

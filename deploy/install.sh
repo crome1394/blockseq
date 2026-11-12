@@ -30,13 +30,14 @@ install -m 644 "$HERE/blockseq.service" /etc/systemd/system/blockseq.service
 
 if [[ ! -f /etc/blockseq.env ]]; then
   cat > /etc/blockseq.env <<'EOF'
-# Listen address. The default is this machine only. To reach Blockseq from
-# other devices, set a password or BLOCKSEQ_HOSTS below, then change this
-# to 0.0.0.0:3030. The server refuses a non-local address when both are unset.
+# Listen address. Leave this on localhost and reach Blockseq through a TLS
+# proxy on this machine (Caddy). Do not publish port 3030. The server refuses
+# a non-local address when neither BLOCKSEQ_PASSWORD nor BLOCKSEQ_HOSTS is set.
 BLOCKSEQ_ADDR=127.0.0.1:3030
-# Require a password (browser login prompt, any username). Required, along
-# with or instead of BLOCKSEQ_HOSTS, before listening beyond localhost.
-#BLOCKSEQ_PASSWORD=change-me
+# Optional password for this local port (browser login prompt, any username).
+# The password people type belongs on the TLS proxy. This does not make it
+# safe to listen beyond localhost.
+#BLOCKSEQ_PASSWORD=
 # Host names Blockseq answers to (IP addresses and localhost always work).
 # Blocks "DNS rebinding" tricks from other websites. Example:
 #BLOCKSEQ_HOSTS=blockseq.example.com

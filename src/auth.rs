@@ -20,12 +20,15 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
 
 use crate::AppState;
 
 const WINDOW: Duration = Duration::from_secs(15 * 60);
 const MAX_WRONG: usize = 10;
-/// Clients remembered at most (old entries are dropped first).
+/// Clients remembered at most. Expired entries go first. If the map is still
+/// full, the oldest client is dropped so a new one can be recorded. The map
+/// is never cleared wholesale, which would forget every lockout.
 const MAX_CLIENTS: usize = 4096;
 
 struct Attempts {
@@ -56,10 +59,15 @@ impl Limiter {
 
     pub fn failed(&self, ip: IpAddr, password: &str, now: Instant) {
         let mut clients = self.clients.lock();
-        if clients.len() >= MAX_CLIENTS {
+        // An address already stored is updated in place, so a full map does
+        // not have to drop someone else's lockout.
+        if !clients.contains_key(&ip) && clients.len() >= MAX_CLIENTS {
             clients.retain(|_, a| now.duration_since(a.since) < WINDOW);
             if clients.len() >= MAX_CLIENTS {
-                clients.clear();
+                let oldest = clients.iter().min_by_key(|(_, a)| a.since).map(|(ip, _)| *ip);
+                if let Some(oldest) = oldest {
+                    clients.remove(&oldest);
+                }
             }
         }
         let a = clients.entry(ip).or_insert_with(|| Attempts { since: now, wrong: HashSet::new() });
@@ -110,8 +118,16 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAdd
         .unwrap_or(peer)
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+/// True when the two passwords are the same. Both are hashed first, then all
+/// 32 bytes are compared, so a different length does not return early.
+fn passwords_match(given: &str, expected: &str) -> bool {
+    let a = Sha256::digest(given.as_bytes());
+    let b = Sha256::digest(expected.as_bytes());
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// The password given in a basic-auth header (any user name), if any.
@@ -145,7 +161,7 @@ pub async fn require_password(State(s): State<Arc<AppState>>, req: Request, next
             .into_response();
     }
     match given_password(req.headers()) {
-        Some(p) if constant_time_eq(p.as_bytes(), expected.as_bytes()) => {
+        Some(p) if passwords_match(&p, expected) => {
             s.limiter.succeeded(ip);
             next.run(req).await
         }
@@ -183,6 +199,45 @@ mod tests {
         assert!(l.locked_for(other, t0).is_none());
         // After the window it may try again.
         assert!(l.locked_for(ip, t0 + WINDOW + Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    fn a_full_lockout_map_drops_the_oldest_client() {
+        let l = Limiter::default();
+        let t0 = Instant::now();
+        let ip_at = |i: u32| IpAddr::from([10, (i >> 16) as u8, (i >> 8) as u8, i as u8]);
+        for i in 0..u32::try_from(MAX_CLIENTS).unwrap() {
+            let when = t0 + Duration::from_millis(u64::from(i));
+            let ip = ip_at(i);
+            for n in 0..MAX_WRONG {
+                l.failed(ip, &format!("pw{n}"), when);
+            }
+        }
+        let later = t0 + Duration::from_secs(30);
+        let oldest = ip_at(0);
+        let newest = ip_at(u32::try_from(MAX_CLIENTS).unwrap() - 1);
+        assert!(l.locked_for(oldest, later).is_some());
+        assert!(l.locked_for(newest, later).is_some());
+        // The newest client is already stored: another wrong password must
+        // not push the oldest one out.
+        l.failed(newest, "one more", later);
+        assert!(l.locked_for(oldest, later).is_some());
+        let extra: IpAddr = "192.0.2.1".parse().unwrap();
+        for n in 0..MAX_WRONG {
+            l.failed(extra, &format!("pw{n}"), later);
+        }
+        assert!(l.locked_for(oldest, later).is_none());
+        assert!(l.locked_for(newest, later).is_some());
+        assert!(l.locked_for(extra, later).is_some());
+    }
+
+    #[test]
+    fn password_compare_checks_the_whole_hash() {
+        assert!(passwords_match("secret", "secret"));
+        assert!(passwords_match("", ""));
+        assert!(!passwords_match("secret", "secre"));
+        assert!(!passwords_match("secret", "secret "));
+        assert!(!passwords_match("", "x"));
     }
 
     #[test]
