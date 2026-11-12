@@ -861,10 +861,23 @@ pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) 
                         return Err(forbidden());
                     }
                 }
-                // Setups from before proof_hash: the (public) check is all
-                // there is, once, to add the proof_hash.
+                // Setups from before proof_hash: `check` is public (GET returns
+                // it), so it may only attach a proof. The wraps stay as they
+                // are; changing them needs the proof, once one is stored.
                 None => {
                     if !same_secret(body.check.as_deref().unwrap_or_default(), &existing.check) {
+                        return Err(forbidden());
+                    }
+                    if body.encryption.proof_hash.is_none()
+                        || body.encryption.salt != existing.salt
+                        || body.encryption.iterations != existing.iterations
+                        || body.encryption.pw_iv != existing.pw_iv
+                        || body.encryption.pw_data != existing.pw_data
+                        || body.encryption.rk_salt != existing.rk_salt
+                        || body.encryption.rk_iterations != existing.rk_iterations
+                        || body.encryption.rk_iv != existing.rk_iv
+                        || body.encryption.rk_data != existing.rk_data
+                    {
                         return Err(forbidden());
                     }
                 }

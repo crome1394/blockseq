@@ -160,11 +160,18 @@ export async function changePassword({ current, recovery }, password) {
   const cfg = await fetchConfig();
   if (!cfg) throw new Error('No encryption password is set yet');
   const raw = recovery ? await rawFromRecovery(cfg, recovery) : await rawFromPassword(cfg, current);
+  const proof = await proofOf(raw);
+  // Older setups have no proof yet. Attach one without touching the wraps
+  // (the public check is not allowed to replace them), then change the password.
+  let stored = cfg;
+  if (!cfg.proof_hash) {
+    stored = { ...cfg, proof_hash: await hashOfProof(proof) };
+    await saveConfig(stored, { check: cfg.check });
+  }
   const salt = rand(16);
   const pw = await wrap(await derive(password, salt, PW_ROUNDS), raw);
-  const proof = await proofOf(raw);
-  const next = { ...cfg, salt: b64(salt), iterations: PW_ROUNDS, pw_iv: pw.iv, pw_data: pw.data, proof_hash: cfg.proof_hash || await hashOfProof(proof) };
-  await saveConfig(next, cfg.proof_hash ? { proof } : { check: cfg.check });
+  const next = { ...stored, salt: b64(salt), iterations: PW_ROUNDS, pw_iv: pw.iv, pw_data: pw.data, proof_hash: stored.proof_hash };
+  await saveConfig(next, { proof });
   key = await importKey(raw);
   touch();
   announce('blockseq:unlocked');
