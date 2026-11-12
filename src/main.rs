@@ -1,15 +1,15 @@
 //! Blockseq: a self-hosted, Logseq-style outliner.
 //!
 //! Configuration (environment variables):
-//!   BLOCKSEQ_ADDR      listen address            (default 0.0.0.0:3030)
-//!   BLOCKSEQ_DATA      data directory            (default ./data); holds the
+//!   `BLOCKSEQ_ADDR`      listen address            (default 0.0.0.0:3030)
+//!   `BLOCKSEQ_DATA`      data directory            (default ./data); holds the
 //!                      "Main" workbook (database, Markdown mirror, assets/),
 //!                      other workbooks in workbooks/<name>/, and config.json
-//!   BLOCKSEQ_PASSWORD  require this password via HTTP basic auth (optional)
-//!   BLOCKSEQ_MAX_UPLOAD_MB  largest file upload in MB (default 2048)
-//!   BLOCKSEQ_TRUSTED_PROXIES  reverse proxy addresses whose X-Forwarded-For
+//!   `BLOCKSEQ_PASSWORD`  require this password via HTTP basic auth (optional)
+//!   `BLOCKSEQ_MAX_UPLOAD_MB`  largest file upload in MB (default 2048)
+//!   `BLOCKSEQ_TRUSTED_PROXIES`  reverse proxy addresses whose X-Forwarded-For
 //!                      is used for the wrong-password limit (optional)
-//!   BLOCKSEQ_HOSTS     host names to serve, comma-separated (optional; IP
+//!   `BLOCKSEQ_HOSTS`     host names to serve, comma-separated (optional; IP
 //!                      addresses and localhost always work). Protects
 //!                      against DNS rebinding when no password is set.
 
@@ -47,11 +47,11 @@ pub struct AppState {
     pub config: RwLock<config::Config>,
     pub events: broadcast::Sender<String>,
     pub password: Option<String>,
-    /// Largest upload accepted, in bytes (BLOCKSEQ_MAX_UPLOAD_MB).
+    /// Largest upload accepted, in bytes (`BLOCKSEQ_MAX_UPLOAD_MB`).
     pub max_upload: u64,
-    /// Host names served (BLOCKSEQ_HOSTS); empty = any.
+    /// Host names served (`BLOCKSEQ_HOSTS`); empty = any.
     pub allowed_hosts: Vec<String>,
-    /// Reverse proxies whose X-Forwarded-For is believed (BLOCKSEQ_TRUSTED_PROXIES).
+    /// Reverse proxies whose X-Forwarded-For is believed (`BLOCKSEQ_TRUSTED_PROXIES`).
     pub trusted_proxies: Vec<std::net::IpAddr>,
     /// Wrong-password limit per client.
     pub limiter: auth::Limiter,
@@ -61,10 +61,10 @@ impl AppState {
     /// Tells every open tab about a change in a workbook.
     pub fn notify(&self, wb: &workbooks::Workbook, mut event: serde_json::Value) {
         event["wb"] = serde_json::Value::String(wb.id.clone());
-        self.notify_all(event);
+        self.notify_all(&event);
     }
 
-    pub fn notify_all(&self, event: serde_json::Value) {
+    pub fn notify_all(&self, event: &serde_json::Value) {
         // No receivers just means no other tab is open.
         let _ = self.events.send(event.to_string());
     }
@@ -138,7 +138,7 @@ async fn shutdown_signal(state: Arc<AppState>) {
     });
 }
 
-/// Data folder for the terminal commands. BLOCKSEQ_DATA if set; otherwise
+/// Data folder for the terminal commands. `BLOCKSEQ_DATA` if set; otherwise
 /// the installed service's folder (/var/lib/blockseq) when it exists and
 /// ./data doesn't, so `blockseq reset-encryption-password` works on the
 /// server without extra setup. Says which folder it uses.

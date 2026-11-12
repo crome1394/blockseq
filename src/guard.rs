@@ -4,7 +4,7 @@
 //!   notes through your browser (CSRF). Basic auth doesn't stop this, because
 //!   browsers resend the password automatically.
 //! - Host names: a hostile DNS name pointed at this server (DNS rebinding)
-//!   must not be able to read notes. With BLOCKSEQ_HOSTS set, only those
+//!   must not be able to read notes. With `BLOCKSEQ_HOSTS` set, only those
 //!   names (plus IP addresses and localhost) are served.
 //! - Headers: a Content-Security-Policy for the app page, no framing by other
 //!   sites, no referrer to other sites, no content sniffing.
@@ -26,13 +26,13 @@ img-src * data: blob:; media-src * data: blob:; font-src 'self' data:; connect-s
 frame-src 'self' https://www.youtube-nocookie.com https://player.vimeo.com https://platform.twitter.com; \
 object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
 
-/// Host names from BLOCKSEQ_HOSTS ("notes.example.com, blockseq"); empty
+/// Host names from `BLOCKSEQ_HOSTS` ("notes.example.com, blockseq"); empty
 /// means any name is accepted.
 pub fn parse_hosts(value: &str) -> Vec<String> {
     value.split([',', ' ']).map(|h| h.trim().to_ascii_lowercase()).filter(|h| !h.is_empty()).collect()
 }
 
-/// "name:port", "[::1]:port" or "name" → "name" / "::1".
+/// "name:port", "[`::1`]:port" or "name" → "name" / "`::1`".
 fn host_name(host: &str) -> &str {
     if let Some(rest) = host.strip_prefix('[') {
         return rest.split(']').next().unwrap_or("");
@@ -48,7 +48,7 @@ fn host_allowed(host: &str, allowed: &[String]) -> bool {
     allowed.is_empty()
         || name.parse::<IpAddr>().is_ok()
         || name == "localhost"
-        || allowed.iter().any(|a| *a == name)
+        || allowed.contains(&name)
 }
 
 /// Why a request is refused, if it is.

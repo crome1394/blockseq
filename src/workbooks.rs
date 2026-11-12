@@ -245,18 +245,16 @@ impl Registry {
                 let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
             }
             let r = std::fs::rename(src, dst).with_context(|| format!("moving {}", src.display()));
-            if r.is_ok() {
-                if let Some(w) = &wb {
+            if r.is_ok()
+                && let Some(w) = &wb {
                     w.retired.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
-            }
             r
         };
-        if result.is_err() {
-            if let Some(w) = wb {
+        if result.is_err()
+            && let Some(w) = wb {
                 open.insert(id.to_string(), w);
             }
-        }
         result
     }
 
@@ -292,7 +290,7 @@ impl Registry {
     }
 
     /// Returns an open workbook, opening (and if needed importing) it first.
-    /// Blocking: call from spawn_blocking.
+    /// Blocking: call from `spawn_blocking`.
     pub fn get(&self, id: &str, task_words: &[String]) -> Result<Option<std::sync::Arc<Workbook>>> {
         if let Some(wb) = self.open.lock().get(id) {
             return Ok(Some(wb.clone()));
@@ -321,7 +319,7 @@ impl Registry {
         if pruned > 0 {
             tracing::info!("workbook {id}: removed {pruned} empty, unlinked pages");
         }
-        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: Default::default(), integrity });
+        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: std::sync::atomic::AtomicBool::default(), integrity });
         if import {
             let report = import_logseq(&wb, task_words)?;
             tracing::info!("workbook {id}: imported Logseq graph ({report})");
@@ -336,6 +334,11 @@ impl Registry {
     pub fn open_workbooks(&self) -> Vec<std::sync::Arc<Workbook>> {
         self.open.lock().values().cloned().collect()
     }
+}
+
+/// Our own temp files always have lowercase extensions.
+fn has_ext(name: &str, ext: &str) -> bool {
+    Path::new(name).extension().is_some_and(|e| e == ext)
 }
 
 /// Removes temporary files left by an upload, export, import or settings
@@ -360,7 +363,7 @@ pub fn clean_temp(root: &Path) -> usize {
     };
     // Data folder: exports in progress, settings temp files.
     for (path, name) in entries(root) {
-        if name.starts_with(".export-") || (name.starts_with(".config.json.") && name.ends_with(".tmp")) || name == "config.json.tmp" {
+        if name.starts_with(".export-") || (name.starts_with(".config.json.") && has_ext(&name, "tmp")) || name == "config.json.tmp" {
             remove(&path);
         }
     }
@@ -375,19 +378,19 @@ pub fn clean_temp(root: &Path) -> usize {
     dirs.extend(entries(&root.join("workbooks")).into_iter().filter(|(p, n)| p.is_dir() && !n.starts_with('.')).map(|(p, _)| p));
     for dir in dirs {
         for (path, name) in entries(&dir.join("assets")) {
-            if name.starts_with(".upload-") && name.ends_with(".part") {
+            if name.starts_with(".upload-") && has_ext(&name, "part") {
                 remove(&path);
             }
         }
         for folder in ["pages", "journals"] {
             for (path, name) in entries(&dir.join(folder)) {
-                if name.ends_with(".md.tmp") {
+                if has_ext(&name, "tmp") && name.ends_with(".md.tmp") {
                     remove(&path);
                 }
             }
         }
         for (path, name) in entries(&dir) {
-            if name.starts_with(&format!(".{}.", crate::backup::IMPORTED_KEY)) && name.ends_with(".tmp") {
+            if name.starts_with(&format!(".{}.", crate::backup::IMPORTED_KEY)) && has_ext(&name, "tmp") {
                 remove(&path);
             }
         }
@@ -437,19 +440,17 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
                 continue;
             }
             // A "title::" page property overrides the file name.
-            if let Some(t) = blocks[0].content.lines().find_map(|l| l.trim().strip_prefix("title::")) {
-                if !t.trim().is_empty() && folder == "pages" {
+            if let Some(t) = blocks[0].content.lines().find_map(|l| l.trim().strip_prefix("title::"))
+                && !t.trim().is_empty() && folder == "pages" {
                     name = t.trim().to_string();
                 }
-            }
             // Block ids must be unique across the workbook.
             let mut renamed: HashMap<String, String> = HashMap::new();
             for b in &mut blocks {
-                if let Some(p) = &b.parent_id {
-                    if let Some(new) = renamed.get(p) {
+                if let Some(p) = &b.parent_id
+                    && let Some(new) = renamed.get(p) {
                         b.parent_id = Some(new.clone());
                     }
-                }
                 if !seen_ids.insert(b.id.clone()) {
                     let new = uuid::Uuid::new_v4().to_string();
                     renamed.insert(b.id.clone(), new.clone());
@@ -457,7 +458,7 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
                     b.id = new;
                 }
             }
-            let version = db::get_page(&conn, &name)?.map(|p| p.version).unwrap_or(0);
+            let version = db::get_page(&conn, &name)?.map_or(0, |p| p.version);
             db::save_page(&conn, &name, version, &blocks, task_words)
                 .with_context(|| format!("importing {}", path.display()))?;
             pages += 1;
@@ -465,11 +466,11 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
     }
     // Favourites from logseq/config.edn: `:favorites ["a" "b"]`.
     let mut favorites = 0;
-    if let Ok(edn) = std::fs::read_to_string(wb.dir.join("logseq").join("config.edn")) {
-        if let Some(start) = edn.find(":favorites") {
+    if let Ok(edn) = std::fs::read_to_string(wb.dir.join("logseq").join("config.edn"))
+        && let Some(start) = edn.find(":favorites") {
             let rest = &edn[start..];
-            if let (Some(open), Some(close)) = (rest.find('['), rest.find(']')) {
-                if open < close {
+            if let (Some(open), Some(close)) = (rest.find('['), rest.find(']'))
+                && open < close {
                     for name in rest[open + 1..close].split('"').skip(1).step_by(2) {
                         if !name.trim().is_empty() {
                             db::set_favorite(&conn, name.trim(), true)?;
@@ -477,9 +478,7 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
                         }
                     }
                 }
-            }
         }
-    }
     Ok(format!("{pages} pages, {favorites} favorites, {skipped} files skipped"))
 }
 

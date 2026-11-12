@@ -41,7 +41,9 @@ cargo build --release              # release build embeds web/ in the binary
   **release** build must be rebuilt after any change in `web/`.
 - Always use a throwaway `BLOCKSEQ_DATA` directory for testing, never the
   owner's real data.
-- Run `cargo test` and check the build has no warnings before finishing.
+- Run `cargo test`, `cargo clippy --all-targets` (pedantic lints are on, see
+  `[lints.clippy]` in Cargo.toml) and `tests/e2e/run.sh`; finish with no
+  warnings and all tests passing.
 - UI changes should be checked in a real browser. Headless Chrome via
   `deno` + `npm:puppeteer-core` works well. The live-update stream (SSE)
   keeps a connection open, so wait for selectors, not `networkidle`.

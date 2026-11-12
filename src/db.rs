@@ -101,15 +101,16 @@ pub struct PageSummary {
 /// Counts words in block text: tokens with at least one letter or digit,
 /// skipping `key:: value` property lines (ids, colours, encrypted text).
 pub fn word_count(content: &str) -> i64 {
-    content
+    let words = content
         .lines()
         .filter(|l| {
             let t = l.trim_start();
             !t.split_once(":: ").is_some_and(|(k, _)| !k.is_empty() && !k.contains(' '))
         })
-        .flat_map(|l| l.split_whitespace())
-        .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
-        .count() as i64
+        .flat_map(str::split_whitespace)
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .count();
+    i64::try_from(words).unwrap_or(i64::MAX)
 }
 
 /// Pages with #Encrypted blocks whose children are still stored as plain
@@ -318,9 +319,10 @@ fn rename_page_inner(conn: &Connection, from: &str, to: &str, task_words: &[Stri
             let mut blocks = get_blocks(conn, &target.id)?;
             blocks.extend(get_blocks(conn, &old.id)?);
             snapshot(conn, &old, &get_blocks(conn, &old.id)?, &format!("before it was merged into {}", target.name), now)?;
-            let saved = match save_page_inner(conn, &target.name, target.version, &blocks, task_words, true, Some(&format!("before {} was merged in", old.name)))? {
-                SaveOutcome::Saved(p) => p,
-                _ => bail!("{} changed during the rename", target.name),
+            let SaveOutcome::Saved(saved) =
+                save_page_inner(conn, &target.name, target.version, &blocks, task_words, true, Some(&format!("before {} was merged in", old.name)))?
+            else {
+                bail!("{} changed during the rename", target.name)
             };
             if old.favorite {
                 set_favorite(conn, &target.name, true)?;
@@ -564,11 +566,10 @@ pub fn validate_blocks(blocks: &[Block]) -> Result<()> {
         if b.id.is_empty() || b.id.len() > 64 {
             bail!("invalid block id");
         }
-        if let Some(p) = &b.parent_id {
-            if !seen.contains(p.as_str()) {
+        if let Some(p) = &b.parent_id
+            && !seen.contains(p.as_str()) {
                 bail!("block {} appears before its parent", b.id);
             }
-        }
         if !seen.insert(b.id.as_str()) {
             bail!("duplicate block id {}", b.id);
         }
@@ -618,7 +619,7 @@ pub fn save_page(
     save_page_inner(conn, name, base_version, blocks, task_words, false, None)
 }
 
-/// Like save_page, but always keeps the replaced version in the history,
+/// Like `save_page`, but always keeps the replaced version in the history,
 /// with `reason` (e.g. "replaced by Keep mine").
 pub fn save_page_noting(
     conn: &Connection,
@@ -652,9 +653,9 @@ fn save_page_inner(
     let tx = conn;
     let now = now_ms();
 
-    let page = match get_page(&tx, name)? {
+    let page = match get_page(tx, name)? {
         Some(p) if p.version != base_version => {
-            let current = get_blocks(&tx, &p.id)?;
+            let current = get_blocks(tx, &p.id)?;
             return Ok(SaveOutcome::Conflict(p, current));
         }
         Some(p) => p,
@@ -724,6 +725,7 @@ fn save_page_inner(
             "INSERT INTO refs (block_id, target_lower, target_name, tag) VALUES (?1, ?2, ?3, ?4)",
         )?;
         for (pos, b) in blocks.iter().enumerate() {
+            let pos = i64::try_from(pos)?;
             let (created, updated) = match old.get(&b.id) {
                 Some((content, c, u)) if *content == b.content => (*c, *u),
                 Some((_, c, _)) => (*c, now),
@@ -732,7 +734,7 @@ fn save_page_inner(
             // A block id may have lived on another page before (moved text).
             clear_refs.execute([&b.id])?;
             insert.execute(params![
-                b.id, page.id, b.parent_id, pos as i64, b.content, b.collapsed, created, updated
+                b.id, page.id, b.parent_id, pos, b.content, b.collapsed, created, updated
             ])?;
             let tags = md::extract_tags(&b.content);
             let refs = md::extract_refs(&b.content);
@@ -751,7 +753,7 @@ fn save_page_inner(
 
     // Linking or tagging a page creates it, like Logseq.
     for name in linked.values() {
-        ensure_page(&tx, name, now)?;
+        ensure_page(tx, name, now)?;
     }
 
     let version = page.version + 1;
@@ -828,24 +830,21 @@ fn maybe_snapshot(conn: &Connection, page: &PageMeta, old: &[Block], new: &[Bloc
     if old.iter().all(|b| b.content.trim().is_empty()) {
         return Ok(()); // nothing worth keeping
     }
-    let reason = match forced {
-        Some(r) => r,
-        None => {
-            let (before, after) = (text_size(old), text_size(new));
-            let kept: HashSet<&str> = new.iter().map(|b| b.id.as_str()).collect();
-            let removed = old.iter().filter(|b| !kept.contains(b.id.as_str())).count();
-            if removed >= 5 || (before > after + 200 && after * 10 < before * 7) {
-                "before a large change"
-            } else {
-                let last: Option<i64> = conn.query_row(
-                    "SELECT MAX(saved_at) FROM page_history WHERE name_lower = ?1",
-                    [page.name_lower()],
-                    |r| r.get(0),
-                )?;
-                match last {
-                    Some(t) if now - t < HISTORY_EVERY_MS => return Ok(()),
-                    _ => "autosave",
-                }
+    let reason = if let Some(r) = forced { r } else {
+        let (before, after) = (text_size(old), text_size(new));
+        let kept: HashSet<&str> = new.iter().map(|b| b.id.as_str()).collect();
+        let removed = old.iter().filter(|b| !kept.contains(b.id.as_str())).count();
+        if removed >= 5 || (before > after + 200 && after * 10 < before * 7) {
+            "before a large change"
+        } else {
+            let last: Option<i64> = conn.query_row(
+                "SELECT MAX(saved_at) FROM page_history WHERE name_lower = ?1",
+                [page.name_lower()],
+                |r| r.get(0),
+            )?;
+            match last {
+                Some(t) if now - t < HISTORY_EVERY_MS => return Ok(()),
+                _ => "autosave",
             }
         }
     };
@@ -1023,7 +1022,7 @@ pub struct Sidebar {
 }
 
 /// What the sidebar needs after every save. Cheap (indexes only), unlike
-/// list_pages, which reads every block to count words.
+/// `list_pages`, which reads every block to count words.
 pub fn sidebar(conn: &Connection) -> Result<Sidebar> {
     let journal_days = conn
         .prepare("SELECT journal_day FROM pages p WHERE journal_day IS NOT NULL AND EXISTS (SELECT 1 FROM blocks b WHERE b.page_id = p.id)")?
@@ -1127,13 +1126,13 @@ pub fn search(conn: &Connection, q: &str, limit: i64) -> Result<SearchResults> {
 
     // Every word must appear somewhere in the block (any order).
     let words: Vec<String> = q.split_whitespace().map(|w| like_pattern(&w.to_lowercase())).collect();
-    let cond = (1..=words.len())
+    let conditions = (1..=words.len())
         .map(|i| format!("lower(b.content) LIKE ?{i} ESCAPE '\\'"))
         .collect::<Vec<_>>()
         .join(" AND ");
     let sql = format!(
         "SELECT b.id, b.content, p.name FROM blocks b JOIN pages p ON p.id = b.page_id
-         WHERE {cond} ORDER BY b.updated_at DESC LIMIT {limit}"
+         WHERE {conditions} ORDER BY b.updated_at DESC LIMIT {limit}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let blocks = stmt
@@ -1193,11 +1192,11 @@ mod tests {
 
     #[test]
     fn pages_rename_and_merge() {
-        let mut c = mem();
-        save_page(&mut c, "Notes", 0, &[block("a", None, "Server #emby and [[Emby]]")], &[]).unwrap();
+        let c = mem();
+        save_page(&c, "Notes", 0, &[block("a", None, "Server #emby and [[Emby]]")], &[]).unwrap();
         // "Emby" exists (version 0) because Notes links to it.
-        assert!(matches!(save_page(&mut c, "Emby", 0, &[block("e", None, "About emby")], &[]).unwrap(), SaveOutcome::Saved(_)));
-        let out = rename_page(&mut c, "emby", "Emby Server", &[]).unwrap();
+        assert!(matches!(save_page(&c, "Emby", 0, &[block("e", None, "About emby")], &[]).unwrap(), SaveOutcome::Saved(_)));
+        let out = rename_page(&c, "emby", "Emby Server", &[]).unwrap();
         assert!(!out.merged);
         assert_eq!(out.page.name, "Emby Server");
         let notes = get_page(&c, "Notes").unwrap().unwrap();
@@ -1205,26 +1204,26 @@ mod tests {
         assert!(get_page(&c, "Emby").unwrap().is_none());
         assert_eq!(backlinks(&c, "Emby Server").unwrap().len(), 1);
         // Merge into an existing page.
-        save_page(&mut c, "Media", 0, &[block("m", None, "Media page")], &[]).unwrap();
-        let out = rename_page(&mut c, "Emby Server", "media", &[]).unwrap();
+        save_page(&c, "Media", 0, &[block("m", None, "Media page")], &[]).unwrap();
+        let out = rename_page(&c, "Emby Server", "media", &[]).unwrap();
         assert!(out.merged);
         let media = get_page(&c, "Media").unwrap().unwrap();
         let contents: Vec<String> = get_blocks(&c, &media.id).unwrap().into_iter().map(|b| b.content).collect();
         assert_eq!(contents, ["Media page", "About emby"]);
         assert_eq!(get_blocks(&c, &notes.id).unwrap()[0].content, "Server #Media and [[Media]]");
-        assert!(rename_page(&mut c, "Notes", "Nov 11th, 2026", &[]).is_err());
+        assert!(rename_page(&c, "Notes", "Nov 11th, 2026", &[]).is_err());
     }
 
     #[test]
     fn unlinked_empty_pages_are_pruned() {
-        let mut c = mem();
-        save_page(&mut c, "Notes", 0, &[block("a", None, "Order #US330423987 for [[Kept]]")], &[]).unwrap();
+        let c = mem();
+        save_page(&c, "Notes", 0, &[block("a", None, "Order #US330423987 for [[Kept]]")], &[]).unwrap();
         set_favorite(&c, "Starred", true).unwrap();
         ensure_page(&c, "Nov 11th, 2026", now_ms()).unwrap();
         assert!(get_page(&c, "US330423987").unwrap().is_some());
         assert!(prune_orphans(&c).unwrap().is_empty());
         // The "#" is removed: the tag page is empty and unlinked, so it goes.
-        save_page(&mut c, "Notes", 1, &[block("a", None, "Order US330423987 for [[Kept]]")], &[]).unwrap();
+        save_page(&c, "Notes", 1, &[block("a", None, "Order US330423987 for [[Kept]]")], &[]).unwrap();
         let gone: Vec<String> = prune_orphans(&c).unwrap().into_iter().map(|p| p.name).collect();
         assert_eq!(gone, ["US330423987"]);
         for kept in ["Kept", "Starred", "Notes", "Nov 11th, 2026"] {
@@ -1234,16 +1233,16 @@ mod tests {
 
     #[test]
     fn save_load_and_conflict() {
-        let mut c = mem();
+        let c = mem();
         let blocks = vec![block("a", None, "hello [[World]]"), block("b", Some("a"), "child")];
-        let SaveOutcome::Saved(p) = save_page(&mut c, "Test", 0, &blocks, &[]).unwrap() else {
+        let SaveOutcome::Saved(p) = save_page(&c, "Test", 0, &blocks, &[]).unwrap() else {
             panic!("expected save")
         };
         assert_eq!(p.version, 1);
         assert_eq!(get_blocks(&c, &p.id).unwrap(), blocks);
 
         // A second device still holding version 0 gets a conflict.
-        match save_page(&mut c, "test", 0, &[block("x", None, "stale")], &[]).unwrap() {
+        match save_page(&c, "test", 0, &[block("x", None, "stale")], &[]).unwrap() {
             SaveOutcome::Conflict(p, current) => {
                 assert_eq!(p.version, 1);
                 assert_eq!(current, blocks);
@@ -1259,7 +1258,7 @@ mod tests {
         assert_eq!(bl.len(), 1);
         assert_eq!(bl[0].page_name, "Test");
 
-        let SaveOutcome::Saved(p) = save_page(&mut c, "Test", 1, &blocks[..1], &[]).unwrap() else {
+        let SaveOutcome::Saved(p) = save_page(&c, "Test", 1, &blocks[..1], &[]).unwrap() else {
             panic!()
         };
         assert_eq!(p.version, 2);
@@ -1392,17 +1391,17 @@ mod tests {
 
     #[test]
     fn rejects_bad_order() {
-        let mut c = mem();
+        let c = mem();
         let bad = vec![block("b", Some("a"), ""), block("a", None, "")];
-        assert!(save_page(&mut c, "X", 0, &bad, &[]).is_err());
+        assert!(save_page(&c, "X", 0, &bad, &[]).is_err());
     }
 
     #[test]
     fn journal_pages_are_detected() {
-        let mut c = mem();
-        save_page(&mut c, "Nov 11th, 2026", 0, &[block("a", None, "x")], &[]).unwrap();
-        save_page(&mut c, "Nov 9th, 2026", 0, &[block("b", None, "y")], &[]).unwrap();
-        save_page(&mut c, "Not a journal", 0, &[block("c", None, "z")], &[]).unwrap();
+        let c = mem();
+        save_page(&c, "Nov 11th, 2026", 0, &[block("a", None, "x")], &[]).unwrap();
+        save_page(&c, "Nov 9th, 2026", 0, &[block("b", None, "y")], &[]).unwrap();
+        save_page(&c, "Not a journal", 0, &[block("c", None, "z")], &[]).unwrap();
         let j = journals(&c, None, 10).unwrap();
         assert_eq!(j.len(), 2);
         assert_eq!(j[0].page.journal_day, Some(20261111));

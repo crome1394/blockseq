@@ -57,12 +57,9 @@ impl From<serde_json::Error> for ApiError {
 /// Sets a header whose value comes from data (a file name, a length); an
 /// unusable value is skipped rather than failing the response.
 fn set_header(h: &mut HeaderMap, name: header::HeaderName, value: &str) {
-    match HeaderValue::from_str(value) {
-        Ok(v) => {
-            h.insert(name, v);
-        }
-        Err(_) => tracing::warn!("left out the {name} header: unusable value"),
-    }
+    if let Ok(v) = HeaderValue::from_str(value) {
+        h.insert(name, v);
+    } else { tracing::warn!("left out the {name} header: unusable value") }
 }
 
 /// The data folder's path, so error messages sent to browsers can say "the
@@ -107,7 +104,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ApiError> + S
 
 /// Changes config.json: one change at a time (the settings lock is held
 /// throughout), always starting from the file on disk, and refusing to touch
-/// a damaged file. `f` may reject the change with any ApiError.
+/// a damaged file. `f` may reject the change with any `ApiError`.
 async fn update_config<T: Send + 'static>(
     s: &Arc<AppState>,
     f: impl FnOnce(&mut Config) -> Result<T, ApiError> + Send + 'static,
@@ -145,7 +142,9 @@ fn prune(s: &AppState, wb: &Workbook, client: &str) {
         let conn = wb.db.lock();
         match db::prune_orphans(&conn) {
             Ok(r) => {
-                r.iter().for_each(|page| wb.remove_mirror(page));
+                for page in &r {
+                    wb.remove_mirror(page);
+                }
                 r
             }
             Err(e) => return tracing::warn!("pruning empty pages: {e:#}"),
@@ -688,7 +687,7 @@ pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap)
 /// Files in the workbook's assets folder, newest first, with the pages that
 /// mention each one.
 pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
-    let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.db.lock())?, assets::list(&wb.assets_dir())?))).await?;
+    let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.db.lock())?, assets::list(&wb.assets_dir())))).await?;
     let out: Vec<_> = list
         .into_iter()
         .map(|a| {
@@ -766,7 +765,7 @@ pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) 
             .map_err(|e| bad(format!("{e:#}")))?
     };
     tracing::info!("renamed workbook {} to {}", q.id, info.name);
-    s.notify_all(json!({ "type": "workbooks", "renamed": { "from": q.id, "to": info.id } }));
+    s.notify_all(&json!({ "type": "workbooks", "renamed": { "from": q.id, "to": info.id } }));
     Ok(Json(info).into_response())
 }
 
@@ -784,14 +783,14 @@ pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiRe
         ?
         .map_err(|e| bad(format!("{e:#}")))?;
     tracing::info!("deleted workbook {}: moved to {}", q.id, trash.display());
-    s.notify_all(json!({ "type": "workbooks", "deleted": q.id }));
+    s.notify_all(&json!({ "type": "workbooks", "deleted": q.id }));
     Ok(Json(json!({ "trash": trash.display().to_string() })).into_response())
 }
 
 pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
     let state = s.clone();
     let info = blocking(move || state.workbooks.create(&q.name).map_err(|e| bad(format!("{e:#}")))).await?;
-    s.notify_all(json!({ "type": "workbooks" }));
+    s.notify_all(&json!({ "type": "workbooks" }));
     Ok(Json(info).into_response())
 }
 
@@ -818,7 +817,7 @@ pub struct EncryptionBody {
     /// Proof of holding the current key (see crypto.rs `key_proof`).
     proof: Option<String>,
     /// Older clients/setups: the key check, accepted only while the stored
-    /// setup has no proof_hash yet (to add one).
+    /// setup has no `proof_hash` yet (to add one).
     check: Option<String>,
 }
 
@@ -859,7 +858,7 @@ pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) 
         Ok(())
     })
     .await?;
-    s.notify_all(json!({ "type": "encryption" }));
+    s.notify_all(&json!({ "type": "encryption" }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -882,7 +881,7 @@ pub async fn put_config(State(s): Shared, Json(body): Json<StatusesBody>) -> Api
     })
     .await
     ??;
-    s.notify_all(json!({ "type": "config" }));
+    s.notify_all(&json!({ "type": "config" }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -927,7 +926,7 @@ pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
     let made = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         // Hold the database only for the snapshot, not while zipping assets.
         let snap = backup::snapshot(&wb2.db.lock(), &tmp_db);
-        let result = snap.and_then(|_| backup::write_zip(&wb2.id, &wb2.dir, &tmp_db, &config, &zip_path));
+        let result = snap.and_then(|()| backup::write_zip(&wb2.id, &wb2.dir, &tmp_db, &config, &zip_path));
         let _ = std::fs::remove_file(&tmp_db);
         result
     })
@@ -996,12 +995,12 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
         })
         .await?;
         if outcome == backup::KeyOutcome::Adopted {
-            s.notify_all(json!({ "type": "encryption" }));
+            s.notify_all(&json!({ "type": "encryption" }));
         }
         report.key = outcome;
     }
     tracing::info!("restored workbook {name} from a backup ({} files)", report.files);
-    s.notify_all(json!({ "type": "workbooks" }));
+    s.notify_all(&json!({ "type": "workbooks" }));
     Ok(Json(json!({ "workbook": info, "report": report })).into_response())
 }
 

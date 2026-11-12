@@ -157,7 +157,7 @@ impl Config {
 
 /// `config.json.bak` next to `config.json`.
 pub fn backup_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let mut name = path.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_default();
     name.push(".bak");
     path.with_file_name(name)
 }
@@ -189,11 +189,10 @@ pub fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     written.with_context(|| format!("writing {}", path.display()))?;
-    if let Some(dir) = path.parent() {
-        if let Ok(d) = std::fs::File::open(dir) {
+    if let Some(dir) = path.parent()
+        && let Ok(d) = std::fs::File::open(dir) {
             let _ = d.sync_all(); // best effort: makes the rename itself durable
         }
-    }
     Ok(())
 }
 
@@ -227,8 +226,7 @@ mod tests {
     fn previous_version_is_kept_and_used() {
         let dir = temp_dir();
         let path = dir.join("config.json");
-        let mut first = Config::default();
-        first.main_name = Some("First".into());
+        let first = Config { main_name: Some("First".into()), ..Config::default() };
         first.save(&path).unwrap();
         let mut second = first.clone();
         second.main_name = Some("Second".into());

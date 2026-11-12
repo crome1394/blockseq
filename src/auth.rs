@@ -1,11 +1,11 @@
-//! The optional password (BLOCKSEQ_PASSWORD, HTTP basic auth) and a limit on
+//! The optional password (`BLOCKSEQ_PASSWORD`, HTTP basic auth) and a limit on
 //! guessing it.
 //!
-//! Each client may try at most MAX_WRONG *different* wrong passwords per
+//! Each client may try at most `MAX_WRONG` *different* wrong passwords per
 //! WINDOW; after that it is refused until the window ends. Repeats of the
 //! same wrong password (a browser resending a saved typo) count once, so a
 //! typo doesn't lock you out. Behind a reverse proxy every request comes
-//! from the proxy's address; list it in BLOCKSEQ_TRUSTED_PROXIES and the
+//! from the proxy's address; list it in `BLOCKSEQ_TRUSTED_PROXIES` and the
 //! client address it forwards (X-Forwarded-For) is used instead.
 
 use std::collections::{HashMap, HashSet};
@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 
 use crate::AppState;
 
-const WINDOW: Duration = Duration::from_secs(15 * 60);
+const WINDOW: Duration = Duration::from_mins(15);
 const MAX_WRONG: usize = 10;
 /// Clients remembered at most (old entries are dropped first).
 const MAX_CLIENTS: usize = 4096;
@@ -77,7 +77,7 @@ impl Limiter {
     }
 }
 
-/// IP addresses from BLOCKSEQ_TRUSTED_PROXIES ("10.0.0.1, ::1").
+/// IP addresses from `BLOCKSEQ_TRUSTED_PROXIES` ("10.0.0.1, `::1`").
 pub fn parse_proxies(value: &str) -> Vec<IpAddr> {
     value.split([',', ' ']).filter_map(|p| p.trim().parse().ok()).collect()
 }

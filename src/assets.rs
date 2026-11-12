@@ -33,7 +33,7 @@ pub fn file_ext(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// A safe file-name stem from the uploaded file's name ("Screenshot 1.png" →
-/// "Screenshot_1"), or "file" if nothing usable is left.
+/// "`Screenshot_1`"), or "file" if nothing usable is left.
 pub fn safe_stem(original: &str) -> String {
     let stem = Path::new(original)
         .file_stem()
@@ -98,7 +98,7 @@ pub fn ext_for(head: &[u8], original: &str) -> String {
     if let Some(e) = file_ext(head) {
         return e.to_string();
     }
-    let ext: String = ext_of(original).chars().filter(|c| c.is_ascii_alphanumeric()).take(10).collect();
+    let ext: String = ext_of(original).chars().filter(char::is_ascii_alphanumeric).take(10).collect();
     if ext.is_empty() || IMAGE_EXTS.contains(&ext.as_str()) || ext == "pdf" {
         "bin".into()
     } else {
@@ -122,7 +122,7 @@ pub fn serve_policy(name: &str) -> (String, bool, Option<&'static str>) {
 }
 
 /// Picks a free name "{stem}_{ms}_{i}.{ext}" and moves `tmp` there.
-/// Creating the name with create_new first means names never collide.
+/// Creating the name with `create_new` first means names never collide.
 pub fn place(dir: &Path, tmp: &Path, stem: &str, ext: &str, now_ms: i64) -> Result<String> {
     for i in 0..1000 {
         let name = format!("{stem}_{now_ms}_{i}.{ext}");
@@ -132,7 +132,7 @@ pub fn place(dir: &Path, tmp: &Path, stem: &str, ext: &str, now_ms: i64) -> Resu
                 std::fs::rename(tmp, &path)?;
                 return Ok(name);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.into()),
         }
     }
@@ -147,9 +147,10 @@ pub struct AssetInfo {
 }
 
 /// Lists the files in an assets folder, newest first.
-pub fn list(dir: &Path) -> Result<Vec<AssetInfo>> {
+/// A folder that can't be read lists as empty.
+pub fn list(dir: &Path) -> Vec<AssetInfo> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(out) };
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else { continue };
         let Some(name) = entry.file_name().to_str().map(String::from) else { continue };
@@ -160,12 +161,11 @@ pub fn list(dir: &Path) -> Result<Vec<AssetInfo>> {
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
         out.push(AssetInfo { kind: kind_of(&name), name, size: meta.len(), modified });
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
-    Ok(out)
+    out.sort_by_key(|a| std::cmp::Reverse(a.modified));
+    out
 }
 
 /// Saves an upload held in memory and returns its file name (tests and

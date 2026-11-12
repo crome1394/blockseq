@@ -1,6 +1,7 @@
 //! Text helpers: journal page names, link extraction and the Logseq-style
 //! Markdown mirror that is written next to the database.
 
+use std::fmt::Write as _;
 use std::collections::BTreeMap;
 
 use crate::db::Block;
@@ -21,23 +22,25 @@ fn ordinal(day: u32) -> &'static str {
 
 /// Formats a day (yyyymmdd) the way Logseq names journal pages: "Nov 11th, 2026".
 pub fn journal_name(day: i64) -> String {
-    let (y, m, d) = (day / 10000, (day / 100) % 100, (day % 100) as u32);
-    format!("{} {}{}, {}", MONTHS[(m - 1) as usize], d, ordinal(d), y)
+    let (y, m, d) = (day / 10000, (day / 100) % 100, day % 100);
+    let month = usize::try_from(m - 1).ok().and_then(|i| MONTHS.get(i)).copied().unwrap_or("???");
+    let d = u32::try_from(d).unwrap_or(0);
+    format!("{month} {d}{}, {y}", ordinal(d))
 }
 
 /// Parses a journal page name ("Nov 11th, 2026") into yyyymmdd.
 pub fn parse_journal_name(name: &str) -> Option<i64> {
     let (month, rest) = name.trim().split_once(' ')?;
-    let m = MONTHS.iter().position(|x| x.eq_ignore_ascii_case(month))? as i64 + 1;
+    let m = i64::try_from(MONTHS.iter().position(|x| x.eq_ignore_ascii_case(month))?).ok()? + 1;
     let (day_part, year) = rest.split_once(", ")?;
-    let digits: String = day_part.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = day_part.chars().take_while(char::is_ascii_digit).collect();
     let d: u32 = digits.parse().ok()?;
     if day_part[digits.len()..] != *ordinal(d) {
         return None;
     }
     let y: i32 = year.trim().parse().ok()?;
-    chrono::NaiveDate::from_ymd_opt(y, m as u32, d)?;
-    Some(y as i64 * 10000 + m * 100 + d as i64)
+    chrono::NaiveDate::from_ymd_opt(y, u32::try_from(m).ok()?, d)?;
+    Some(i64::from(y) * 10000 + m * 100 + i64::from(d))
 }
 
 /// Returns every page a block links to (`[[page]]`, `#[[page]]`, `#tag`,
@@ -161,20 +164,19 @@ pub fn page_to_markdown(blocks: &[Block]) -> String {
             .parent_id
             .as_deref()
             .and_then(|p| depth.get(p))
-            .map(|d| d + 1)
-            .unwrap_or(0);
+            .map_or(0, |d| d + 1);
         depth.insert(&b.id, d);
         let indent = "\t".repeat(d);
         let mut lines = b.content.split('\n');
         match lines.next() {
-            Some(first) if !first.is_empty() => out.push_str(&format!("{indent}- {first}\n")),
-            _ => out.push_str(&format!("{indent}-\n")),
+            Some(first) if !first.is_empty() => { let _ = writeln!(out, "{indent}- {first}"); },
+            _ => { let _ = writeln!(out, "{indent}-"); },
         }
         for line in lines {
-            out.push_str(&format!("{indent}  {line}\n"));
+            let _ = writeln!(out, "{indent}  {line}");
         }
         if b.collapsed {
-            out.push_str(&format!("{indent}  collapsed:: true\n"));
+            let _ = writeln!(out, "{indent}  collapsed:: true");
         }
     }
     out
@@ -195,7 +197,7 @@ pub fn mirror_path(name: &str, journal_day: Option<i64>) -> String {
         match c {
             '/' => file.push_str("___"),
             '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*' => {
-                file.push_str(&format!("%{:02X}", c as u32))
+                let _ = write!(file, "%{:02X}", u32::from(c));
             }
             c if c.is_control() => {}
             c => file.push(c),
@@ -221,8 +223,8 @@ pub fn tag_token(name: &str) -> String {
     }
 }
 
-/// Byte ranges of `content` outside code (``` fences and `inline` code), the
-/// only places links and tags count.
+/// Byte ranges of `content` outside code (fenced blocks and inline code),
+/// the only places links and tags count.
 fn text_ranges(content: &str) -> Vec<(usize, usize)> {
     let b = content.as_bytes();
     let mut out = Vec::new();
@@ -288,17 +290,20 @@ pub fn rename_refs(content: &str, old: &str, new: &str) -> Option<String> {
             let tag_start = prev.is_none_or(|c| c.is_whitespace() || c == '(');
             // #[[name]] and [[name]]
             let (hash, after) = if tag_start && rest.starts_with("#[[") { (true, 3) } else if rest.starts_with("[[") { (false, 2) } else { (false, 0) };
-            if after > 0 {
-                if let Some(end) = rest[after..].find("]]") {
+            if after > 0
+                && let Some(end) = rest[after..].find("]]") {
                     let name = &rest[after..after + end];
                     if !name.contains('\n') && name.trim().to_lowercase() == old_l {
-                        piece.push_str(&if hash { tag.clone() } else { format!("[[{new}]]") });
+                        if hash {
+                            piece.push_str(&tag);
+                        } else {
+                            let _ = write!(piece, "[[{new}]]");
+                        }
                         i += after + end + 2;
                         changed = true;
                         continue;
                     }
                 }
-            }
             // #name
             if tag_start && rest.starts_with('#') {
                 let name: String = rest[1..].chars().take_while(|c| is_tag_char(*c)).collect();
@@ -356,7 +361,7 @@ pub fn page_name_from_file(folder: &str, file_stem: &str) -> Option<String> {
         let parts: Vec<&str> = file_stem.split(['_', '-']).collect();
         if let [y, m, d] = parts[..] {
             let (y, m, d): (i64, i64, i64) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);
-            chrono::NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)?;
+            chrono::NaiveDate::from_ymd_opt(i32::try_from(y).ok()?, u32::try_from(m).ok()?, u32::try_from(d).ok()?)?;
             return Some(journal_name(y * 10000 + m * 100 + d));
         }
         return None;
@@ -370,7 +375,8 @@ pub fn page_name_from_file(folder: &str, file_stem: &str) -> Option<String> {
         if bytes[i] == b'%' && i + 2 < bytes.len()
             && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit()
         {
-            let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8; // checked just above
+            // Both are hex digits (checked just above).
+            let hex = |c: u8| u8::try_from((c as char).to_digit(16).unwrap_or(0)).unwrap_or(0);
             out.push(hex(bytes[i + 1]) * 16 + hex(bytes[i + 2]));
             i += 3;
             continue;
@@ -456,7 +462,7 @@ pub fn parse_outline(text: &str) -> Vec<Block> {
                 let v = v.trim();
                 if uuid::Uuid::parse_str(v).is_ok() && seen_ids.insert(v.to_string()) {
                     let old = std::mem::replace(&mut block.id, v.to_string());
-                    if let Some(o) = stack.last_mut() { if o.id == old { o.id = v.to_string(); } }
+                    if let Some(o) = stack.last_mut() && o.id == old { o.id = v.to_string(); }
                 }
                 continue;
             }

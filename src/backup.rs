@@ -59,19 +59,19 @@ pub fn file_name(workbook: &str) -> String {
 
 /// Already-compressed formats are stored as-is (deflating them only wastes time).
 fn method_for(path: &Path) -> CompressionMethod {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     const PACKED: &[&str] = &[
         "jpg", "jpeg", "png", "gif", "webp", "avif", "heic", "mp4", "m4v", "mkv", "webm", "mov", "avi",
         "mp3", "m4a", "aac", "ogg", "opus", "flac", "zip", "gz", "tgz", "xz", "bz2", "7z", "rar", "zst",
         "docx", "xlsx", "pptx", "odt", "ods", "odp", "epub", "jar",
     ];
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if PACKED.contains(&ext.as_str()) { CompressionMethod::Stored } else { CompressionMethod::Deflated }
 }
 
 fn options_for(path: &Path, method: CompressionMethod) -> SimpleFileOptions {
     let mut opts = SimpleFileOptions::default().compression_method(method).unix_permissions(0o644);
     if let Ok(meta) = std::fs::metadata(path) {
-        opts = opts.large_file(meta.len() >= u32::MAX as u64);
+        opts = opts.large_file(meta.len() >= u64::from(u32::MAX));
         if let Some(t) = meta.modified().ok().and_then(zip_time) {
             opts = opts.last_modified_time(t);
         }
@@ -83,8 +83,8 @@ fn zip_time(t: std::time::SystemTime) -> Option<zip::DateTime> {
     use chrono::{Datelike, Timelike};
     let t: chrono::DateTime<chrono::Local> = t.into();
     zip::DateTime::from_date_and_time(
-        t.year().try_into().ok()?, t.month() as u8, t.day() as u8,
-        t.hour() as u8, t.minute() as u8, t.second() as u8,
+        t.year().try_into().ok()?, u8::try_from(t.month()).ok()?, u8::try_from(t.day()).ok()?,
+        u8::try_from(t.hour()).ok()?, u8::try_from(t.minute()).ok()?, u8::try_from(t.second()).ok()?,
     ).ok()
 }
 
@@ -181,7 +181,7 @@ pub enum KeyOutcome {
     Same,
     /// This server had no password; it now uses the backup's.
     Adopted,
-    /// Different key: the browser must re-encrypt (see IMPORTED_KEY).
+    /// Different key: the browser must re-encrypt (see `IMPORTED_KEY`).
     Different,
 }
 
@@ -248,7 +248,7 @@ fn read_entry<R: Read + std::io::Seek>(zip: &mut ZipArchive<R>, name: &str) -> O
 /// Extracts the zip at `src` into the new, not yet existing folder `dest`.
 /// `server_key` is this server's encryption setup; when the backup's differs,
 /// the backup's is kept in `dest/IMPORTED_KEY`. Returns the report and, for
-/// KeyOutcome::Adopted, the key setup the server should start using.
+/// `KeyOutcome::Adopted`, the key setup the server should start using.
 /// `max_bytes` caps the unpacked size.
 pub fn import_zip(src: &Path, dest: &Path, server_key: Option<&Encryption>, max_bytes: u64) -> Result<(ImportReport, Option<Encryption>)> {
     let file = std::fs::File::open(src)?;
@@ -258,11 +258,10 @@ pub fn import_zip(src: &Path, dest: &Path, server_key: Option<&Encryption>, max_
     let pre = |n: &str| match &prefix { Some(p) => format!("{p}/{n}"), None => n.to_string() };
 
     let manifest: Option<Manifest> = read_entry(&mut zip, &pre(MANIFEST)).and_then(|s| serde_json::from_str(&s).ok());
-    if let Some(m) = &manifest {
-        if m.format > FORMAT {
+    if let Some(m) = &manifest
+        && m.format > FORMAT {
             bail!("this backup was made by a newer version of Blockseq ({})", m.app_version);
         }
-    }
     let targets: Vec<Option<PathBuf>> = all.iter().map(|n| n.as_deref().and_then(|n| target_of(n, prefix.as_deref()))).collect();
     let has_db = targets.iter().flatten().any(|t| t == Path::new(DB_FILE));
     let has_pages = targets.iter().flatten().any(|t| t.starts_with("pages") || t.starts_with("journals"));
@@ -377,10 +376,10 @@ pub fn export_command(data_dir: &Path, args: &[String]) -> Result<()> {
         let out = out_dir.join(file_name(&id));
         let tmp = out_dir.join(format!(".{}.db", uuid::Uuid::new_v4()));
         let result = snapshot_file(&dir.join(DB_FILE), &tmp)
-            .and_then(|_| write_zip(&id, &dir, &tmp, &data_dir.join("config.json"), &out));
+            .and_then(|()| write_zip(&id, &dir, &tmp, &data_dir.join("config.json"), &out));
         let _ = std::fs::remove_file(&tmp);
         result?;
-        let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        let size = std::fs::metadata(&out).map_or(0, |m| m.len());
         eprintln!("{id}: {} ({:.1} MB)", out.display(), size as f64 / 1_048_576.0);
     }
     Ok(())

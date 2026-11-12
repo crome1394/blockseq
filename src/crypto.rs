@@ -34,7 +34,7 @@ fn random<const N: usize>() -> Result<[u8; N]> {
 /// Recovery keys are shown as groups of base32 letters; ignore case,
 /// dashes and spaces when they are typed back.
 pub fn normalize_recovery_key(k: &str) -> String {
-    k.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect()
+    k.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).collect()
 }
 
 pub fn key_check(key: &[u8]) -> String {
