@@ -34,10 +34,10 @@ await p.evaluate(() => document.querySelector(".modal-overlay")?.remove());
 
 // 2. Write the user's example
 await p.click(".outline .content");
-await p.keyboard.type("Testing blocks that are encrypted #Encrypted");
-// The tag suggestions open a moment after typing; Enter would pick one. Close
-// them first (Escape only closes the list), so Enter starts a new block.
-await p.waitForSelector(".autocomplete", { timeout: 2000 }).catch(() => {});
+// The trailing space ends the tag, so its suggestion list (which can open
+// late on a busy machine, and would take the Enter) stays closed.
+await p.keyboard.type("Testing blocks that are encrypted #Encrypted ");
+await sleep(300);
 if (await p.$(".autocomplete")) await p.keyboard.press("Escape");
 await p.keyboard.press("Enter"); await p.keyboard.press("Tab");
 await p.keyboard.type("Wifi password: hunter2");
