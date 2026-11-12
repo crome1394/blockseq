@@ -296,6 +296,17 @@ fn target_of(name: &Path, prefix: Option<&str>) -> Option<PathBuf> {
 }
 
 /// The entry names as paths (only well-formed ones).
+/// Bytes the zip says its files unpack to (the sum of every entry's size).
+pub fn unpacked_size(src: &Path) -> Result<u64> {
+    let file = std::fs::File::open(src)?;
+    let mut zip = ZipArchive::new(std::io::BufReader::new(file)).context("that file is not a zip")?;
+    let mut total: u64 = 0;
+    for i in 0..zip.len() {
+        total = total.saturating_add(zip.by_index(i)?.size());
+    }
+    Ok(total)
+}
+
 fn names<R: Read + std::io::Seek>(zip: &mut ZipArchive<R>) -> Vec<Option<PathBuf>> {
     (0..zip.len()).map(|i| zip.by_index(i).ok().and_then(|f| f.enclosed_name())).collect()
 }

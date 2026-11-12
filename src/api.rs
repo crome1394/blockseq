@@ -37,6 +37,7 @@ type Shared = State<Arc<AppState>>;
 /// A failure the browser can act on. `code` is a short stable token
 /// (`invalid`, `storage`, `error`, …). `message`, when set, is a short phrase
 /// written for people. The error chain is logged and is not sent.
+#[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
     code: &'static str,
@@ -763,7 +764,7 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
     tokio::fs::create_dir_all(&dir).await?;
     // Hidden temp name: valid_name() rejects it, so it is never served.
     let tmp = dir.join(format!(".upload-{}.part", uuid::Uuid::new_v4()));
-    let result = receive_upload(&tmp, body, s.max_upload, &dir).await;
+    let result = receive_upload(&tmp, body, upload_cap(&headers, s.max_upload)?, &dir).await;
     let head = match result {
         Ok(head) => head,
         Err(e) => {
@@ -790,6 +791,25 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
     s.notify(&wb, json!({ "type": "assets", "name": name, "client": client_id(&headers) }));
     Ok(Json(json!({ "name": name, "path": format!("../assets/{name}"), "kind": assets::kind_of(&name) }))
         .into_response())
+}
+
+/// The most bytes this request may write: its Content-Length when it sends
+/// one (browsers do for files), else the server limit. Space is reserved for
+/// this amount, so pasting a small image does not need the full limit free.
+fn upload_cap(headers: &HeaderMap, max: u64) -> Result<u64, ApiError> {
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    match declared {
+        Some(n) if n > max => Err(too_large(max)),
+        Some(n) => Ok(n),
+        None => Ok(max),
+    }
+}
+
+fn too_large(max: u64) -> ApiError {
+    ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", format!("file is larger than {} MB", max / 1024 / 1024))
 }
 
 /// Bytes promised to uploads that have not finished writing yet. Counted at
@@ -821,8 +841,9 @@ fn hold_upload_space(volume: &std::path::Path, max: u64, why: &'static str) -> R
 }
 
 /// Writes the request body to `tmp`; returns its first bytes (for type
-/// detection). Fails if the body is empty or bigger than `max` bytes, or if
-/// the volume that holds `volume` could not keep a reserve free.
+/// detection). Fails if the body is empty or bigger than `max` bytes (see
+/// `upload_cap`), or if the volume that holds `volume` could not keep a
+/// reserve free.
 async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64, volume: &std::path::Path) -> Result<Vec<u8>, ApiError> {
     use tokio::io::AsyncWriteExt;
     let _hold = hold_upload_space(volume, max, "not enough free space for this upload")?;
@@ -840,11 +861,7 @@ async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64, volume: &st
         };
         total += chunk.len() as u64;
         if total > max {
-            return Err(ApiError::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "too_large",
-                format!("file is larger than {} MB", max / 1024 / 1024),
-            ));
+            return Err(too_large(max));
         }
         if head.len() < 16 {
             head.extend_from_slice(&chunk[..chunk.len().min(16 - head.len())]);
@@ -1332,7 +1349,7 @@ pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
 }
 
 /// Restores an uploaded backup zip (raw body) as the new workbook `name`.
-pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) -> ApiResult {
+pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, headers: HeaderMap, body: Body) -> ApiResult {
     let name = q.name.trim().to_string();
     if !crate::workbooks::valid_id(&name) {
         return Err(bad("use letters, digits, spaces, dashes, dots or underscores (not \"main\")"));
@@ -1343,14 +1360,28 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
     }
     tokio::fs::create_dir_all(&folder).await?;
     let tmp = folder.join(format!(".upload-{}.zip", uuid::Uuid::new_v4()));
-    if let Err(e) = receive_upload(&tmp, body, s.max_upload, &folder).await {
+    let cap = upload_cap(&headers, s.max_upload)?;
+    if let Err(e) = receive_upload(&tmp, body, cap, &folder).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(e);
     }
     let server_key = read_config(&s).await?.encryption;
-    // Backups compress well, so allow them to unpack to more than the upload limit.
-    let max_bytes = s.max_upload.saturating_mul(4);
-    // The zip is already on disk. Unpacking can grow to several times that.
+    // Backups compress well, so allow them to unpack to more than the upload
+    // limit. Space is reserved for what the zip says it unpacks to, and the
+    // unpack is cut off there, so a zip that understates it fails instead of
+    // filling the disk.
+    let declared = {
+        let zip = tmp.clone();
+        tokio::task::spawn_blocking(move || backup::unpacked_size(&zip)).await?
+    };
+    let declared = match declared {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(bad(format!("{e:#}")));
+        }
+    };
+    let max_bytes = declared.min(s.max_upload.saturating_mul(4));
     let _unpack = match hold_upload_space(&folder, max_bytes, "not enough free space to restore this backup") {
         Ok(hold) => hold,
         Err(e) => {
@@ -1504,6 +1535,17 @@ fn health_report(s: &AppState) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_cap_follows_content_length() {
+        let mb = 1024 * 1024;
+        let mut h = HeaderMap::new();
+        assert_eq!(upload_cap(&h, 2048 * mb).unwrap(), 2048 * mb); // chunked: the limit
+        h.insert(header::CONTENT_LENGTH, "51200".parse().unwrap());
+        assert_eq!(upload_cap(&h, 2048 * mb).unwrap(), 51200);
+        h.insert(header::CONTENT_LENGTH, (3 * mb).to_string().parse().unwrap());
+        assert_eq!(upload_cap(&h, 2 * mb).unwrap_err().status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
     use tokio::sync::oneshot;
     use tokio_stream::StreamExt;
 
