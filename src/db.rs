@@ -442,6 +442,14 @@ pub fn rename_page(conn: &Connection, from: &str, to: &str, task_words: &[String
     Ok(out)
 }
 
+/// A note title. Long enough for a real name, and short enough that one save
+/// cannot store a title of unbounded length.
+const MAX_PAGE_NAME_CHARS: usize = 300;
+
+/// One page as the JSON that is stored and copied into history. The request
+/// body may be 100 MB; a single page is capped well under that.
+const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
+
 /// Shared by save and rename. The name is already trimmed. A journal date is
 /// allowed here: a journal is saved under that name. Rename rejects dates,
 /// and renaming a journal, on its own.
@@ -453,6 +461,21 @@ fn reject_page_name(name: &str) -> Result<()> {
         || name.chars().any(char::is_control)
     {
         bail!("names can't be empty, start with #, or contain [[ ]] or control characters");
+    }
+    if name.chars().count() > MAX_PAGE_NAME_CHARS {
+        bail!("page names can be at most {MAX_PAGE_NAME_CHARS} characters");
+    }
+    Ok(())
+}
+
+fn reject_page_size(blocks: &[Block]) -> Result<()> {
+    // A serialize error is refused as too large. Chaining the JSON error
+    // would turn the response into a message-less 500.
+    let Ok(bytes) = serde_json::to_vec(blocks) else {
+        bail!("this page is too large to save");
+    };
+    if bytes.len() > MAX_PAGE_BYTES {
+        bail!("this page is too large to save");
     }
     Ok(())
 }
@@ -817,6 +840,7 @@ fn save_page_inner(
     validate_blocks(blocks)?;
     let name = name.trim();
     reject_page_name(name)?;
+    reject_page_size(blocks)?;
     let sp = Savepoint::begin(conn, "save_page")?;
     let tx = conn;
     let now = now_ms();
@@ -981,12 +1005,16 @@ pub fn delete_page(conn: &Connection, name: &str) -> Result<Option<PageMeta>> {
 // - the save removes a lot (5+ blocks, or more than 30% and 200+ characters
 //   of text), or
 // - the caller gives a reason (Keep mine, restore, merge, delete).
-// Up to HISTORY_KEEP versions per page; a version equal to the newest kept
-// one isn't stored twice. Rows belong to the page id, so a rename does not
-// pick up history left behind by a deleted page of the new name.
+// Up to HISTORY_KEEP versions per page, and at most HISTORY_BYTES of their
+// stored JSON (oldest dropped first; the newest row is kept even when it
+// alone is over that). A version equal to the newest kept one isn't stored
+// twice. Rows belong to the page id, so a rename does not pick up history
+// left behind by a deleted page of the new name.
 
 const HISTORY_EVERY_MS: i64 = 10 * 60 * 1000;
 pub const HISTORY_KEEP: i64 = 100;
+/// Stored snapshot JSON kept for one page, in bytes.
+const HISTORY_BYTES: i64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct HistoryEntry {
@@ -1076,11 +1104,40 @@ pub fn snapshot(conn: &Connection, page: &PageMeta, blocks: &[Block], reason: &s
 }
 
 fn trim_history(conn: &Connection, page_id: &str) -> Result<()> {
+    trim_history_to(conn, page_id, HISTORY_KEEP, HISTORY_BYTES)
+}
+
+fn trim_history_to(conn: &Connection, page_id: &str, keep_rows: i64, keep_bytes: i64) -> Result<()> {
     conn.execute(
         "DELETE FROM page_history WHERE page_id = ?1 AND id NOT IN
            (SELECT id FROM page_history WHERE page_id = ?1 ORDER BY saved_at DESC, id DESC LIMIT ?2)",
-        params![page_id, HISTORY_KEEP],
+        params![page_id, keep_rows],
     )?;
+    let rows: Vec<(i64, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, length(CAST(blocks AS BLOB)) FROM page_history
+             WHERE page_id = ?1 ORDER BY saved_at DESC, id DESC",
+        )?;
+        stmt.query_map([page_id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)?.max(0))))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let mut total: i64 = 0;
+    let mut keep: i64 = 0;
+    for (i, &(_, bytes)) in rows.iter().enumerate() {
+        // Always keep the newest row. Older ones stop when the byte budget is full.
+        if i > 0 && total.saturating_add(bytes) > keep_bytes {
+            break;
+        }
+        total = total.saturating_add(bytes);
+        keep += 1;
+    }
+    if keep < i64::try_from(rows.len()).unwrap_or(i64::MAX) {
+        conn.execute(
+            "DELETE FROM page_history WHERE page_id = ?1 AND id NOT IN
+               (SELECT id FROM page_history WHERE page_id = ?1 ORDER BY saved_at DESC, id DESC LIMIT ?2)",
+            params![page_id, keep],
+        )?;
+    }
     Ok(())
 }
 
@@ -1878,6 +1935,57 @@ mod tests {
         save_page(&c, "Retired", 0, &[block("n", None, "brand new")], &[]).unwrap();
         assert!(history(&c, "Retired").unwrap().is_empty());
         assert!(deleted_pages(&c).unwrap().iter().any(|d| d.page_id == retired.id));
+    }
+
+    #[test]
+    fn page_names_and_pages_have_a_size_limit() {
+        let c = mem();
+        let ok_name = "n".repeat(MAX_PAGE_NAME_CHARS);
+        assert!(matches!(save_page(&c, &ok_name, 0, &[block("a", None, "x")], &[]).unwrap(), SaveOutcome::Saved(_)));
+        let too_long = "n".repeat(MAX_PAGE_NAME_CHARS + 1);
+        let Err(err) = save_page(&c, &too_long, 0, &[block("b", None, "x")], &[]) else {
+            panic!("a too-long name was saved");
+        };
+        assert!(err.to_string().contains("300"));
+        assert!(rename_page(&c, &ok_name, &too_long, &[]).is_err());
+        assert!(matches!(save_page(&c, "Nov 11th, 2026", 0, &[block("j", None, "today")], &[]).unwrap(), SaveOutcome::Saved(_)));
+
+        let huge = "x".repeat(MAX_PAGE_BYTES);
+        let Err(err) = save_page(&c, "Big", 0, &[block("c", None, &huge)], &[]) else {
+            panic!("an oversized page was saved");
+        };
+        assert!(err.to_string().contains("too large"));
+        assert!(get_page(&c, "Big").unwrap().is_none());
+        assert!(matches!(save_page(&c, "Ok", 0, &[block("d", None, "hello")], &[]).unwrap(), SaveOutcome::Saved(_)));
+    }
+
+    #[test]
+    fn history_is_capped_by_bytes_as_well_as_rows() {
+        let c = mem();
+        let insert = |at: i64, body: &str| {
+            c.execute(
+                "INSERT INTO page_history (page_id, page_name, name_lower, version, saved_at, reason, blocks, block_count, word_count)
+                 VALUES ('p', 'P', 'p', 1, ?1, 'autosave', ?2, 1, 1)",
+                params![at, body],
+            )
+            .unwrap();
+        };
+        let saved_ats = || -> Vec<i64> {
+            let mut stmt = c.prepare("SELECT saved_at FROM page_history WHERE page_id = 'p' ORDER BY saved_at DESC").unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        };
+        insert(1, &"a".repeat(40));
+        insert(2, &"b".repeat(40));
+        insert(3, &"c".repeat(40));
+        insert(4, &"d".repeat(10));
+        // Newest first: 10 + 40 + 40 = 90, and the next 40 would pass it.
+        trim_history_to(&c, "p", 100, 90).unwrap();
+        assert_eq!(saved_ats(), vec![4, 3, 2]);
+        trim_history_to(&c, "p", 2, 10_000).unwrap();
+        assert_eq!(saved_ats(), vec![4, 3]);
+        // The newest row stays even when it alone is over the budget.
+        trim_history_to(&c, "p", 100, 5).unwrap();
+        assert_eq!(saved_ats(), vec![4]);
     }
 
     #[test]

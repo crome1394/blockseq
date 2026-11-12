@@ -159,7 +159,8 @@ CRDTs (conflict-free merge structures):
 - One user, usually writing on one device at a time. Real conflicts are rare,
   so detecting them is enough. Merging them automatically isn't needed.
 - It is very simple to get right. Each save is atomic, the server checks the
-  block list (unique ids, parents before children), and there is no history of
+  block list (unique ids, parents before children), a page name is at most
+  300 characters, and the page's JSON is at most 4 MB. There is no history of
   operations to replay.
 - The cost is bandwidth proportional to page size, which is negligible for
   notes.
@@ -189,7 +190,9 @@ CRDTs (conflict-free merge structures):
   stored: ciphertext for #Encrypted) if the newest kept version is >10 min
   old, the save removes 5+ blocks or >30%/200+ chars, or a reason is given
   (`save_page_noting`: Keep mine via `overwrite: true`; restore; merge;
-  `delete_page`). Identical consecutive versions are skipped; 100 per page.
+  `delete_page`). Identical consecutive versions are skipped. Each page keeps
+  at most 100 versions and 32 MB of stored snapshots; older rows are dropped
+  first.
   A version whose stored JSON does not parse is flagged and is not listed as
   an empty page. `restore_version` saves a kept version through `save_page_inner` (keeping
   the replaced one) after giving blocks whose ids now live elsewhere new ids.
