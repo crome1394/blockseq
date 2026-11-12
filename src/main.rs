@@ -83,6 +83,10 @@ async fn require_password(State(s): State<Arc<AppState>>, req: Request, next: Ne
     let Some(expected) = &s.password else {
         return next.run(req).await;
     };
+    // Monitoring can check health without the password (it shows no notes).
+    if req.uri().path() == "/api/health" {
+        return next.run(req).await;
+    }
     let ok = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -129,7 +133,7 @@ async fn static_file(uri: Uri) -> Response {
     }
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(state: Arc<AppState>) {
     let ctrl_c = tokio::signal::ctrl_c();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("install SIGTERM handler");
@@ -138,6 +142,16 @@ async fn shutdown_signal() {
         _ = term.recv() => {},
     }
     tracing::info!("shutting down");
+    // Each workbook's lock waits for a save in progress; then the database
+    // files are tidied so they are complete on their own (handy for backups).
+    let tidy = tokio::task::spawn_blocking(move || {
+        for wb in state.workbooks.open_workbooks() {
+            if let Err(e) = db::tidy(&wb.db.lock()) {
+                tracing::warn!("workbook {}: {e:#}", wb.id);
+            }
+        }
+    });
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tidy).await;
     // Open live-update streams never finish on their own, so don't wait on
     // them for long. Every save is already committed, so exiting is safe.
     tokio::spawn(async {
@@ -184,6 +198,10 @@ async fn main() -> Result<()> {
 
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating {}", data_dir.display()))?;
+    let cleaned = workbooks::clean_temp(&data_dir);
+    if cleaned > 0 {
+        tracing::info!("removed {cleaned} temporary files left by an interrupted upload, export or import");
+    }
     let config = config::Config::load(&data_dir.join("config.json")).context("reading the shared settings")?;
     let state = Arc::new(AppState {
         root: data_dir.clone(),
@@ -224,7 +242,8 @@ async fn main() -> Result<()> {
         .route("/encryption/imported", get(api::get_imported_key).delete(api::done_imported_key))
         .route("/export", get(api::export))
         .route("/import", post(api::import))
-        .route("/events", get(api::events));
+        .route("/events", get(api::events))
+        .route("/health", get(api::health));
 
     let app = Router::new()
         .nest("/api", api)
@@ -244,7 +263,7 @@ async fn main() -> Result<()> {
         if state.password.is_some() { " (password required)" } else { "" }
     );
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
     Ok(())
 }

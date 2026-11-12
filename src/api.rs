@@ -869,3 +869,26 @@ pub async fn done_imported_key(Wb(wb): Wb) -> ApiResult {
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
+
+/// For monitoring (no password needed; shows no notes): the server runs,
+/// config.json reads, and each open workbook's database answers and passed
+/// its startup check. 503 if anything is wrong.
+pub async fn health(State(s): Shared) -> Response {
+    let config = match s.read_config() {
+        Ok(_) => "ok".to_string(),
+        Err(e) => format!("{e:#}"),
+    };
+    let mut ok = config == "ok";
+    let workbooks: Vec<_> = s
+        .workbooks
+        .open_workbooks()
+        .iter()
+        .map(|wb| {
+            let answers = wb.db.lock().query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).is_ok();
+            ok &= answers && wb.integrity == "ok";
+            json!({ "id": wb.id, "database": if answers { "ok" } else { "not answering" }, "integrity": wb.integrity })
+        })
+        .collect();
+    let status = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    (status, Json(json!({ "ok": ok, "version": env!("CARGO_PKG_VERSION"), "config": config, "workbooks": workbooks }))).into_response()
+}

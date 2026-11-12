@@ -28,6 +28,9 @@ pub struct Workbook {
     /// this handle keep using the database (same file), but must not write
     /// Markdown under the old folder name.
     pub retired: std::sync::atomic::AtomicBool,
+    /// Result of SQLite's quick integrity check when the workbook opened
+    /// ("ok" when healthy). Shown by /api/health.
+    pub integrity: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -255,12 +258,18 @@ impl Registry {
         }
         let import = Self::kind(&dir) == "logseq";
         let conn = db::open(&dir.join(DB_FILE)).with_context(|| format!("opening workbook {id}"))?;
+        let integrity = db::quick_check(&conn);
+        if integrity == "ok" {
+            tracing::info!("workbook {id}: database check ok");
+        } else {
+            tracing::error!("workbook {id}: DATABASE CHECK FAILED: {integrity}. Restore blockseq.db from a backup.");
+        }
         db::refresh_task_refs(&conn, task_words)?;
         let pruned = db::prune_orphans(&conn)?.len();
         if pruned > 0 {
             tracing::info!("workbook {id}: removed {pruned} empty, unlinked pages");
         }
-        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: Default::default() });
+        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: Default::default(), integrity });
         if import {
             let report = import_logseq(&wb, task_words)?;
             tracing::info!("workbook {id}: imported Logseq graph ({report})");
@@ -275,6 +284,63 @@ impl Registry {
     pub fn open_workbooks(&self) -> Vec<std::sync::Arc<Workbook>> {
         self.open.lock().values().cloned().collect()
     }
+}
+
+/// Removes temporary files left by an upload, export, import or settings
+/// save that was cut short (crash, power cut, restart). Only called at
+/// startup, when nothing can still be using them. Returns how many.
+pub fn clean_temp(root: &Path) -> usize {
+    let mut removed = 0;
+    let mut remove = |path: &Path| {
+        let ok = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+        match ok {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::warn!("could not remove {}: {e}", path.display()),
+        }
+    };
+    let entries = |dir: &Path| -> Vec<(PathBuf, String)> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| (e.path(), e.file_name().to_string_lossy().into_owned()))
+            .collect()
+    };
+    // Data folder: exports in progress, settings temp files.
+    for (path, name) in entries(root) {
+        if name.starts_with(".export-") || (name.starts_with(".config.json.") && name.ends_with(".tmp")) || name == "config.json.tmp" {
+            remove(&path);
+        }
+    }
+    // workbooks/: uploaded backups and half-unpacked imports.
+    for (path, name) in entries(&root.join("workbooks")) {
+        if name.starts_with(".upload-") || name.starts_with(".import-") {
+            remove(&path);
+        }
+    }
+    // Every workbook: partial uploads and Markdown temp files.
+    let mut dirs = vec![root.to_path_buf()];
+    dirs.extend(entries(&root.join("workbooks")).into_iter().filter(|(p, n)| p.is_dir() && !n.starts_with('.')).map(|(p, _)| p));
+    for dir in dirs {
+        for (path, name) in entries(&dir.join("assets")) {
+            if name.starts_with(".upload-") && name.ends_with(".part") {
+                remove(&path);
+            }
+        }
+        for folder in ["pages", "journals"] {
+            for (path, name) in entries(&dir.join(folder)) {
+                if name.ends_with(".md.tmp") {
+                    remove(&path);
+                }
+            }
+        }
+        for (path, name) in entries(&dir) {
+            if name.starts_with(&format!(".{}.", crate::backup::IMPORTED_KEY)) && name.ends_with(".tmp") {
+                remove(&path);
+            }
+        }
+    }
+    removed
 }
 
 /// Copies a folder's files (not subfolders) into `to`.
@@ -363,4 +429,33 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
         }
     }
     Ok(format!("{pages} pages, {favorites} favorites, {skipped} files skipped"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leftover_temp_files_are_removed_and_nothing_else() {
+        let root = std::env::temp_dir().join(format!("bq-clean-{}", uuid::Uuid::new_v4()));
+        let make = |p: &str| {
+            let path = root.join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        };
+        for p in [".export-1.zip", ".config.json.abc.tmp", "workbooks/.upload-1.zip", "assets/.upload-1.part",
+                  "pages/Note.md.tmp", "workbooks/Home/assets/.upload-2.part"] {
+            make(p);
+        }
+        std::fs::create_dir_all(root.join("workbooks/.import-x/pages")).unwrap();
+        for p in ["config.json", "blockseq.db", "assets/photo.png", "pages/Note.md", "workbooks/Home/blockseq.db", "workbooks/Home/assets/a.png"] {
+            make(p);
+        }
+        assert_eq!(clean_temp(&root), 7);
+        for p in ["config.json", "blockseq.db", "assets/photo.png", "pages/Note.md", "workbooks/Home/blockseq.db", "workbooks/Home/assets/a.png"] {
+            assert!(root.join(p).exists(), "{p} was removed");
+        }
+        assert!(!root.join("workbooks/.import-x").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

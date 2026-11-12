@@ -158,6 +158,21 @@ pub enum SaveOutcome {
     ForeignIds(Vec<String>),
 }
 
+/// SQLite's quick integrity check: "ok", or what is wrong.
+pub fn quick_check(conn: &Connection) -> String {
+    match conn.query_row("PRAGMA quick_check(5)", [], |r| r.get::<_, String>(0)) {
+        Ok(s) => s,
+        Err(e) => format!("check failed to run: {e}"),
+    }
+}
+
+/// Housekeeping before exit: refresh query statistics and fold the WAL file
+/// back into the database, so the files on disk are complete on their own.
+pub fn tidy(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);")?;
+    Ok(())
+}
+
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
