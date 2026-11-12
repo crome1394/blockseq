@@ -16,7 +16,7 @@ await p.waitForSelector(".outline .content"); await sleep(500);
 const clickBtn = (t: string) => p.evaluate((t) => ([...document.querySelectorAll(".modal-actions button")].find((b) => b.textContent!.trim() === t) as HTMLElement).click(), t);
 console.log("open workbook:", await p.$eval(".wb-name", (e: any) => e.textContent));
 await p.click("#workbook-switch"); await p.waitForSelector(".pick-row"); await sleep(200);
-console.log("rows:", await p.$$eval(".pick-row", (x: any[]) => x.slice(0, 2).map((r) => `${r.querySelector(".wb-row-name").textContent} @ ${r.querySelector(".wb-path").textContent.replace(/.*scratchpad|.*blockseq-e2e-[^/]*/, "…")}`)));
+console.log("rows:", await p.$$eval(".pick-row", (x: any[]) => x.slice(0, 2).map((r) => `${r.querySelector(".wb-row-name").textContent} @ ${r.querySelector(".wb-path").textContent.replace(/.*blockseq-e2e-[^/]*/, "…")}`)));
 console.log("buttons:", await p.$$eval(".modal-actions button", (x: any[]) => x.map((b) => b.textContent.trim())));
 await p.screenshot({ path: S + "/workbooks-menu.png", clip: { x: 230, y: 50, width: 870, height: 600 } });
 // Main can't be deleted
