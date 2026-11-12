@@ -572,6 +572,7 @@ const ACTION_FNS = {
   goAssets: () => { location.hash = '#/assets'; },
   switchWorkbook: () => openWorkbookDialog(),
   help: () => openHelp(),
+  toggleLock: () => document.getElementById('lock-toggle').click(),
 };
 let pendingKey = null; // first key of a two-key sequence ("g" of "g j")
 let pendingTimer = null;
@@ -1128,7 +1129,7 @@ const lockToggle = document.getElementById('lock-toggle');
 function updateLockButton() {
   const open = cryptoIsUnlocked();
   lockToggle.textContent = open ? '🔓' : '🔒';
-  lockToggle.title = open ? 'Lock encrypted blocks' : 'Unlock encrypted blocks';
+  lockToggle.title = `${open ? 'Lock' : 'Unlock'} encrypted blocks (${prettyKey(keyFor('toggleLock'))})`;
   lockToggle.classList.toggle('open', open);
 }
 lockToggle.addEventListener('click', () => (cryptoIsUnlocked() ? cryptoLock() : unlockDialog()));
