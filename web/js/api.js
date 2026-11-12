@@ -45,6 +45,7 @@ const ERROR_TEXT = {
   not_found: 'That could not be found.',
   forbidden: 'Unlock with the current password first.',
   too_large: 'That file is too large.',
+  no_space: 'The server does not have enough free space for that.',
 };
 
 export function explain(data, fallback) {

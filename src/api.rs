@@ -676,7 +676,7 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
     tokio::fs::create_dir_all(&dir).await?;
     // Hidden temp name: valid_name() rejects it, so it is never served.
     let tmp = dir.join(format!(".upload-{}.part", uuid::Uuid::new_v4()));
-    let result = receive_upload(&tmp, body, s.max_upload).await;
+    let result = receive_upload(&tmp, body, s.max_upload, &dir).await;
     let head = match result {
         Ok(head) => head,
         Err(e) => {
@@ -705,10 +705,40 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
         .into_response())
 }
 
+/// Bytes promised to uploads that have not finished writing yet. Counted at
+/// each request's cap, so several at once cannot slip past the free-space check.
+static UPLOAD_RESERVED: parking_lot::Mutex<u64> = parking_lot::Mutex::new(0);
+
+struct UploadHold(u64);
+
+impl Drop for UploadHold {
+    fn drop(&mut self) {
+        let mut reserved = UPLOAD_RESERVED.lock();
+        *reserved = reserved.saturating_sub(self.0);
+    }
+}
+
+/// Refuses the upload when the volume could not keep `DISK_RESERVE` free
+/// after this request and every other in-flight upload wrote their maximum.
+fn hold_upload_space(volume: &std::path::Path, max: u64, why: &'static str) -> Result<UploadHold, ApiError> {
+    let free = crate::workbooks::free_bytes(volume).map_err(|e| {
+        tracing::error!("could not measure free space: {e}");
+        ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "storage", "could not check free space")
+    })?;
+    let mut reserved = UPLOAD_RESERVED.lock();
+    if !crate::workbooks::space_fits(free, *reserved, max, crate::workbooks::DISK_RESERVE) {
+        return Err(ApiError::new(StatusCode::INSUFFICIENT_STORAGE, "no_space", why));
+    }
+    *reserved = reserved.saturating_add(max);
+    Ok(UploadHold(max))
+}
+
 /// Writes the request body to `tmp`; returns its first bytes (for type
-/// detection). Fails if the body is empty or bigger than `max` bytes.
-async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64) -> Result<Vec<u8>, ApiError> {
+/// detection). Fails if the body is empty or bigger than `max` bytes, or if
+/// the volume that holds `volume` could not keep a reserve free.
+async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64, volume: &std::path::Path) -> Result<Vec<u8>, ApiError> {
     use tokio::io::AsyncWriteExt;
+    let _hold = hold_upload_space(volume, max, "not enough free space for this upload")?;
     let mut file = tokio::fs::File::create(tmp).await?;
     let mut stream = body.into_data_stream();
     let mut head = Vec::with_capacity(16);
@@ -1152,13 +1182,21 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
     }
     tokio::fs::create_dir_all(&folder).await?;
     let tmp = folder.join(format!(".upload-{}.zip", uuid::Uuid::new_v4()));
-    if let Err(e) = receive_upload(&tmp, body, s.max_upload).await {
+    if let Err(e) = receive_upload(&tmp, body, s.max_upload, &folder).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(e);
     }
     let server_key = read_config(&s).await?.encryption;
     // Backups compress well, so allow them to unpack to more than the upload limit.
     let max_bytes = s.max_upload.saturating_mul(4);
+    // The zip is already on disk. Unpacking can grow to several times that.
+    let _unpack = match hold_upload_space(&folder, max_bytes, "not enough free space to restore this backup") {
+        Ok(hold) => hold,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e);
+        }
+    };
     let (state, zip, wb_name) = (s.clone(), tmp.clone(), name.clone());
     let result = tokio::task::spawn_blocking(move || state.workbooks.restore(&wb_name, &zip, server_key.as_ref(), max_bytes))
         .await

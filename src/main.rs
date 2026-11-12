@@ -8,7 +8,7 @@
 //!   `BLOCKSEQ_PASSWORD`  require this password via HTTP basic auth (optional
 //!                      on localhost; required to listen on other addresses
 //!                      unless `BLOCKSEQ_HOSTS` is set)
-//!   `BLOCKSEQ_MAX_UPLOAD_MB`  largest file upload in MB (default 2048)
+//!   `BLOCKSEQ_MAX_UPLOAD_MB`  largest file upload in MB (default 256)
 //!   `BLOCKSEQ_TRUSTED_PROXIES`  reverse proxy addresses whose X-Forwarded-For
 //!                      is used for the wrong-password limit (optional)
 //!   `BLOCKSEQ_HOSTS`     host names to serve, comma-separated (optional; IP
@@ -104,6 +104,9 @@ async fn static_file(uri: Uri) -> Response {
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
+
+/// Largest upload accepted when `BLOCKSEQ_MAX_UPLOAD_MB` is unset, in MB.
+const DEFAULT_MAX_UPLOAD_MB: u64 = 256;
 
 /// True when `addr` is this machine only (`127.0.0.1`, `::1`, `localhost`).
 /// `0.0.0.0` and `::` are not: they accept connections from other hosts.
@@ -223,7 +226,7 @@ async fn main() -> Result<()> {
              or listen on 127.0.0.1 only (and put a proxy in front)."
         );
     }
-    let max_upload_mb: u64 = std::env::var("BLOCKSEQ_MAX_UPLOAD_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(2048);
+    let max_upload_mb: u64 = std::env::var("BLOCKSEQ_MAX_UPLOAD_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_MAX_UPLOAD_MB);
 
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating {}", data_dir.display()))?;

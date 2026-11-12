@@ -194,6 +194,32 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Kept free on a volume so uploads, a restore and a backup cannot fill it.
+pub const DISK_RESERVE: u64 = 256 * 1024 * 1024;
+
+/// Bytes still available to this process on the volume that holds `path`.
+pub fn free_bytes(path: &Path) -> std::io::Result<u64> {
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
+    let c = std::ffi::CString::new(bytes).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains a nul")
+    })?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c` is a nul-terminated path, and `st` is a writable statvfs buffer.
+    let rc = unsafe { libc::statvfs(c.as_ptr(), &mut st) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let unit = u64::try_from(st.f_frsize).unwrap_or(0);
+    let blocks = u64::try_from(st.f_bavail).unwrap_or(u64::MAX);
+    Ok(unit.saturating_mul(blocks))
+}
+
+/// `free` can accept `need` more bytes, after `reserved` already promised to
+/// other uploads, and still leave `reserve` unused.
+pub fn space_fits(free: u64, reserved: u64, need: u64, reserve: u64) -> bool {
+    free.saturating_sub(reserved) >= reserve.saturating_add(need)
+}
+
 /// A folder relative to the data directory, with `/` separators. Main is `.`.
 /// An absolute path is not returned: the data directory stays off the API.
 pub fn relative_path(root: &Path, dir: &Path) -> String {
@@ -832,6 +858,21 @@ mod tests {
         assert!(db::get_page(&later.db.lock(), "Kept").unwrap().is_some());
         drop((stay, again, other, later, reg));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uploads_leave_a_reserve_and_count_together() {
+        assert!(space_fits(DISK_RESERVE + 256, 0, 256, DISK_RESERVE));
+        assert!(!space_fits(DISK_RESERVE + 255, 0, 256, DISK_RESERVE));
+        // The second upload is refused while the first still holds its cap.
+        let mut reserved = 0u64;
+        let free = DISK_RESERVE + 256;
+        assert!(space_fits(free, reserved, 256, DISK_RESERVE));
+        reserved += 256;
+        assert!(!space_fits(free, reserved, 256, DISK_RESERVE));
+        assert!(space_fits(free, reserved, 0, DISK_RESERVE));
+        assert!(!space_fits(10, 50, 1, 1));
+        assert!(free_bytes(std::env::temp_dir().as_path()).unwrap() > 0);
     }
 
     #[test]

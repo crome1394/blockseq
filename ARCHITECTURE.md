@@ -264,7 +264,7 @@ CRDTs (conflict-free merge structures):
   | `PUT /api/page?name=` | `put_page` | save; 200 or 409 |
   | `DELETE /api/page?name=` | `delete_page` | 204 / 404 |
   | `POST /api/page/ensure?name=` | `ensure_page` | create an empty page if missing (calendar) |
-  | `POST /api/assets` | `upload_asset` | raw bytes of any file, streamed to disk (cap `BLOCKSEQ_MAX_UPLOAD_MB`); `X-Filename` optional; returns path and kind |
+  | `POST /api/assets` | `upload_asset` | raw bytes of any file, streamed to disk (cap `BLOCKSEQ_MAX_UPLOAD_MB`, default 256); `X-Filename` optional; returns path and kind |
   | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them; `path` is `assets/<file>` |
   | `DELETE /api/assets?name=` | `delete_asset` | removes the file |
   | `GET /assets/<name>` | `get_asset` | streamed, `Range` support (video seeking), cached forever, `nosniff`; `assets::serve_policy` decides type and inline vs download (HTML/SVG/unknown always download, with `sandbox` CSP) |
@@ -346,7 +346,9 @@ CRDTs (conflict-free merge structures):
   mix two moments. `config.json` and a `blockseq-backup.json` manifest
   (`format: 1`) go in too. The zip is a hidden temp file in the data folder
   that is unlinked once opened and streamed. Media and
-  archives are stored, the rest deflated. Import streams the upload to disk,
+  archives are stored, the rest deflated. An upload is refused when free space
+  on its volume, minus the cap of every upload already in flight, would fall
+  below a 256 MB reserve. Import streams the upload to disk,
   unpacks only known paths (via `enclosed_name`, so no traversal; a single
   wrapping folder is stripped) into `workbooks/.import-<uuid>/`, caps the
   unpacked size at 4× the upload limit, checks the database (`quick_check`,

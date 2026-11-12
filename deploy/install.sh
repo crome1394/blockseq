@@ -44,7 +44,7 @@ BLOCKSEQ_ADDR=127.0.0.1:3030
 # Reverse proxy (e.g. Caddy) addresses: lets the wrong-password
 # limit see each real client instead of the proxy. Example:
 #BLOCKSEQ_TRUSTED_PROXIES=10.0.0.1
-#BLOCKSEQ_MAX_UPLOAD_MB=2048
+#BLOCKSEQ_MAX_UPLOAD_MB=256
 EOF
   chmod 640 /etc/blockseq.env
 fi
