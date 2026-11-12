@@ -28,6 +28,20 @@ const DB_FILE: &str = "blockseq.db";
 /// Folders copied into (and restored from) a backup.
 const FOLDERS: [&str; 6] = ["pages", "journals", "assets", "logseq", "draws", "whiteboards"];
 
+/// Upper bound on the bytes [`stage_snapshot`] writes for `dir`.
+/// Other workbooks sitting next to Main are not included.
+pub fn snapshot_bytes(dir: &Path) -> u64 {
+    let mut n = std::fs::metadata(dir.join(DB_FILE)).map(|m| m.len()).unwrap_or(0);
+    for suffix in ["-wal", "-shm"] {
+        n = n.saturating_add(std::fs::metadata(dir.join(format!("{DB_FILE}{suffix}"))).map(|m| m.len()).unwrap_or(0));
+    }
+    n = n.saturating_add(std::fs::metadata(dir.join(IMPORTED_KEY)).map(|m| m.len()).unwrap_or(0));
+    for folder in FOLDERS {
+        n = n.saturating_add(crate::workbooks::tree_bytes(&dir.join(folder)));
+    }
+    n
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
     pub format: u32,
@@ -462,6 +476,18 @@ pub fn export_command(data_dir: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_bytes_ignores_other_workbooks() {
+        let tmp = std::env::temp_dir().join(format!("bq-bytes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.join("pages")).unwrap();
+        std::fs::write(tmp.join("pages/A.md"), "hello").unwrap();
+        std::fs::create_dir_all(tmp.join("workbooks/Other")).unwrap();
+        std::fs::write(tmp.join("workbooks/Other/big.bin"), vec![0u8; 50_000]).unwrap();
+        let n = snapshot_bytes(&tmp);
+        assert!(n < 50_000 && n >= 5, "{n}");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
 
     #[test]
     fn targets_are_confined() {

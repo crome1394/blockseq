@@ -54,6 +54,11 @@ const USAGE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 /// Total size of the files under `dir`. Symlinked files count (their
 /// target's size); symlinked folders inside aren't followed, so a link back
 /// up the tree can't loop.
+/// Bytes in the files under `dir`. An upper bound on a zip of that tree.
+pub fn tree_bytes(dir: &Path) -> u64 {
+    dir_size(dir)
+}
+
 fn dir_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries

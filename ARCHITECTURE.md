@@ -344,10 +344,12 @@ CRDTs (conflict-free merge structures):
   `journals/`, `assets/`, `logseq/` (no hidden or temp files) into a temp
   folder. The zip is built from that copy, so a save during compression cannot
   mix two moments. `config.json` and a `blockseq-backup.json` manifest
-  (`format: 1`) go in too. The zip is a hidden temp file in the data folder
-  that is unlinked once opened and streamed. Media and
-  archives are stored, the rest deflated. An upload is refused when free space
-  on its volume, minus the cap of every upload already in flight, would fall
+  (`format: 1`) go in too. The zip is written on the temp filesystem, not in
+  the data folder, and unlinked once opened and streamed. It is not started
+  when the temp volume could not keep a 256 MB reserve after the staged copy
+  and the zip. Media and archives are stored, the rest deflated. An upload is
+  refused when free space on its volume, minus the cap of every upload already
+  in flight, would fall
   below a 256 MB reserve. Import streams the upload to disk,
   unpacks only known paths (via `enclosed_name`, so no traversal; a single
   wrapping folder is stripped) into `workbooks/.import-<uuid>/`, caps the

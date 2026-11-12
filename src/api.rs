@@ -1128,22 +1128,50 @@ fn file_body(mut file: tokio::fs::File, limit: Option<u64>) -> Body {
     Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx))
 }
 
+/// Where an export zip is written: the temp filesystem, not the data folder.
+fn export_zip_path(id: uuid::Uuid) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("blockseq-export-{id}.zip"))
+}
+
+/// Refuses to build a backup that would leave less than `DISK_RESERVE` free
+/// on `volume`. `need` is an upper bound on the bytes about to be written.
+fn enough_export_space(volume: &std::path::Path, need: u64) -> anyhow::Result<()> {
+    let free = match crate::workbooks::free_bytes(volume) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("could not measure free space: {e}");
+            anyhow::bail!("could not check free space");
+        }
+    };
+    if crate::workbooks::space_fits(free, 0, need, crate::workbooks::DISK_RESERVE) {
+        Ok(())
+    } else {
+        anyhow::bail!("not enough free space to build the backup")
+    }
+}
+
 /// Downloads the whole workbook as a backup zip (see backup.rs).
 pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
     let id = uuid::Uuid::new_v4();
-    // Hidden name in the data folder: never listed, served or backed up.
-    let tmp_zip = s.root.join(format!(".export-{id}.zip"));
+    // On the temp filesystem, not in the data folder. Unlinked once streamed.
+    let tmp_zip = export_zip_path(id);
     let config = s.root.join("config.json");
     let (wb2, zip_path) = (wb.clone(), tmp_zip.clone());
     let made = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         // Copy the database and the files under the writer lock, into a temp
         // folder. The zip is built from that folder after the lock is released.
-        let stage = std::env::temp_dir().join(format!("blockseq-snap-{id}"));
+        let temp = std::env::temp_dir();
+        let stage = temp.join(format!("blockseq-snap-{id}"));
         let result = (|| {
+            // Room for the staged copy and, after that, for the zip.
+            let live = backup::snapshot_bytes(&wb2.dir);
+            enough_export_space(&temp, live.saturating_mul(2).saturating_add(1024 * 1024))?;
             let db_copy = {
                 let conn = wb2.db.lock();
                 backup::stage_snapshot(&wb2.dir, &stage, Some(&conn))?
             };
+            let staged = crate::workbooks::tree_bytes(&stage);
+            enough_export_space(&temp, staged.saturating_add(1024 * 1024))?;
             backup::write_zip(&wb2.id, &stage, &db_copy, &config, &zip_path)
         })();
         let _ = std::fs::remove_dir_all(&stage);
@@ -1392,6 +1420,14 @@ mod tests {
 
         let locked = classify(&anyhow::anyhow!("sqlite_busy"));
         assert_eq!(locked.code, "storage");
+    }
+
+    #[test]
+    fn export_zip_stays_out_of_the_data_folder() {
+        let path = export_zip_path(uuid::Uuid::nil());
+        assert!(path.starts_with(std::env::temp_dir()));
+        assert_eq!(path.file_name().and_then(|s| s.to_str()), Some("blockseq-export-00000000-0000-0000-0000-000000000000.zip"));
+        assert!(std::path::Path::new("/var/lib/blockseq").join(path.file_name().unwrap()) != path);
     }
 
     #[test]
