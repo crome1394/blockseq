@@ -228,6 +228,7 @@ async fn main() -> Result<()> {
         .route("/page/rename", post(api::rename_page))
         .route("/pages", get(api::list_pages))
         .route("/names", get(api::names))
+        .route("/sidebar", get(api::sidebar))
         .route("/journals", get(api::journals))
         .route("/search", get(api::search))
         .route("/block", get(api::get_block).put(api::put_block))

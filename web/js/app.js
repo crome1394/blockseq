@@ -287,14 +287,13 @@ function refreshFavorites(now = false) {
   clearTimeout(favTimer);
   favTimer = setTimeout(async () => {
     if (!getSetting('favorites')) return;
-    let pages;
-    try { pages = await api.pages(); } catch { return; }
-    const favs = pages.filter((p) => p.favorite).sort((a, b) => a.name.localeCompare(b.name));
+    let favs;
+    try { favs = (await api.sidebar()).favorites; } catch { return; }
     const list = favBox.querySelector('.fav-list');
-    list.replaceChildren(...favs.map((p) => {
-      const a = el('a', 'fav', p.name);
-      a.href = pageHref(p.name);
-      a.dataset.name = p.name.toLowerCase();
+    list.replaceChildren(...favs.map((name) => {
+      const a = el('a', 'fav', name);
+      a.href = pageHref(name);
+      a.dataset.name = name.toLowerCase();
       return a;
     }));
     if (!favs.length) list.append(el('div', 'muted small fav-empty', 'Star a page (☆ next to its title) to add it here.'));

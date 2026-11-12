@@ -51,6 +51,8 @@ export const api = {
   renamePage: (name, to) => request('POST', `/api/page/rename?name=${enc(name)}&to=${enc(to)}`),
   setFavorite: (name, on) => request('POST', `/api/page/favorite?name=${enc(name)}&on=${on}`),
   pages: () => getJson('/api/pages'),
+  // Calendar dots, favourites and the last change: cheap, fetched after saves.
+  sidebar: () => getJson('/api/sidebar'),
   names: () => getJson('/api/names'),
   journals: (before, limit = 10) =>
     getJson(`/api/journals?limit=${limit}${before ? `&before=${before}` : ''}`),

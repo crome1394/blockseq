@@ -273,6 +273,10 @@ pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
     Ok(Json(pages).into_response())
 }
 
+pub async fn sidebar(Wb(wb): Wb) -> ApiResult {
+    Ok(Json(db::sidebar(&wb.db.lock())?).into_response())
+}
+
 pub async fn names(Wb(wb): Wb) -> ApiResult {
     let names = db::all_names(&wb.db.lock())?;
     Ok(Json(names).into_response())

@@ -24,10 +24,9 @@ export class Calendar {
   // Reloads which days have journal entries.
   async refresh() {
     try {
-      const pages = await api.pages();
-      const newest = Math.max(0, ...pages.map((p) => p.updated_at || 0));
-      document.dispatchEvent(new CustomEvent('blockseq:last-change', { detail: { at: newest } }));
-      this.days = new Set(pages.filter((p) => p.journal_day && p.block_count > 0).map((p) => p.journal_day));
+      const side = await api.sidebar();
+      document.dispatchEvent(new CustomEvent('blockseq:last-change', { detail: { at: side.newest } }));
+      this.days = new Set(side.journal_days);
       this.render();
     } catch { /* offline: keep the old dots */ }
   }

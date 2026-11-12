@@ -777,6 +777,31 @@ pub fn list_pages(conn: &Connection) -> Result<Vec<PageSummary>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+#[derive(Debug, Serialize)]
+pub struct Sidebar {
+    /// yyyymmdd of journal days that have blocks (calendar dots).
+    pub journal_days: Vec<i64>,
+    /// Starred page names.
+    pub favorites: Vec<String>,
+    /// When anything in the workbook last changed (ms).
+    pub newest: i64,
+}
+
+/// What the sidebar needs after every save. Cheap (indexes only), unlike
+/// list_pages, which reads every block to count words.
+pub fn sidebar(conn: &Connection) -> Result<Sidebar> {
+    let journal_days = conn
+        .prepare("SELECT journal_day FROM pages p WHERE journal_day IS NOT NULL AND EXISTS (SELECT 1 FROM blocks b WHERE b.page_id = p.id)")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let favorites = conn
+        .prepare("SELECT name FROM pages WHERE favorite = 1 ORDER BY name_lower")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let newest = conn.query_row("SELECT COALESCE(MAX(updated_at), 0) FROM pages", [], |r| r.get(0))?;
+    Ok(Sidebar { journal_days, favorites, newest })
+}
+
 /// Every page name plus every linked or tagged name, for autocomplete.
 pub fn all_names(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
