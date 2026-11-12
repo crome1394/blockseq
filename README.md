@@ -48,6 +48,7 @@ Settings are environment variables:
 | `BLOCKSEQ_DATA`     | `./data`       | Database, Markdown mirror and uploaded images   |
 | `BLOCKSEQ_PASSWORD` | unset          | If set, the browser asks for this password      |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `2048`     | Largest file you can upload, in MB              |
+| `BLOCKSEQ_HOSTS`    | unset          | Host names to answer to, comma-separated (IP addresses and localhost always work). Blocks "DNS rebinding" by other websites; set it to your HTTPS name, e.g. `blockseq.example.com` |
 
 ## Deploy to a Proxmox LXC
 
@@ -145,7 +146,15 @@ need Tailscale.
 **Lock down the direct port.** Anyone on your LAN can still reach
 `http://<lxc>:3030` directly. To force everything through Caddy, allow
 port 3030 only from your router's IP (Proxmox firewall on the container), and/or
-set `BLOCKSEQ_PASSWORD`.
+set `BLOCKSEQ_PASSWORD`. If the HTTPS name can be reached from the internet,
+a password (or Caddy auth in front) is essential.
+
+**Built-in protections.** Blockseq refuses changes coming from other websites
+(a page you visit can't edit your notes through your browser), sends a
+Content-Security-Policy and no-framing headers, and with `BLOCKSEQ_HOSTS` set
+only answers to the names you list. `GET /api/health` reports whether the
+settings file and databases are healthy (no password needed; it shows no
+notes), e.g. for Uptime Kuma.
 
 **Without your router:** if the LXC is on your tailnet, `tailscale serve --bg 3030`
 gives you `https://<lxc-name>.<tailnet>.ts.net` instead. An unprivileged LXC
@@ -161,14 +170,22 @@ lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
 
 `/var/lib/blockseq/` (or `./data` locally) contains:
 
-- `config.json` holds settings shared by all devices (task statuses).
+- `config.json` holds settings shared by all devices (task statuses, the
+  locked encryption key, Main's name). It is written safely (never half-written)
+  and the previous version is kept as `config.json.bak`. If `config.json` is
+  ever damaged, Blockseq uses the `.bak` copy, or refuses to start rather than
+  start with empty settings (which would lose the encryption key). Back up
+  both, along with your recovery key.
 - `workbooks/<name>/` holds every workbook except Main (renaming a workbook
   renames its folder), each with the same
   layout as below (its own `blockseq.db`, `pages/`, `journals/`, `assets/`).
 - The rest of the folder is the **Main** workbook:
 - `blockseq.db` is the SQLite database and the source of truth.
 - `pages/*.md` and `journals/*.md` are Logseq-format copies, rewritten on every
-  save. You can point Logseq at this folder (read-only) to compare the two apps.
+  save and on every start. You can point Logseq at this folder to compare the
+  two apps, but **don't edit pages there in Logseq**: Blockseq never reads
+  these files back (only on a workbook's first import), so such edits are
+  overwritten.
 - `assets/` holds pasted and uploaded images, linked from blocks as
   `![name](../assets/name.png)`, the same layout Logseq uses. Removing an image
   from a block keeps the file, so undo still works.
@@ -189,6 +206,27 @@ collapsed state and favorites. `.org` files are skipped. The original Markdown
 files are copied to `logseq-original/` first, because Blockseq then rewrites
 `pages/` and `journals/` in its own (Logseq-compatible) format. Folder names may
 use letters, digits, spaces, `-`, `_` and `.`.
+
+### Keeping data safe over time
+
+- **Saves are checked.** Each save carries the page version it started from;
+  a page changed on another device shows a conflict instead of being
+  overwritten. Status changes from the task list are refused if the task
+  changed meanwhile. Pasting copied blocks never takes them away from the page
+  they came from (the copies get new ids). Renaming a page or tag is all or
+  nothing.
+- **Unsaved changes survive a crash.** While the server can't be reached, the
+  browser keeps a copy of your unsaved changes (encrypted blocks stay
+  encrypted). If the tab or browser dies, the page offers to restore them the
+  next time you open it.
+- **Startup checks.** Each workbook's database gets a quick integrity check
+  when it opens (shown in the log and by `/api/health`), and temporary files
+  left by an interrupted upload, export or import are removed. On shutdown the
+  database files are tidied so they're complete on their own.
+- **Upgrades back up first.** `deploy/install.sh` exports every workbook to
+  `/var/backups/blockseq/pre-upgrade-<date>/` before replacing the binary
+  (the last 10 are kept). To roll back, reinstall the previous binary and, if
+  needed, import the backup.
 
 ### Backup and restore
 

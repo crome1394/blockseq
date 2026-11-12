@@ -25,7 +25,8 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/main.rs` | Config from env, app state, router, optional password, static files, shutdown |
 | `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
 | `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import, rename (checkpoints and holds the open database while the folder moves; old handles are marked `retired` so they stop writing Markdown under the old name). Main's display name is `main_name` in `config.json` |
-| `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key) |
+| `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key). `load` errors on a damaged file (falls back to `config.json.bak`), `save` keeps the previous version as `.bak` and writes durably (`write_durable`: unique temp file, fsync, rename, fsync folder). All API changes go through `api::update_config` under the settings lock |
+| `src/guard.rs` | Outermost middleware: refuses cross-site non-GET requests (`Sec-Fetch-Site`, else `Origin` vs `Host`/`X-Forwarded-Host`) and host names outside `BLOCKSEQ_HOSTS`; adds the CSP (HTML only), `X-Frame-Options`, `Referrer-Policy`, `nosniff` |
 | `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
 | `src/db.rs` | Schema, all SQL, save transaction with version check, search, backlinks |
@@ -129,13 +130,16 @@ Browser                                   Server (db::save_page)
 ───────                                   ──────────────────────
 edit → markDirty() ─ 600 ms debounce ─►   PUT /api/page?name=X
                                           { base_version: 7, blocks: [...] }
-                                          BEGIN
+                                          SAVEPOINT (rolls back on any error)
                                           page.version == 7 ?
                                             no  → 409 + current page and blocks
-                                            yes → delete page's blocks,
-                                                  insert new blocks + refs,
-                                                  version = 8
-                                          COMMIT → write mirror → broadcast event
+                                          any block id on another page?
+                                            yes → 409 + foreign_ids
+                                          delete page's blocks,
+                                          insert new blocks + refs,
+                                          version = 8
+                                          RELEASE → write mirror (same lock)
+                                          → broadcast event
 version = 8, dirty = false  ◄──────────   200 { page }
 ```
 
@@ -159,6 +163,18 @@ CRDTs (conflict-free merge structures):
 - On **409**, autosave pauses and a banner offers *Use their version* (load the
   server copy) or *Keep mine* (adopt the server's version number and save
   again, overwriting).
+- On **409 with `foreign_ids`** (pasted blocks whose ids belong to another
+  page), the editor waits up to three saves while another editor in the tab is
+  still saving (a cut and paste whose source page hasn't saved yet), then
+  gives those blocks new ids (`renewIds`) and saves again. `save_page` refuses
+  such ids unless called with `allow_moves` (only the page-merge in
+  `rename_page` does), so a pasted copy can never take blocks from another
+  page.
+- **Local drafts.** Each attempt first stores the payload (`flatten({forSave})`,
+  after `sealSecrets`, so ciphertext only) in `localStorage` under
+  `blockseq.draft:<wb>:<page>`, removed once saved. `load()` offers a draft
+  older than 5 s that differs from the server copy (*Restore them* replaces the
+  page and saves). Drafts expire after 30 days.
 - On unload with unsaved changes, the client sends a final `fetch` with
   `keepalive` and the browser shows its leave-page warning.
 - Before switching views, the router waits up to 3 seconds for pending saves,
@@ -439,15 +455,26 @@ device ──LAN─────────────────────�
 ```
 
 The systemd unit runs as an unprivileged user with `ProtectSystem=strict`
-(read-only system) and can write only to `/var/lib/blockseq`. To upgrade,
-rebuild and run `deploy/install.sh` again. It replaces the binary and unit and
-keeps your data and env file.
+(read-only system), can write only to `/var/lib/blockseq`, and has no devices,
+capabilities, kernel tunables or extra address families (see the unit file).
+To upgrade, rebuild and run `deploy/install.sh` again: it first exports every
+workbook to `/var/backups/blockseq/pre-upgrade-*` with the new binary
+(read-only), then replaces the binary and unit and keeps your data and env
+file.
+
+At startup `workbooks::clean_temp` removes leftovers of interrupted work
+(`.export-*`, `.upload-*`, `.import-*`, `*.md.tmp`, settings temp files);
+each workbook runs `PRAGMA quick_check` when it opens (`Workbook.integrity`,
+reported by `GET /api/health`). Shutdown locks each workbook (waiting for a
+save in progress) and runs `PRAGMA optimize` and `wal_checkpoint(TRUNCATE)`
+before the forced exit. Locks are `parking_lot` (no poisoning: a panic can't
+jam a workbook). `rename_page` and `save_page` use a `Savepoint` guard that
+rolls back unless committed, so a rename is all or nothing.
 
 ## Known limits and extension points
 
 | Want | Where it would go |
 |------|-------------------|
-| Page rename | `db.rs`: update `pages.name`/`name_lower`, rewrite `[[old]]` in referencing blocks, rename the mirror file; a new API route |
 | Zoom into a block | `PageEditor` option to render from a given node as root; a `#/block/<id>` route |
 | Editable linked references | Render backlink blocks with a `PageEditor` scoped to the source page's subtree |
 | Queries (`{{query}}`) | A server endpoint over `refs` + `blocks`; rendered in `render.js` |
@@ -462,6 +489,5 @@ keeps your data and env file.
 - `cargo test` runs unit tests for journal names, link extraction, Markdown
   export, save and load, version conflicts, backlinks, search and block-order
   checks.
-- The UI was checked with scripted headless Chrome (typing, keys,
-  autocomplete, paste, two-browser conflict). Those scripts are not in the repo
-  yet.
+- `tests/e2e/run.sh` runs the browser tests (deno + puppeteer-core, headless
+  Chrome) against a throwaway server; see `tests/e2e/README.md`.

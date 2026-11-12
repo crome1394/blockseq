@@ -19,7 +19,9 @@ features**.
   `db.rs` (all SQL, schema, migrations), `md.rs` (Markdown import/export,
   link and tag parsing), `workbooks.rs` (workbook folders, Logseq import),
   `assets.rs` (uploads), `config.rs` (shared settings), `backup.rs`
-  (backup zips, restore), `crypto.rs` (terminal password reset).
+  (backup zips, restore), `crypto.rs` (terminal password reset), `guard.rs`
+  (cross-site / host checks, security headers).
+- `tests/e2e/` browser tests and their runner.
 - `web/` UI: `index.html`, `app.css`, and ES modules in `web/js/`. No build
   step, no bundler, no npm.
 - `deploy/` systemd unit and install script for the Proxmox LXC.
@@ -29,7 +31,8 @@ features**.
 ```sh
 cargo build                        # debug build; reads web/ from disk
 BLOCKSEQ_DATA=/tmp/bq BLOCKSEQ_ADDR=127.0.0.1:3939 ./target/debug/blockseq
-cargo test                         # unit tests (db, md, assets)
+cargo test                         # unit tests (db, md, assets, config, ...)
+tests/e2e/run.sh                   # browser tests on a throwaway server
 cargo build --release              # release build embeds web/ in the binary
 ```
 
@@ -51,7 +54,15 @@ cargo build --release              # release build embeds web/ in the binary
   Never drop or rewrite user content in a migration.
 - Saves use optimistic versioning (`base_version`, HTTP 409 on conflict).
   Keep it: two devices editing the same page must never silently overwrite
-  each other.
+  each other. Anything else that changes blocks must check what it expects
+  too (e.g. `update_block`'s `expected` text).
+- A save must never take blocks from another page: keep the `foreign_ids`
+  check in `save_page` (only the page merge may pass `allow_moves`).
+- Changes spanning several pages go in one `Savepoint` (all or nothing).
+- `config.json` holds the wrapped encryption key: change it only through
+  `api::update_config` / `Config::save`, and never fall back to defaults when
+  it can't be read.
+- Write the Markdown mirror while holding the workbook's database lock.
 - Never delete user files (pages, assets, workbook folders) without an
   explicit user action and a confirmation in the UI.
 - Imports never overwrite: a restored backup always becomes a new workbook.
@@ -61,9 +72,13 @@ cargo build --release              # release build embeds web/ in the binary
 
 **Encrypted blocks**
 - Plaintext of `#Encrypted` children must never be sent to the server, written
-  to `localStorage`, or put on the clipboard. Keep `flatten({ forSave: true })`,
+  to `localStorage` (local drafts store the sealed `forSave` payload only), or
+  put on the clipboard. Keep `flatten({ forSave: true })`,
   `sealSecrets` and the `subtreeMarkdown` rule intact, and test that the
   server's copy contains no plaintext after any change to saving or copying.
+- Password changes must prove possession of the key (`proof`, checked
+  against `proof_hash`); the public `check` alone must never authorize a
+  change once a proof hash exists.
 - Do not weaken the key derivation (PBKDF2-SHA256, 600k rounds for passwords)
   or change the formats without a version bump; `web/js/crypto.js` and
   `src/crypto.rs` must stay byte-compatible.
@@ -83,6 +98,9 @@ cargo build --release              # release build embeds web/ in the binary
   third-party JavaScript: the syntax highlighter, Markdown renderer and editor
   are written in-house on purpose. Rust crates must be permissively licensed
   (MIT / Apache-2.0 / BSD / similar), compatible with the MIT license.
+- No inline scripts or `on…=` attributes: the Content-Security-Policy only
+  allows Blockseq's own script files. New embeds need their host added to
+  `frame-src` in `guard.rs`.
 - The UI must work over plain HTTP on a LAN address: `crypto.randomUUID`
   and `navigator.clipboard` are not available there, so use the fallbacks in
   `api.js` (`uuid()`) and `ui.js` (`copyText`).
