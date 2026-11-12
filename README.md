@@ -306,11 +306,24 @@ blockseq export --all --out /mnt/backups/blockseq
 # or one workbook:  blockseq export "Home Lab" --out /mnt/backups/blockseq
 ```
 
-Example `/etc/cron.d/blockseq-backup` (keeps 30 days):
+A nightly job that keeps 30 days, written as a file in `/etc/cron.d/`:
 
-```
+```sh
+cat > /etc/cron.d/blockseq-backup <<'EOF'
 15 3 * * * root /usr/local/bin/blockseq export --all --out /mnt/backups/blockseq && find /mnt/backups/blockseq -name 'blockseq-*.zip' -mtime +30 -delete
+EOF
 ```
+
+- It runs at 03:15 as root. Use the full path: cron does not read `.bashrc`.
+- Old zips are removed only after a successful export (`&&`), so a failed
+  night never deletes the backups you have.
+- Each day gets its own file (`blockseq-main-2026-11-12.zip`); a second run
+  the same day replaces that day's zip.
+- The zips are readable by root only (`-rw-------`). A NAS job that collects
+  them as another user cannot read them; run it as root or change the
+  permissions after the export.
+- Now and then, restore one with **Import backup** as a new workbook to prove
+  it works, then delete that workbook.
 
 On the server, the commands find `/var/lib/blockseq` themselves; elsewhere
 set `BLOCKSEQ_DATA`. Container or VM snapshots are a good second layer.
