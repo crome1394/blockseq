@@ -182,8 +182,43 @@ impl Workbook {
                 n += 1;
             }
         }
+        if !self.is_retired() {
+            let removed = remove_stale_mirror_files(&self.dir, &names);
+            if removed > 0 {
+                tracing::info!("removed {removed} Markdown file(s) left under an older file name");
+            }
+        }
         Ok(n)
     }
+}
+
+/// Deletes files in `pages/` that hold a page under a file name this version
+/// no longer uses, so a page never has two Markdown files. Older versions kept
+/// `_` and `%` as they are and dropped control characters; `my_page.md` is now
+/// `my%5Fpage.md`. Only a file whose name decodes to an existing page, and is
+/// not that page's current file, is removed. Anything else in the folder is
+/// left alone. Returns how many files were removed.
+fn remove_stale_mirror_files(dir: &Path, names: &[String]) -> usize {
+    let current: HashMap<String, String> = names
+        .iter()
+        .map(|n| (n.to_lowercase(), md::mirror_path(n, None)))
+        .collect();
+    let Ok(entries) = std::fs::read_dir(dir.join("pages")) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(file) = file.to_str() else { continue };
+        let Some(stem) = file.strip_suffix(".md") else { continue };
+        if file.starts_with('.') || !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let Some(name) = md::page_name_from_file("pages", stem) else { continue };
+        let Some(expected) = current.get(&name.to_lowercase()) else { continue };
+        if *expected != format!("pages/{file}") && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Temp file, then rename. Not fsynced, unlike `config.json`. A crash can
@@ -736,6 +771,24 @@ fn import_logseq(conn: &Connection, dir: &Path, task_words: &[String]) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mirror_files_under_an_old_name_are_removed() {
+        let dir = std::env::temp_dir().join(format!("bq-stale-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("pages")).unwrap();
+        for f in ["my_page.md", "my%5Fpage.md", "notes.md", "Notes.md", "unrelated_file.md", "my_page.txt", ".my_page.md"] {
+            std::fs::write(dir.join("pages").join(f), "- x\n").unwrap();
+        }
+        let names = vec!["my_page".to_string(), "Notes".to_string()];
+        // notes.md is left from before the page was renamed to Notes.
+        assert_eq!(remove_stale_mirror_files(&dir, &names), 2);
+        assert!(!dir.join("pages/my_page.md").exists());
+        assert!(!dir.join("pages/notes.md").exists());
+        for kept in ["my%5Fpage.md", "Notes.md", "unrelated_file.md", "my_page.txt", ".my_page.md"] {
+            assert!(dir.join("pages").join(kept).exists(), "{kept}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn block(id: &str, content: &str) -> db::Block {
         db::Block { id: id.into(), parent_id: None, content: content.into(), collapsed: false }

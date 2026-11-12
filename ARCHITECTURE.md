@@ -123,7 +123,10 @@ After every successful save the server writes the page as a Logseq-format file
 into place. They are not fsynced (unlike `config.json`). The mirror is rebuilt
 from the database for all pages at startup (`rebuild_mirror`), which is how a
 mirror that was lost or only partly written is recovered, and it is removed
-when a page is deleted. **SQLite is the source of truth**: the mirror is a
+when a page is deleted. After that rebuild, a file in `pages/` whose name
+decodes to an existing page but is not that page's current file (an older
+file-name encoding, or a case-only rename) is deleted; other files are left
+alone. **SQLite is the source of truth**: the mirror is a
 readable backup and an escape hatch, and it is never read back.
 
 ## Saving and sync
