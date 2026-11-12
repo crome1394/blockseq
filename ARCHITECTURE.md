@@ -32,6 +32,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key). `load` errors on a damaged file (falls back to `config.json.bak`), `save` keeps the previous version as `.bak` and writes durably (`write_durable`: unique temp file, fsync, rename, fsync folder). All API changes go through `api::update_config` under the settings lock |
 | `src/auth.rs` | Optional password: browser sign-in page and sign-out, basic auth for other clients (SHA-256 compare) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; the full map drops the oldest client; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
 | `src/session.rs` | Browser sign-in sessions: cookie, hashed tokens in `sessions.json`, 90-day idle limit |
+| `src/devices.rs` | Paired devices (apps): tokens, `devices.json`, revoke |
 | `src/guard.rs` | Outermost middleware: refuses cross-site non-GET requests (`Sec-Fetch-Site`, else `Origin` vs `Host`; `X-Forwarded-Host` only when the TCP peer is in `BLOCKSEQ_TRUSTED_PROXIES`) and host names outside `BLOCKSEQ_HOSTS`; adds the CSP (HTML only), `X-Frame-Options`, `Referrer-Policy`, `nosniff` |
 | `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks or into Main (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
@@ -326,6 +327,9 @@ CRDTs (conflict-free merge structures):
   | `GET /api/backups/{name}` | `get_backup` | download one (name must match `before-restore-*.zip`) |
   | `POST /api/logout?all=` | `auth::logout` | ends this browser's session, or all with `all=1`; clears the cookie |
   | `GET /api/session` | `auth::session_info` | `{password}`: whether signing in is used |
+  | `POST /api/devices/pair` | `auth::pair_device` | JSON `{password, name}` → `{token, id}` for an app; the token is shown once (open, guess-limited) |
+  | `GET /api/devices` | `auth::list_devices` | paired devices: id, name, created, last used |
+  | `DELETE /api/devices?id=` | `auth::revoke_device` | unpair a device |
   | `GET /api/events` | `events` | SSE, 15 s keep-alive; at most 32 subscribers per process; a new one closes the oldest after sending it `{"type":"replaced"}`, and that tab stays off (status "live updates paused") until it is shown again |
   | `GET /*` | `static_file` | embedded `web/`, `Cache-Control: no-cache` |
 
@@ -349,6 +353,12 @@ CRDTs (conflict-free merge structures):
   password is compared as SHA-256 hashes, all 32 bytes. Wrong passwords on
   either path count toward the guess limit; the map keeps at most 4096
   clients and drops the oldest when it is full.
+- **Paired devices** (`devices.rs`). An app pairs once with the password
+  (`POST /api/devices/pair`) and then sends `Authorization: Bearer bsq_…`.
+  `devices.json` (0600) stores SHA-256 of (password, token) with a name and
+  timestamps, so a new password unpairs every device; at most 32. A wrong or
+  revoked token gets 401 `{"error":"device"}`, never a basic-auth prompt.
+  Settings → Security lists devices with Revoke.
 - **Static files** are embedded with `rust-embed`. Debug builds read `web/`
   from disk, so UI edits only need a browser refresh. Release builds bake the
   files in.

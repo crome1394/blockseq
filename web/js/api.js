@@ -79,6 +79,9 @@ export const api = {
   // { password: true } when signing in is used (BLOCKSEQ_PASSWORD is set).
   session: () => getJson('/api/session', { global: true }),
   // Ends this browser's session, or every browser's with `all`.
+  // Paired devices (apps with their own token), and unpairing one.
+  devices: () => getJson('/api/devices', { global: true }),
+  revokeDevice: (id) => request('DELETE', `/api/devices?id=${enc(id)}`, undefined, { global: true }),
   // Zips of Main saved before each Restore into Main, newest first.
   backups: () => getJson('/api/backups', { global: true }),
   logout: (all = false) => request('POST', `/api/logout${all ? '?all=1' : ''}`, undefined, { global: true }),

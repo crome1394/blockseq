@@ -1,0 +1,8 @@
+wrong password refused: true
+paired: true
+token works: true
+bad token is a device error: {"error":"device"}
+token file holds no token: true
+settings lists it: true
+revoked token refused: true
+list empty: true

@@ -2,6 +2,12 @@
 
 All notable changes to Blockseq are listed here, newest first. Each entry ends with the short commit hash it comes from.
 
+## Unreleased
+
+### Added
+
+- **Paired devices.** An app (such as the Android app) pairs once with the password and then uses a token of its own, so the password is not stored on the device. Settings → Security lists paired devices with Revoke. Changing `BLOCKSEQ_PASSWORD` unpairs every device.
+
 ## 0.1.0 (2026-11-12)
 
 The first release (tag `v0.1.0`): everything from `64076f1` (2026-11-11) onwards. Its changes are grouped by theme below; the newest group is first, and the newest change is first inside each section.

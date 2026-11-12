@@ -186,8 +186,38 @@ async function signInSection(wrap) {
     el('h4', 'settings-subheading', 'Signing in'),
     el('p', 'small', 'This browser stays signed in for 90 days after it was last used. Changing BLOCKSEQ_PASSWORD signs every browser out.'),
     actions,
-    el('h4', 'settings-subheading', 'Encrypted blocks'),
+    el('h4', 'settings-subheading', 'Paired devices'),
   );
+  const list = el('div', 'device-list');
+  wrap.append(list, el('h4', 'settings-subheading', 'Encrypted blocks'));
+  await drawDevices(list);
+}
+
+// Apps paired with their own token (the password is not stored on them).
+async function drawDevices(list) {
+  const devices = await api.devices().catch(() => null);
+  if (!devices) { list.replaceChildren(el('p', 'muted small', 'Could not load the paired devices.')); return; }
+  if (!devices.length) {
+    list.replaceChildren(el('p', 'muted small', 'No devices yet. The Blockseq app pairs with your server address and password once; it then uses a token of its own, which you can revoke here.'));
+    return;
+  }
+  const when = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  list.replaceChildren(...devices.map((d) => {
+    const row = el('div', 'device-row');
+    const info = el('div', '');
+    info.append(el('strong', '', d.name), el('div', 'muted small', `Paired ${when(d.created)} · last used ${when(d.last_seen)}`));
+    const revoke = el('button', '', 'Revoke');
+    revoke.type = 'button';
+    revoke.addEventListener('click', async () => {
+      if (!confirm(`Revoke “${d.name}”? It stops working until it is paired again with the password.`)) return;
+      const r = await api.revokeDevice(d.id);
+      if (!r.ok && r.status !== 404) { toast('Could not revoke it'); return; }
+      toast(`Revoked ${d.name}`);
+      drawDevices(list);
+    });
+    row.append(info, revoke);
+    return row;
+  }));
 }
 
 export async function securityPanel() {

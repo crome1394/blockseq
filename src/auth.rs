@@ -147,7 +147,7 @@ fn given_password(headers: &HeaderMap) -> Option<String> {
 /// Paths served without a password: health (monitoring; shows no notes) and
 /// signing in.
 fn open_path(path: &str) -> bool {
-    matches!(path, "/api/health" | "/login" | "/api/login")
+    matches!(path, "/api/health" | "/login" | "/api/login" | "/api/devices/pair")
 }
 
 pub async fn require_password(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
@@ -156,6 +156,19 @@ pub async fn require_password(State(s): State<Arc<AppState>>, req: Request, next
     };
     if open_path(req.uri().path()) {
         return next.run(req).await;
+    }
+    // A paired device (see devices.rs). A wrong or revoked token is a 401 the
+    // app understands as "pair again", never a basic-auth prompt.
+    if let Some(token) = crate::devices::bearer(req.headers()) {
+        return match s.devices.check(expected, token, crate::db::now_ms()) {
+            Some((_, persist)) => {
+                if persist {
+                    save_devices(&s);
+                }
+                next.run(req).await
+            }
+            None => (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "device" }))).into_response(),
+        };
     }
     if let Some(token) = crate::session::token_from(req.headers()) {
         let (ok, persist) = s.sessions.check(expected, &token, crate::db::now_ms());
@@ -222,6 +235,83 @@ fn save_sessions(s: &Arc<AppState>) {
             tracing::warn!("could not save sessions: {e:#}");
         }
     });
+}
+
+/// Writes devices.json off the async threads; a failure is logged.
+fn save_devices(s: &Arc<AppState>) {
+    let s = s.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = s.devices.save() {
+            tracing::warn!("could not save devices: {e:#}");
+        }
+    });
+}
+
+#[derive(serde::Deserialize)]
+pub struct PairBody {
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// POST /api/devices/pair (JSON `{password, name}`): checks the password and
+/// returns a token for this device, shown once. Without `BLOCKSEQ_PASSWORD`
+/// nothing needs a token, and `token` is null.
+pub async fn pair_device(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<PairBody>,
+) -> Response {
+    let Some(expected) = &s.password else {
+        return axum::Json(serde_json::json!({ "token": null, "id": null })).into_response();
+    };
+    let ip = client_ip(peer.ip(), &headers, &s.trusted_proxies);
+    let now = Instant::now();
+    if let Some(secs) = s.limiter.locked_for(ip, now) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, secs.to_string())],
+            axum::Json(serde_json::json!({ "error": "locked", "message": format!("Too many wrong passwords. Try again in {} minutes.", secs.div_ceil(60)) })),
+        )
+            .into_response();
+    }
+    if !passwords_match(&body.password, expected) {
+        if !body.password.is_empty() {
+            s.limiter.failed(ip, &body.password, now);
+        }
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "password", "message": "Wrong password." }))).into_response();
+    }
+    s.limiter.succeeded(ip);
+    match s.devices.pair(expected, &body.name, crate::db::now_ms()) {
+        Ok((id, token)) => {
+            save_devices(&s);
+            tracing::info!("paired device {id}");
+            axum::Json(serde_json::json!({ "token": token, "id": id })).into_response()
+        }
+        Err(e) => (StatusCode::CONFLICT, axum::Json(serde_json::json!({ "error": "invalid", "message": e.to_string() }))).into_response(),
+    }
+}
+
+/// GET /api/devices: the paired devices, most recently used first.
+pub async fn list_devices(State(s): State<Arc<AppState>>) -> Response {
+    axum::Json(s.devices.list()).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct DeviceId {
+    id: String,
+}
+
+/// DELETE /api/devices?id=: unpairs a device; it must pair again.
+pub async fn revoke_device(State(s): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<DeviceId>) -> Response {
+    if !s.devices.revoke(&q.id) {
+        return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "not_found" }))).into_response();
+    }
+    save_devices(&s);
+    tracing::info!("revoked device {}", q.id);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// Percent-encodes everything but unreserved characters and `/`.

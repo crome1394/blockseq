@@ -30,6 +30,7 @@ mod backup;
 mod config;
 mod crypto;
 mod db;
+mod devices;
 mod guard;
 mod md;
 mod session;
@@ -72,6 +73,8 @@ pub struct AppState {
     pub limiter: auth::Limiter,
     /// Browser sign-in sessions (`sessions.json`).
     pub sessions: session::Sessions,
+    /// Paired devices such as the Android app (`devices.json`).
+    pub devices: devices::Devices,
 }
 
 impl AppState {
@@ -286,6 +289,7 @@ async fn main() -> Result<()> {
         trusted_proxies: auth::parse_proxies(&std::env::var("BLOCKSEQ_TRUSTED_PROXIES").unwrap_or_default()),
         limiter: auth::Limiter::default(),
         sessions: session::Sessions::load(&data_dir, db::now_ms()),
+        devices: devices::Devices::load(&data_dir),
     });
     // Open Main now, so a broken database is reported at startup.
     state
@@ -328,6 +332,8 @@ async fn main() -> Result<()> {
         .route("/login", post(auth::login))
         .route("/logout", post(auth::logout))
         .route("/session", get(auth::session_info))
+        .route("/devices", get(auth::list_devices).delete(auth::revoke_device))
+        .route("/devices/pair", post(auth::pair_device))
         .route("/health", get(api::health));
 
     let app = Router::new()
