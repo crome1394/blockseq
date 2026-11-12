@@ -1,5 +1,5 @@
-// Page history: earlier versions of a page (kept by the server, see db.rs
-// "page history"), with a preview and Restore; and the list of deleted pages
+// Page history: earlier versions of a page (kept by the server, see
+// src/db/history.rs), with a preview and Restore; and the list of deleted pages
 // that can be brought back.
 
 import { api, explain } from './api.js';

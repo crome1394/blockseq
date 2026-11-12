@@ -13,7 +13,7 @@ in sync through autosave, versioned page saves and a live event stream.
 │  editor.js outliner       │  Caddy   │   ├─ /api/*   JSON API (api/)    │
 │  render.js markdown→HTML  │ (reverse │   ├─ /api/events  SSE stream     │
 │  api.js    fetch wrapper  │  proxy)  │   └─ /*       embedded web/ files│
-└───────────────────────────┘          │  db.rs ── SQLite (blockseq.db)   │
+└───────────────────────────┘          │  db/ ─── SQLite (blockseq.db)   │
                                        │  md.rs ── Markdown mirror (*.md) │
                                        └──────────────────────────────────┘
 ```
@@ -35,7 +35,10 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/guard.rs` | Outermost middleware: refuses cross-site non-GET requests (`Sec-Fetch-Site`, else `Origin` vs `Host`; `X-Forwarded-Host` only when the TCP peer is in `BLOCKSEQ_TRUSTED_PROXIES`) and host names outside `BLOCKSEQ_HOSTS`; adds the CSP (HTML only), `X-Frame-Options`, `Referrer-Policy`, `nosniff` |
 | `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks or into Main (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
-| `src/db.rs` | Schema, all SQL, save transaction with version check, search, backlinks |
+| `src/db/mod.rs` | Schema, types, opening, the save transaction with version check, pages, blocks, tasks |
+| `src/db/migrate.rs` | Schema upgrades (`user_version`) |
+| `src/db/history.rs` | Page history: kept versions, restore, deleted pages |
+| `src/db/query.rs` | All pages, sidebar, journals, backlinks, search, single blocks |
 | `src/md.rs` | Journal names, link/tag extraction, task detection, Logseq Markdown export and import (`parse_outline`) |
 | `src/assets.rs` | Image and PDF uploads: type detection from file bytes, safe names, saving, listing |
 | `web/index.html`, `web/app.css` | Page shell and styles (light/dark via `prefers-color-scheme`) |
@@ -197,7 +200,7 @@ CRDTs (conflict-free merge structures):
   such ids unless called with `allow_moves` (only the page-merge in
   `rename_page` does), so a pasted copy can never take blocks from another
   page.
-- **Page history** (`db.rs` "page history", schema v6 `page_history`, keyed
+- **Page history** (`db/history.rs`, schema v6 `page_history`, keyed
   by page id, which stays put when the page is renamed). A deleted page keeps
   that id, so a later page that reuses the name does not inherit the history.
   Inside the
