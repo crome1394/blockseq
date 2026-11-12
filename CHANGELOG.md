@@ -8,7 +8,7 @@ Opening an older database upgrades it in place. The current schema is **version 
 
 | Version | What an upgrade adds | Commit |
 | --- | --- | --- |
-| 8 | Each page stores its block count. | (this commit) |
+| 8 | Each page stores its block count. | `6417ef4` |
 | 7 | Each block stores the rowid of its search-index row, and the index is rebuilt once to fill it. | `8d22396` |
 | 6 | History rows store the page id. The index on that column is created during the upgrade, after the column exists. | `3267afc`, `242dc97` |
 | 5 | Each kept version stores its block count and word count. | `35d1b87` |
