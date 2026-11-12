@@ -63,7 +63,7 @@ Settings are environment variables (on a server: `/etc/blockseq.env`):
 |---------------------|----------------|-------------------------------------------------|
 | `BLOCKSEQ_ADDR`     | `127.0.0.1:3030` | Listen address. Leave this on localhost and do not publish port 3030. A non-local address is refused unless `BLOCKSEQ_PASSWORD` or `BLOCKSEQ_HOSTS` is set, and logs a warning without a password (anyone who reaches the port by IP address gets in) |
 | `BLOCKSEQ_DATA`     | `./data`       | Where the workbooks are stored                  |
-| `BLOCKSEQ_PASSWORD` | unset          | Password for the local port only. The password people type belongs on the TLS proxy (Caddy) |
+| `BLOCKSEQ_PASSWORD` | unset          | The password to use Blockseq. Browsers sign in on a page and stay signed in for 90 days after they were last used; **Sign out** is in the header, and Settings → Security can sign out every browser. Scripts send it with HTTP basic auth (any username). Changing it signs every browser out |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `256`      | Largest file you can upload, in MB              |
 | `BLOCKSEQ_EXPOSE_PATHS` | unset      | Set to `1` to show full server paths in the browser (Assets, workbooks, the usage tooltip). Unset keeps paths relative to the data folder. A browser on this machine, with no proxy headers, still sees an asset's full path |
 | `BLOCKSEQ_HOSTS`    | unset          | Host names to answer to, comma-separated (IP addresses and localhost always work). Blocks "DNS rebinding" by other websites; set it to your HTTPS name, e.g. `notes.example.com` |
@@ -155,9 +155,11 @@ notes.example.com {
 }
 ```
 
-- Leave Blockseq on `127.0.0.1:3030`. Do not publish port 3030. The password
-  people type belongs on Caddy (`basic_auth`). `BLOCKSEQ_PASSWORD` only covers
-  programs on this machine that connect to the local port.
+- Leave Blockseq on `127.0.0.1:3030`. Do not publish port 3030. Set
+  `BLOCKSEQ_PASSWORD` so Blockseq asks for it: you get a sign-in page, sign
+  out, and a limit on guessing. (A `basic_auth` on Caddy works too, but a
+  browser cannot sign out of it.) With `BLOCKSEQ_TRUSTED_PROXIES` set, the
+  sign-in cookie is marked Secure when Caddy says the browser used HTTPS.
 - Caddy passes Blockseq's live-update stream (server-sent events) through
   without buffering.
 - **Certificates.** For a name reachable from the internet, Caddy gets a

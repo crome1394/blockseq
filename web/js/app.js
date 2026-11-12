@@ -1,7 +1,8 @@
 // App shell: routing, views, search and live updates from the server.
 
 import { el } from './dom.js';
-import { api, clientId, explain, invalidatePageNames, getPageNames } from './api.js';
+import { api, clientId, explain, invalidatePageNames, getPageNames, signingOut } from './api.js';
+import { signOut, showSignOut } from './signin.js';
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
@@ -608,7 +609,10 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('beforeunload', (e) => {
   const dirty = [...editors].filter((ed) => ed.dirty);
   if (!dirty.length) return;
+  // Writes each local draft synchronously, before anything else.
   dirty.forEach((ed) => ed.save({ keepalive: true }));
+  // Leaving for the sign-in page: the drafts keep the edits, no prompt.
+  if (signingOut) return;
   e.preventDefault();
   e.returnValue = '';
 });
@@ -725,6 +729,9 @@ function openSettings(category) {
 }
 document.getElementById('open-settings').addEventListener('click', () => openSettings());
 document.getElementById('help-toggle').addEventListener('click', () => openHelp());
+const signOutButton = document.getElementById('sign-out');
+signOutButton.addEventListener('click', () => signOut());
+showSignOut(signOutButton);
 document.getElementById('tasks-toggle').addEventListener('click', () => toggleTasks());
 
 // ---- workbooks ----------------------------------------------------------------

@@ -28,6 +28,7 @@ mod crypto;
 mod db;
 mod guard;
 mod md;
+mod session;
 mod workbooks;
 
 use std::path::PathBuf;
@@ -65,6 +66,8 @@ pub struct AppState {
     pub trusted_proxies: Vec<std::net::IpAddr>,
     /// Wrong-password limit per client.
     pub limiter: auth::Limiter,
+    /// Browser sign-in sessions (`sessions.json`).
+    pub sessions: session::Sessions,
 }
 
 impl AppState {
@@ -278,6 +281,7 @@ async fn main() -> Result<()> {
         allowed_hosts,
         trusted_proxies: auth::parse_proxies(&std::env::var("BLOCKSEQ_TRUSTED_PROXIES").unwrap_or_default()),
         limiter: auth::Limiter::default(),
+        sessions: session::Sessions::load(&data_dir, db::now_ms()),
     });
     // Open Main now, so a broken database is reported at startup.
     state
@@ -315,11 +319,15 @@ async fn main() -> Result<()> {
         .route("/export", get(api::export))
         .route("/import", post(api::import))
         .route("/events", get(api::events))
+        .route("/login", post(auth::login))
+        .route("/logout", post(auth::logout))
+        .route("/session", get(auth::session_info))
         .route("/health", get(api::health));
 
     let app = Router::new()
         .nest("/api", api)
         .route("/assets/{name}", get(api::get_asset))
+        .route("/login", get(auth::login_page))
         .fallback(static_file)
         .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_password))

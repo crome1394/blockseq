@@ -34,9 +34,8 @@ if [[ ! -f /etc/blockseq.env ]]; then
 # proxy on this machine (Caddy). Do not publish port 3030. The server refuses
 # a non-local address when neither BLOCKSEQ_PASSWORD nor BLOCKSEQ_HOSTS is set.
 BLOCKSEQ_ADDR=127.0.0.1:3030
-# Optional password for this local port (browser login prompt, any username).
-# The password people type belongs on the TLS proxy. This does not make it
-# safe to listen beyond localhost.
+# Password to use Blockseq. Browsers get a sign-in page (with sign out);
+# scripts use HTTP basic auth (any username). Recommended.
 #BLOCKSEQ_PASSWORD=
 # Host names Blockseq answers to (IP addresses and localhost always work).
 # Blocks "DNS rebinding" tricks from other websites. Example:

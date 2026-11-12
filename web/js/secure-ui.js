@@ -3,6 +3,8 @@
 import { el } from './dom.js';
 import * as sec from './crypto.js';
 import { openModal, closeModal, toast, copyText } from './ui.js';
+import { signOut } from './signin.js';
+import { api } from './api.js';
 
 function passwordField(label, autocomplete = 'current-password') {
   const wrap = el('label', 'field');
@@ -166,8 +168,31 @@ export function changeDialog() {
 }
 
 // The live part of Settings → Security (actions happen right away).
+// Settings → Security, when signing in is used: sign out here or everywhere.
+async function signInSection(wrap) {
+  const info = await api.session().catch(() => null);
+  if (!info?.password) return;
+  const actions = el('div', 'status-actions security-actions');
+  const here = el('button', '', 'Sign out');
+  here.type = 'button';
+  here.addEventListener('click', () => signOut());
+  const all = el('button', '', 'Sign out everywhere…');
+  all.type = 'button';
+  all.addEventListener('click', () => {
+    if (confirm('Sign out every browser and device, including this one? Each one signs in again with the password.')) signOut(true);
+  });
+  actions.append(here, all);
+  wrap.append(
+    el('h4', 'settings-subheading', 'Signing in'),
+    el('p', 'small', 'This browser stays signed in for 90 days after it was last used. Changing BLOCKSEQ_PASSWORD signs every browser out.'),
+    actions,
+    el('h4', 'settings-subheading', 'Encrypted blocks'),
+  );
+}
+
 export async function securityPanel() {
   const wrap = el('div', 'security-panel');
+  await signInSection(wrap);
   if (!sec.available()) {
     wrap.append(el('p', 'error small', 'Encryption needs HTTPS. Open Blockseq at your https:// address to set a password or unlock encrypted blocks.'));
     return wrap;

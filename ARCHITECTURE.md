@@ -26,7 +26,8 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
 | `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import, rename (checkpoints and holds the open database while the folder moves; old handles are marked `retired` so they stop writing Markdown under the old name). Main's display name is `main_name` in `config.json` |
 | `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key). `load` errors on a damaged file (falls back to `config.json.bak`), `save` keeps the previous version as `.bak` and writes durably (`write_durable`: unique temp file, fsync, rename, fsync folder). All API changes go through `api::update_config` under the settings lock |
-| `src/auth.rs` | Optional password for the local port (basic auth, SHA-256 compare) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; the full map drops the oldest client; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
+| `src/auth.rs` | Optional password: browser sign-in page and sign-out, basic auth for other clients (SHA-256 compare) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; the full map drops the oldest client; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
+| `src/session.rs` | Browser sign-in sessions: cookie, hashed tokens in `sessions.json`, 90-day idle limit |
 | `src/guard.rs` | Outermost middleware: refuses cross-site non-GET requests (`Sec-Fetch-Site`, else `Origin` vs `Host`; `X-Forwarded-Host` only when the TCP peer is in `BLOCKSEQ_TRUSTED_PROXIES`) and host names outside `BLOCKSEQ_HOSTS`; adds the CSP (HTML only), `X-Frame-Options`, `Referrer-Policy`, `nosniff` |
 | `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
@@ -38,6 +39,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/editor.js` | `PageEditor` outliner, `[[`/`((` autocomplete, block-ref loading, popup menu |
 | `web/js/sync.js` | Saving and sync, installed on `PageEditor`: autosave with version check, retry policy, conflicts and the diff, keepalive on close |
 | `web/js/drafts.js` | Local drafts in `localStorage` (one per tab, Web Lock liveness) and the keepalive size limit |
+| `web/js/signin.js` | Sign out (header button, Settings → Security) |
 | `web/js/math.js` | LaTeX → MathML converter (tokenizer + recursive parser; no third-party code). `analyzeTex` adds source positions (`data-s`, `data-k`) and problems with fixes for the builder |
 | `web/js/mathhelp.js` | Plain-words explanations per kind of LaTeX construct, the builder's palette and examples |
 | `web/js/mathbuilder.js` | Maths builder dialog: palette, code with highlight backdrop, live preview with two-way mapping, problems |
@@ -300,18 +302,33 @@ CRDTs (conflict-free merge structures):
   | `GET /api/journals?before=&limit=` | `journals` | newest first, with blocks |
   | `GET /api/search?q=&limit=` | `search` | pages by name, blocks containing all words |
   | `GET /api/block?id=` | `get_block` | content and page name, for `((refs))` |
+  | `GET /login` | `auth::login_page` | sign-in form (open; redirects home when no password is set) |
+  | `POST /api/login` | `auth::login` | form `password`, `next`: starts a session, 303 to `next` or back to `/login?e=wrong|locked` (open) |
+  | `POST /api/logout?all=` | `auth::logout` | ends this browser's session, or all with `all=1`; clears the cookie |
+  | `GET /api/session` | `auth::session_info` | `{password}`: whether signing in is used |
   | `GET /api/events` | `events` | SSE, 15 s keep-alive; at most 32 subscribers per process; a new one closes the oldest after sending it `{"type":"replaced"}`, and that tab stays off (status "live updates paused") until it is shown again |
   | `GET /*` | `static_file` | embedded `web/`, `Cache-Control: no-cache` |
 
   Page names go in a query parameter rather than the path, so names containing
   `/` (Logseq namespaces) work.
-- **Password (optional).** If `BLOCKSEQ_PASSWORD` is set, a middleware
-  requires HTTP basic auth on every route (any username). Both passwords are
-  hashed with SHA-256 and the 32 bytes are compared. Leave the port on
-  localhost; the password people type belongs on the TLS proxy. Do not publish
-  port 3030. The wrong-password map keeps at most 4096 clients and drops the
-  oldest when it is full. Browsers cache the credentials, so `EventSource`
-  works as well.
+- **Password (optional).** If `BLOCKSEQ_PASSWORD` is set, `auth::require_password`
+  guards every route except `/api/health`, `/login` and `/api/login`.
+  Browsers (requests with `Sec-Fetch-Site`) need a session cookie
+  (`session.rs`): `GET /login` is a script-free form that posts to
+  `/api/login`, which checks the password, starts a session and redirects to
+  `next` (a path on this server only). The cookie is `HttpOnly; SameSite=Lax`,
+  `Secure` when a trusted proxy sends `X-Forwarded-Proto: https`, and lasts 90
+  days from last use. `sessions.json` (0600) stores SHA-256 of
+  (password, token) only, so the file cannot be replayed as a cookie and a
+  new password ends every session; at most 64 are kept. `POST /api/logout`
+  ends this session (`?all=1`: all). A signed-out browser gets a redirect to
+  `/login` for a page load and 401 `{"error":"login"}` otherwise, which
+  `api.js` turns into a trip to the sign-in page (unsaved text is in the local
+  draft). A browser's basic-auth header is ignored, or a remembered one would
+  keep it signed in. Other clients use HTTP basic auth (any username). The
+  password is compared as SHA-256 hashes, all 32 bytes. Wrong passwords on
+  either path count toward the guess limit; the map keeps at most 4096
+  clients and drops the oldest when it is full.
 - **Static files** are embedded with `rust-embed`. Debug builds read `web/`
   from disk, so UI edits only need a browser refresh. Release builds bake the
   files in.

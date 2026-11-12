@@ -1,0 +1,16 @@
+script without password: 401 Basic realm="Blockseq"
+script with password: 200
+browser goes to sign-in: true
+wrong password says so: true
+signed in: true
+cookie is HttpOnly: true
+sign-out button shown: true
+sessions.json holds no token: true
+signed in after restart: true
+other browser signed out too: true
+unsaved text offered after signing in: true
+this browser signed out: true
+header sign-out: true true
+old cookie refused: 401 {"error":"login"}
+locked out: true
+next stays on this server: true

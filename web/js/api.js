@@ -18,6 +18,18 @@ export const clientId = uuid();
 
 const enc = encodeURIComponent;
 
+// True while the page is leaving for the sign-in page (no "leave page?" prompt).
+export let signingOut = false;
+
+// The session ended (signed out elsewhere, expired, or the password changed).
+// Unsaved text is already in this tab's local draft and is offered again
+// after signing in.
+export function signedOut() {
+  if (signingOut) return;
+  signingOut = true;
+  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
+}
+
 async function request(method, url, body, opts = {}) {
   if (!opts.global) url = withWb(url);
   delete opts.global;
@@ -32,6 +44,7 @@ async function request(method, url, body, opts = {}) {
   if (text) {
     try { data = JSON.parse(text); } catch { data = { error: text }; }
   }
+  if (res.status === 401 && data?.error === 'login') signedOut();
   return { ok: res.ok, status: res.status, data };
 }
 
@@ -46,6 +59,7 @@ const ERROR_TEXT = {
   forbidden: 'Unlock with the current password first.',
   too_large: 'That file is too large.',
   no_space: 'The server does not have enough free space for that.',
+  login: 'Signed out. Sign in again to continue.',
 };
 
 export function explain(data, fallback) {
@@ -62,6 +76,10 @@ async function getJson(url, opts) {
 }
 
 export const api = {
+  // { password: true } when signing in is used (BLOCKSEQ_PASSWORD is set).
+  session: () => getJson('/api/session', { global: true }),
+  // Ends this browser's session, or every browser's with `all`.
+  logout: (all = false) => request('POST', `/api/logout${all ? '?all=1' : ''}`, undefined, { global: true }),
   page: (name) => getJson(`/api/page?name=${enc(name)}`),
   // Resolves to {ok, status, data}; status 409 means the page changed elsewhere.
   // `extra`: more body fields, e.g. { overwrite: true } for "Keep mine".

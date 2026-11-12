@@ -1,5 +1,10 @@
-//! The optional password (`BLOCKSEQ_PASSWORD`, HTTP basic auth) and a limit on
-//! guessing it.
+//! The optional password (`BLOCKSEQ_PASSWORD`) and a limit on guessing it.
+//!
+//! Browsers sign in on `/login` and get a session cookie (see session.rs), so
+//! they can sign out. Clients that are not browsers (no `Sec-Fetch-Site`
+//! header: curl, scripts, other apps) send the password with HTTP basic auth.
+//! A browser's basic-auth header is ignored: a browser that remembered it
+//! would otherwise stay signed in after signing out.
 //!
 //! Each client may try at most `MAX_WRONG` *different* wrong passwords per
 //! WINDOW; after that it is refused until the window ends. Repeats of the
@@ -9,6 +14,7 @@
 //! client address it forwards (X-Forwarded-For) is used instead.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::hash::{BuildHasher, RandomState};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -138,13 +144,30 @@ fn given_password(headers: &HeaderMap) -> Option<String> {
     Some(creds.split_once(':').map_or("", |(_, p)| p).to_string())
 }
 
+/// Paths served without a password: health (monitoring; shows no notes) and
+/// signing in.
+fn open_path(path: &str) -> bool {
+    matches!(path, "/api/health" | "/login" | "/api/login")
+}
+
 pub async fn require_password(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let Some(expected) = &s.password else {
         return next.run(req).await;
     };
-    // Monitoring can check health without the password (it shows no notes).
-    if req.uri().path() == "/api/health" {
+    if open_path(req.uri().path()) {
         return next.run(req).await;
+    }
+    if let Some(token) = crate::session::token_from(req.headers()) {
+        let (ok, persist) = s.sessions.check(expected, &token, crate::db::now_ms());
+        if persist {
+            save_sessions(&s);
+        }
+        if ok {
+            return next.run(req).await;
+        }
+    }
+    if req.headers().contains_key("sec-fetch-site") {
+        return sign_in_first(&req);
     }
     let peer = req
         .extensions()
@@ -176,6 +199,212 @@ pub async fn require_password(State(s): State<Arc<AppState>>, req: Request, next
         }
     }
 }
+
+/// A browser that is not signed in: a page load goes to the sign-in page,
+/// anything else gets 401 `{"error":"login"}` (no basic-auth prompt).
+fn sign_in_first(req: &Request) -> Response {
+    let navigate = req.method() == axum::http::Method::GET
+        && req.headers().get("sec-fetch-mode").and_then(|v| v.to_str().ok()) == Some("navigate");
+    if navigate {
+        let back = req.uri().path_and_query().map_or("/", |p| p.as_str());
+        let to = format!("/login?next={}", urlencoding_component(back));
+        return (StatusCode::SEE_OTHER, [(header::LOCATION, to)]).into_response();
+    }
+    (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "login" }))).into_response()
+}
+
+/// Writes sessions.json off the async threads; a failure is logged (the
+/// sessions stay valid in memory).
+fn save_sessions(s: &Arc<AppState>) {
+    let s = s.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = s.sessions.save() {
+            tracing::warn!("could not save sessions: {e:#}");
+        }
+    });
+}
+
+/// Percent-encodes everything but unreserved characters and `/`.
+fn urlencoding_component(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+/// Where to go after signing in: a path on this server, never another site.
+fn safe_next(next: &str) -> &str {
+    let ok = next.starts_with('/')
+        && !next.starts_with("//")
+        && !next.starts_with("/login")
+        && !next.contains('\\')
+        && !next.chars().any(char::is_control);
+    if ok { next } else { "/" }
+}
+
+/// The browser reached us over HTTPS (a trusted proxy says so), so the
+/// cookie can be marked Secure.
+fn over_https(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> bool {
+    trusted.contains(&peer)
+        && headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|p| p.eq_ignore_ascii_case("https"))
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct LoginQuery {
+    #[serde(default)]
+    next: String,
+    /// wrong, locked, out
+    #[serde(default)]
+    e: String,
+    /// Minutes left of a lockout.
+    #[serde(default)]
+    m: u64,
+}
+
+/// GET /login: the sign-in form (plain HTML, no script).
+pub async fn login_page(State(s): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<LoginQuery>) -> Response {
+    if s.password.is_none() {
+        return (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
+    }
+    let note = match q.e.as_str() {
+        "wrong" => "<p class=\"note bad\">Wrong password.</p>".to_string(),
+        "locked" => format!("<p class=\"note bad\">Too many wrong passwords. Try again in {} minutes.</p>", q.m.max(1)),
+        "out" => "<p class=\"note\">Signed out.</p>".to_string(),
+        _ => String::new(),
+    };
+    let html = LOGIN_HTML.replace("{note}", &note).replace("{next}", &escape_html(safe_next(&q.next)));
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")],
+        html,
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct LoginForm {
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    next: String,
+}
+
+/// POST /api/login (form): checks the password and starts a session.
+pub async fn login(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    axum::Form(form): axum::Form<LoginForm>,
+) -> Response {
+    let Some(expected) = &s.password else {
+        return (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
+    };
+    let next = safe_next(&form.next).to_string();
+    let back = |e: &str, extra: String| {
+        let to = format!("/login?e={e}{extra}&next={}", urlencoding_component(&next));
+        (StatusCode::SEE_OTHER, [(header::LOCATION, to)]).into_response()
+    };
+    let ip = client_ip(peer.ip(), &headers, &s.trusted_proxies);
+    let now = Instant::now();
+    if let Some(secs) = s.limiter.locked_for(ip, now) {
+        return back("locked", format!("&m={}", secs.div_ceil(60)));
+    }
+    if !passwords_match(&form.password, expected) {
+        if !form.password.is_empty() {
+            s.limiter.failed(ip, &form.password, now);
+        }
+        if let Some(secs) = s.limiter.locked_for(ip, now) {
+            return back("locked", format!("&m={}", secs.div_ceil(60)));
+        }
+        return back("wrong", String::new());
+    }
+    s.limiter.succeeded(ip);
+    let token = s.sessions.create(expected, crate::db::now_ms());
+    save_sessions(&s);
+    let secure = over_https(peer.ip(), &headers, &s.trusted_proxies);
+    (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, next), (header::SET_COOKIE, crate::session::cookie(Some(&token), secure))],
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct LogoutQuery {
+    /// `1` or `true`: sign out every browser, not just this one.
+    #[serde(default)]
+    all: String,
+}
+
+/// POST /api/logout: ends this browser's session (or all of them).
+pub async fn logout(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    axum::extract::Query(q): axum::extract::Query<LogoutQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(expected) = &s.password {
+        if matches!(q.all.as_str(), "1" | "true") {
+            s.sessions.end_all();
+            tracing::info!("signed out every browser");
+        } else if let Some(token) = crate::session::token_from(&headers) {
+            s.sessions.end(expected, &token);
+        }
+        save_sessions(&s);
+    }
+    let secure = over_https(peer.ip(), &headers, &s.trusted_proxies);
+    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, crate::session::cookie(None, secure))]).into_response()
+}
+
+/// GET /api/session: whether signing in is used (the UI shows Sign out).
+pub async fn session_info(State(s): State<Arc<AppState>>) -> Response {
+    axum::Json(serde_json::json!({ "password": s.password.is_some() })).into_response()
+}
+
+const LOGIN_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Blockseq</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f6f4; --card: #fff; --text: #1d1d1f; --muted: #6b6b70; --line: #d9d9de; --accent: #2f6fd6; --on-accent: #fff; --bad: #c0392b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #17181b; --card: #222327; --text: #e8e8ea; --muted: #9a9aa1; --line: #3a3b40; --accent: #6ea0ff; --on-accent: #0d1a33; --bad: #ff7b6b; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, sans-serif; padding: 16px; }
+  form { width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+  input[type=password] { width: 100%; padding: 10px; font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 6px; }
+  button { margin-top: 16px; width: 100%; padding: 10px; font: inherit; color: var(--on-accent); background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+  .note { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+  .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<form method="post" action="/api/login">
+  <h1>Blockseq</h1>
+  {note}
+  <input type="text" name="username" value="blockseq" autocomplete="username" hidden>
+  <label for="password">Password</label>
+  <input id="password" type="password" name="password" autocomplete="current-password" autofocus required>
+  <input type="hidden" name="next" value="{next}">
+  <button type="submit">Sign in</button>
+</form>
+</body>
+</html>
+"#;
 
 #[cfg(test)]
 mod tests {
