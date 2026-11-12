@@ -1,0 +1,3 @@
+conflict bar: true
+diff: [" • shopping list","−• oat milk","+• milk","     • two litres","−• bread","+• bread and butter"]
+kept mine: shopping list / milk / two litres / bread and butter | bar gone: true | their version kept: replaced by Keep mine

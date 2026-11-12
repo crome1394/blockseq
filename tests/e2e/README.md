@@ -28,6 +28,7 @@ at the end.
 | tasks-keys | Task list by keyboard: t, arrows, Space / s for status, Enter to edit, g e |
 | tasks-cycle | Cycling from the task list: stable order, a task without status stays a few seconds, Done shown with Show completed |
 | task-no-self-conflict | Changing a status in the task list updates the open editor (no conflict with itself) |
+| conflict-diff | Conflict bar: Show differences (their version vs mine), then Keep mine |
 | csp | Security headers; images, PDFs, embeds, maths and code still work under the Content-Security-Policy; cross-site POST refused |
 | math-builder | Palette, slots, problems and fixes, hover mapping, editing formulas in place |
 | maths-render | LaTeX rendering, calendar week start, timestamps |

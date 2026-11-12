@@ -227,7 +227,8 @@ use letters, digits, spaces, `-`, `_` and `.`.
   encrypted in the history.
 - **Saves are checked.** Each save carries the page version it started from;
   a page changed on another device shows a conflict instead of being
-  overwritten. Status changes from the task list are refused if the task
+  overwritten. **Show differences** in the conflict bar compares their version
+  with yours line by line before you choose. Status changes from the task list are refused if the task
   changed meanwhile. Pasting copied blocks never takes them away from the page
   they came from (the copies get new ids). Renaming a page or tag is all or
   nothing.

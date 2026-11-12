@@ -1670,3 +1670,15 @@ html.wide .embed-wrap.embed-tweet { width: 550px; }
 /* A task changed from the list that will leave it in a few seconds. */
 .task-row.lingering { opacity: 0.6; }
 .status-badge.no-status { background: none; border: 1px dashed var(--border); color: var(--muted); }
+
+/* Conflict: their version vs mine */
+.diff-view .diff-lines { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px 0; font-family: var(--mono); font-size: 12.5px; }
+.diff-line { display: flex; gap: 8px; padding: 1px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-sign { flex: none; width: 1ch; color: var(--muted); }
+.diff-del { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.diff-del .diff-sign, span.diff-del { color: var(--danger); }
+.diff-add { background: color-mix(in srgb, var(--ok, #2f9e44) 16%, transparent); }
+.diff-add .diff-sign, span.diff-add { color: var(--ok, #2f9e44); }
+span.diff-del, span.diff-add { background: none; }
+.diff-same { color: var(--muted); }
+.diff-fold { padding: 2px 10px; color: var(--muted); font-style: italic; font-family: inherit; }

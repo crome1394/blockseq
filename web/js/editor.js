@@ -718,24 +718,73 @@ export class PageEditor {
   renderConflict() {
     const bar = el('div', 'conflict');
     bar.append(el('span', '', 'This page was changed on another device while you were editing it.'));
+    const diff = el('button', '', 'Show differences');
+    diff.addEventListener('click', () => this.showConflictDiff());
     const theirs = el('button', '', 'Use their version');
-    theirs.addEventListener('click', () => {
-      this.conflict = null;
-      this.dirty = false;
-      dropDraft(this.name); // their version was chosen: the local copy goes too
-      this.load(this.conflictData);
-      updateStatus();
-    });
+    theirs.addEventListener('click', () => this.useTheirs());
     const mine = el('button', 'primary', 'Keep mine');
-    mine.addEventListener('click', () => {
-      this.version = this.conflict.version;
-      this.conflict = null;
-      this.overwriteNext = true; // the server keeps their version in the history
-      this.render();
-      this.save();
-    });
-    bar.append(theirs, mine);
+    mine.addEventListener('click', () => this.keepMine());
+    bar.append(diff, theirs, mine);
     return bar;
+  }
+
+  useTheirs() {
+    if (!this.conflict) return;
+    this.conflict = null;
+    this.dirty = false;
+    dropDraft(this.name); // their version was chosen: the local copy goes too
+    this.load(this.conflictData);
+    updateStatus();
+  }
+
+  keepMine() {
+    if (!this.conflict) return;
+    this.version = this.conflict.version;
+    this.conflict = null;
+    this.overwriteNext = true; // the server keeps their version in the history
+    this.render();
+    this.save();
+  }
+
+  // Their version (on the server) next to mine, line by line.
+  showConflictDiff() {
+    if (!this.conflict) return;
+    const theirs = outlineLines(this.conflictData.blocks || []);
+    const mine = outlineLines(this.flatten({ forSave: true }));
+    const body = el('div', 'diff-view');
+    const legend = el('p', 'muted small');
+    legend.innerHTML = '<span class="diff-del">− only in their version (on the server)</span> · <span class="diff-add">+ only in yours</span>';
+    const out = el('div', 'diff-lines');
+    const ops = diffLines(theirs, mine);
+    if (!ops) {
+      out.append(el('p', 'muted', 'The pages are too long to compare line by line here. Open the page history after choosing, to see both versions.'));
+    } else if (!ops.some((o) => o.kind !== 'same')) {
+      out.append(el('p', 'muted', 'No differences in the text (only the order of saving differs). Either choice keeps the same text.'));
+    } else {
+      // Long runs of unchanged lines are folded to a few lines of context.
+      const CONTEXT = 2;
+      ops.forEach((o, i) => {
+        if (o.kind === 'same') {
+          const near = ops.slice(Math.max(0, i - CONTEXT), i + CONTEXT + 1).some((x) => x.kind !== 'same');
+          if (!near) {
+            if (out.lastChild?.classList?.contains('diff-fold')) out.lastChild.dataset.n = String(Number(out.lastChild.dataset.n) + 1);
+            else { const f = el('div', 'diff-fold'); f.dataset.n = '1'; out.append(f); }
+            return;
+          }
+        }
+        const line = el('div', `diff-line diff-${o.kind}`);
+        line.append(el('span', 'diff-sign', o.kind === 'del' ? '−' : o.kind === 'add' ? '+' : ' '), el('span', 'diff-text', o.text || ' '));
+        out.append(line);
+      });
+      out.querySelectorAll('.diff-fold').forEach((f) => { f.textContent = `… ${f.dataset.n} unchanged line${f.dataset.n === '1' ? '' : 's'}`; });
+    }
+    body.append(legend, out);
+    const box = openModal(`Differences: ${this.name}`, body, [
+      ['Close'],
+      ['Use their version', () => this.useTheirs()],
+      ['Keep mine', () => this.keepMine(), 'primary'],
+    ]);
+    box.classList.add('modal-wide');
   }
 
   rerenderContent(node) {
@@ -2156,6 +2205,47 @@ function autosize(ta) {
 
 // opts.ids adds id:: lines (so a cut block keeps its refs when pasted);
 // opts.plain gives indented text without bullets or properties.
+// Blocks (with parent ids) as indented outline lines for comparing two
+// versions. Encrypted contents are shown as 🔒, not as scrambled text.
+function outlineLines(blocks) {
+  const depth = new Map();
+  const lines = [];
+  for (const b of blocks) {
+    const d = b.parent_id && depth.has(b.parent_id) ? depth.get(b.parent_id) + 1 : 0;
+    depth.set(b.id, d);
+    const ind = '    '.repeat(d);
+    b.content.replace(/^encrypted:: v1:\S+$/gm, 'encrypted:: 🔒 (encrypted contents)').split('\n').forEach((l, i) => {
+      lines.push(i === 0 ? `${ind}• ${l}` : `${ind}  ${l}`);
+    });
+  }
+  return lines;
+}
+
+// Line diff (longest common subsequence): [{kind: 'same'|'del'|'add', text}],
+// del = only in `a`, add = only in `b`. null if too big to compare here.
+function diffLines(a, b) {
+  if (a.length * b.length > 4_000_000) return null;
+  const n = a.length;
+  const m = b.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push({ kind: 'same', text: a[i] }); i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) ops.push({ kind: 'del', text: a[i++] });
+    else ops.push({ kind: 'add', text: b[j++] });
+  }
+  while (i < n) ops.push({ kind: 'del', text: a[i++] });
+  while (j < m) ops.push({ kind: 'add', text: b[j++] });
+  return ops;
+}
+
 function subtreeMarkdown(node, opts = {}) {
   const lines = [];
   const walk = (n, depth) => {
