@@ -735,6 +735,17 @@ function newWorkbookDialog() {
   input.focus();
 }
 
+// Icons for the workbook menu's buttons.
+const wbIcon = (d) => `<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const WB_ICONS = {
+  rename: wbIcon('M12.5 4.5l3 3L7 16H4v-3zM11 6l3 3'),
+  delete: wbIcon('M4 6h12M8 6V4h4v2M6 6l.8 10h6.4L14 6M8.5 9v4.5M11.5 9v4.5'),
+  import: wbIcon('M10 3v9M6.5 8.5L10 12l3.5-3.5M4 13v3h12v-3'),
+  create: wbIcon('M10 4v12M4 10h12'),
+  open: wbIcon('M3 6.5V15a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-6L8.5 5H4a1 1 0 0 0-1 1.5z'),
+  close: wbIcon('M5.5 5.5l9 9M14.5 5.5l-9 9'),
+};
+
 // The workbook menu: pick a workbook, then Open or Rename it.
 async function openWorkbookDialog(selectId = workbook()) {
   const body = el('div', 'dialog-form');
@@ -746,12 +757,12 @@ async function openWorkbookDialog(selectId = workbook()) {
   let selected = selectId;
   const open = () => switchWorkbook(selected);
   openModal('Workbooks', body, [
-    ['Rename…', () => { renameWorkbookDialog(selected); return false; }],
-    ['Delete…', () => { deleteWorkbookDialog(selected); return false; }, 'danger'],
-    ['Import backup…', () => { importDialog(); return false; }],
-    ['New workbook…', () => { newWorkbookDialog(); return false; }],
-    ['Open', () => { open(); return false; }, 'primary'],
-    ['Close'],
+    ['Rename…', () => { renameWorkbookDialog(selected); return false; }, '', WB_ICONS.rename],
+    ['Delete…', () => { deleteWorkbookDialog(selected); return false; }, 'danger', WB_ICONS.delete],
+    ['Import backup…', () => { importDialog(); return false; }, '', WB_ICONS.import],
+    ['New workbook…', () => { newWorkbookDialog(); return false; }, '', WB_ICONS.create],
+    ['Open', () => { open(); return false; }, 'primary', WB_ICONS.open],
+    ['Close', undefined, '', WB_ICONS.close],
   ]);
   list.append(el('p', 'muted', 'Loading…'));
   await loadWorkbooks();

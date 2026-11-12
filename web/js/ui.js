@@ -33,8 +33,8 @@ function legacyCopy(text) {
   active?.focus?.();
 }
 
-// A simple dialog. `body` is a DOM node; buttons are [label, fn, cls] and
-// close the dialog unless fn returns false.
+// A simple dialog. `body` is a DOM node; buttons are [label, fn, cls, icon]
+// (icon: optional SVG markup) and close the dialog unless fn returns false.
 export function openModal(title, body, buttons = [['Close']]) {
   closeModal();
   const overlay = document.createElement('div');
@@ -46,10 +46,14 @@ export function openModal(title, body, buttons = [['Close']]) {
   h.textContent = title;
   const foot = document.createElement('div');
   foot.className = 'modal-actions';
-  for (const [label, fn, cls] of buttons) {
+  for (const [label, fn, cls, icon] of buttons) {
     const b = document.createElement('button');
     b.textContent = label;
-    if (cls) b.className = cls;
+    if (icon) {
+      b.insertAdjacentHTML('afterbegin', icon);
+      b.classList.add('with-icon');
+    }
+    if (cls) b.classList.add(...cls.split(" "));
     b.addEventListener('click', () => { if (fn?.() !== false) closeModal(); });
     foot.append(b);
   }

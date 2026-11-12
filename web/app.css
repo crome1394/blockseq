@@ -1624,3 +1624,8 @@ html.wide .embed-wrap.embed-tweet { width: 550px; }
 .modal-actions button.danger { color: var(--danger); }
 .modal-actions button.danger:hover { border-color: var(--danger); }
 .pick-row > .muted.small { white-space: nowrap; flex: none; margin-left: 12px; }
+
+/* Dialog buttons with an icon. */
+.modal-actions { flex-wrap: wrap; }
+.modal-actions button.with-icon { display: inline-flex; align-items: center; gap: 6px; }
+.modal-actions button.with-icon svg { flex: none; }
