@@ -9,10 +9,10 @@
 //! - Headers: a Content-Security-Policy for the app page, no framing by other
 //!   sites, no referrer to other sites, no content sniffing.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -51,8 +51,10 @@ fn host_allowed(host: &str, allowed: &[String]) -> bool {
         || allowed.contains(&name)
 }
 
-/// Why a request is refused, if it is.
-pub fn refusal(method: &Method, headers: &HeaderMap, allowed: &[String]) -> Option<&'static str> {
+/// Why a request is refused, if it is. `trusted_proxy` is true only when the
+/// TCP peer is listed in `BLOCKSEQ_TRUSTED_PROXIES`. A client can set
+/// `X-Forwarded-Host` itself, so that header counts only from those peers.
+pub fn refusal(method: &Method, headers: &HeaderMap, allowed: &[String], trusted_proxy: bool) -> Option<&'static str> {
     let text = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
     let host = text(header::HOST).unwrap_or("");
     if !host_allowed(host, allowed) {
@@ -67,13 +69,16 @@ pub fn refusal(method: &Method, headers: &HeaderMap, allowed: &[String]) -> Opti
         Some(_) => return Some("Cross-site request refused."),
         None => {}
     }
-    // Older browsers: the Origin must be this server (as the browser or a
-    // reverse proxy names it). No Origin at all: not a browser (curl, scripts).
+    // Older browsers: the Origin must be this server. No Origin at all is
+    // not a browser (curl, scripts). A reverse proxy's public name is in
+    // X-Forwarded-Host, and only a listed proxy may say so.
     match text(header::ORIGIN) {
         None => None,
         Some(origin) => {
             let origin_host = origin.split_once("://").map_or("", |(_, h)| h);
-            let forwarded = headers.get("x-forwarded-host").and_then(|v| v.to_str().ok());
+            let forwarded = trusted_proxy
+                .then(|| headers.get("x-forwarded-host").and_then(|v| v.to_str().ok()))
+                .flatten();
             if !origin_host.is_empty() && (origin_host.eq_ignore_ascii_case(host) || forwarded.is_some_and(|f| origin_host.eq_ignore_ascii_case(f))) {
                 None
             } else {
@@ -84,7 +89,12 @@ pub fn refusal(method: &Method, headers: &HeaderMap, allowed: &[String]) -> Opti
 }
 
 pub async fn check(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
-    if let Some(why) = refusal(req.method(), req.headers(), &s.allowed_hosts) {
+    // Missing peer info is treated as untrusted, so a forwarded host cannot slip through.
+    let trusted = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|c| s.trusted_proxies.contains(&c.0.ip()));
+    if let Some(why) = refusal(req.method(), req.headers(), &s.allowed_hosts, trusted) {
         tracing::warn!("refused {} {}: {why}", req.method(), req.uri().path());
         return (StatusCode::FORBIDDEN, why).into_response();
     }
@@ -117,23 +127,25 @@ mod tests {
     fn cross_site_writes_are_refused() {
         let none: Vec<String> = vec![];
         let post = Method::POST;
-        let ok = |pairs| refusal(&post, &headers(pairs), &none).is_none();
+        let ok = |pairs| refusal(&post, &headers(pairs), &none, false).is_none();
         assert!(ok(&[("host", "notes.lan:3030"), ("sec-fetch-site", "same-origin")]));
         assert!(!ok(&[("host", "notes.lan:3030"), ("sec-fetch-site", "cross-site")]));
         assert!(!ok(&[("host", "notes.lan:3030"), ("sec-fetch-site", "same-site")]));
         assert!(ok(&[("host", "notes.lan:3030"), ("origin", "http://notes.lan:3030")]));
         assert!(!ok(&[("host", "notes.lan:3030"), ("origin", "https://evil.example")]));
         assert!(!ok(&[("host", "notes.lan:3030"), ("origin", "null")]));
-        assert!(ok(&[("host", "10.0.0.5:3030"), ("origin", "https://notes.example.com"), ("x-forwarded-host", "notes.example.com")]));
+        let proxied = &[("host", "10.0.0.5:3030"), ("origin", "https://notes.example.com"), ("x-forwarded-host", "notes.example.com")];
+        assert!(!ok(proxied)); // the client set the header itself
+        assert!(refusal(&post, &headers(proxied), &none, true).is_none());
         assert!(ok(&[("host", "notes.lan:3030")])); // curl, scripts
         // Reading is fine from anywhere the browser allows.
-        assert!(refusal(&Method::GET, &headers(&[("host", "x"), ("sec-fetch-site", "cross-site")]), &none).is_none());
+        assert!(refusal(&Method::GET, &headers(&[("host", "x"), ("sec-fetch-site", "cross-site")]), &none, false).is_none());
     }
 
     #[test]
     fn only_listed_host_names_when_configured() {
         let allowed = parse_hosts("notes.example.com, blockseq");
-        let get = |host| refusal(&Method::GET, &headers(&[("host", host)]), &allowed).is_none();
+        let get = |host| refusal(&Method::GET, &headers(&[("host", host)]), &allowed, false).is_none();
         assert!(get("notes.example.com"));
         assert!(get("NOTES.example.com:443"));
         assert!(get("blockseq:3030"));
@@ -141,6 +153,6 @@ mod tests {
         assert!(get("[::1]:3030"));
         assert!(get("localhost:3939"));
         assert!(!get("rebind.attacker.example"));
-        assert!(refusal(&Method::GET, &headers(&[("host", "anything")]), &[]).is_none());
+        assert!(refusal(&Method::GET, &headers(&[("host", "anything")]), &[], false).is_none());
     }
 }
