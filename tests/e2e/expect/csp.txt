@@ -1,0 +1,7 @@
+CSP ✓ | SAMEORIGIN | same-origin
+image loaded: true
+www.youtube-nocookie.com, platform.twitter.com
+save from the app: "plain text block edited"
+cross-site POST: 403
+same-origin POST: 204
+CSP problems: none

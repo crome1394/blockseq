@@ -1,0 +1,4 @@
+editing child: true
+| plaintext: false
+unlock prompt: true
+after unlock, still editing the new child: true

@@ -1,0 +1,4 @@
+middle block: above
+still editing: TEXTAREA
+top block after scrolling it to the top: below
+after Esc: hidden

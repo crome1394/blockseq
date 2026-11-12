@@ -1,0 +1,6 @@
+tamper with public check: 403 | key intact: true
+password change round trip ok, same key: true | proof kept: true
+A still has: original block / its child / TODO check the status pane
+| ids reused: false
+stale status change: 409 | block unchanged: TODO check the status pane
+current status change: 200

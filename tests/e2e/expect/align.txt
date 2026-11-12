@@ -1,0 +1,5 @@
+rendered: [ "center:center", "right:right" ]
+after left: "Right aligned note"
+textarea align while editing: center
+empty block: **bold**
+task with no text: "TODO ****"

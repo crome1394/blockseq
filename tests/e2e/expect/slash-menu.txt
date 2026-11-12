@@ -1,0 +1,4 @@
+bare / : 14 rows
+headings group: ‹ Headings | >Heading 1
+typed /warn: >Warning admonition
+status group by mouse: ‹ Task status

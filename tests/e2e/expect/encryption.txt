@@ -1,0 +1,9 @@
+recovery key shown: true
+Done blocked until ticked: true
+plaintext on server: false
+mirror has plaintext: false | mirror has encrypted:: true
+clipboard has plaintext: false | has blob: true
+| text in DOM: false
+wrong password: Wrong password
+unlocked child: [ "Wifi password: hunter2" ]
+after edit: server blocks 1 | plaintext on server: false

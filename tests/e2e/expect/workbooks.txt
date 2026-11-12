@@ -1,0 +1,5 @@
+main delete: Main can't be deleted
+wrong name: The name doesn’t match
+now open: Main | listed: false
+API for the deleted workbook: 404
+in the trash: true | database kept: true

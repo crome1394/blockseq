@@ -10,8 +10,12 @@ tests/e2e/run.sh csp draft  # some of them
 
 `run.sh` builds Blockseq, starts it on `127.0.0.1:3939` with an empty
 temporary data folder, runs the scripts and stops the server. Each script
-prints what it checked (e.g. `plaintext on server: false`); read the output.
-Screenshots go to the temporary folder printed at the end.
+prints what it checked (e.g. `plaintext on server: false`). A test passes
+when it exits cleanly, prints no page errors, and prints every line in
+`expect/<name>.txt` (fixed text); `run.sh` exits non-zero and names what is
+missing otherwise. When you change what a script prints, update its expect
+file. Screenshots and each test's output go to the temporary folder printed
+at the end.
 
 | Script | Checks |
 |---|---|

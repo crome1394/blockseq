@@ -1,0 +1,6 @@
+builder open: true | focus in code: true
+Did you mean
+after fixes: \frac{a+b}{2} \times x^{10} \alpha | problems left: 0
+hover: Number | code highlighted: 2
+edit existing: a+b | mode inline: In a sentence
+updated: "Existing: **bold $a+b+c$** and \\[\\frac{x}{y}^2\\]"

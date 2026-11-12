@@ -1,0 +1,5 @@
+math elements: 7 | errors: 0
+but prices like $5 and $10 stay text.
+weekday header: MTWTFSS
+menu has timestamp: true
+tags still on right: [ "#work" ]

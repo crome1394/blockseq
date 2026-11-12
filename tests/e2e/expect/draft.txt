@@ -1,0 +1,5 @@
+status while down: Offline: changes not saved yet
+server has: "saved text"
+never reached the server
+after restore, server has: "saved text plus offline typing"
+bar gone after saving: true

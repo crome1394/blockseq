@@ -41,14 +41,28 @@ if [[ ${#TESTS[@]} -eq 0 ]]; then
   # Order matters a little: encryption sets the password the others use.
   TESTS=(encryption slash-encrypted review-fixes csp workbooks history math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted)
 fi
-failed=0
+# A test passes when the script exits cleanly, prints no page errors, and
+# prints every line listed in expect/<name>.txt (fixed text, anywhere).
+failed=()
 for t in "${TESTS[@]}"; do
   echo "== $t"
-  if ! deno run -A "tests/e2e/$t.ts" "$DIR" 2>&1 | grep -v '^Warning'; then
-    echo "!! $t failed"
-    failed=1
+  out="$DIR/$t.out"
+  ok=1
+  if ! deno run -A "tests/e2e/$t.ts" "$DIR" >"$out" 2>&1; then ok=0; fi
+  grep -v '^Warning' "$out"
+  if grep -q 'PAGEERROR' "$out"; then ok=0; echo "!! page error"; fi
+  if [[ -f "tests/e2e/expect/$t.txt" ]]; then
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      if ! grep -qF -- "$line" "$out"; then ok=0; echo "!! missing: $line"; fi
+    done <"tests/e2e/expect/$t.txt"
   fi
+  if [[ $ok -eq 1 ]]; then echo "-- $t passed"; else echo "-- $t FAILED"; failed+=("$t"); fi
 done
 echo
-echo "Screenshots and server log: $DIR"
-exit $failed
+echo "Screenshots, outputs and server log: $DIR"
+if [[ ${#failed[@]} -gt 0 ]]; then
+  echo "FAILED: ${failed[*]}"
+  exit 1
+fi
+echo "All ${#TESTS[@]} browser tests passed."

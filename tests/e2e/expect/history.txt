@@ -1,0 +1,7 @@
+preview: version one
+after restore, server: version one | editor shows: version one
+deleted: true
+in Recently deleted: true
+restored page: version one
+conflict bar: true
+newest kept: replaced by Keep mine → "the other device's text"

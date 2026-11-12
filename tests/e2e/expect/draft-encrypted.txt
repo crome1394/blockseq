@@ -1,0 +1,2 @@
+draft exists: true | has plaintext: false | has ciphertext: true
+drafts left: 0 | server plaintext: false
