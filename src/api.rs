@@ -65,9 +65,35 @@ fn set_header(h: &mut HeaderMap, name: header::HeaderName, value: &str) {
     }
 }
 
+/// The data folder's path, so error messages sent to browsers can say "the
+/// data folder" instead of revealing where the server keeps things. The full
+/// message is still logged.
+pub static DATA_ROOT: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+pub fn set_data_root(root: &std::path::Path) {
+    let mut forms = vec![root.display().to_string()];
+    if let Ok(abs) = std::path::absolute(root) {
+        forms.push(abs.display().to_string());
+    }
+    if let Ok(real) = root.canonicalize() {
+        forms.push(real.display().to_string());
+    }
+    forms.retain(|f| f.len() > 1);
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len())); // longest first
+    let _ = DATA_ROOT.set(forms);
+}
+
+fn redact(msg: &str) -> String {
+    let mut out = msg.to_string();
+    for root in DATA_ROOT.get().into_iter().flatten() {
+        out = out.replace(root.as_str(), "the data folder");
+    }
+    out
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(json!({ "error": self.1 }))).into_response()
+        (self.0, Json(json!({ "error": redact(&self.1) }))).into_response()
     }
 }
 
@@ -983,4 +1009,30 @@ fn health_report(s: &AppState) -> Response {
         .collect();
     let status = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
     (status, Json(json!({ "ok": ok, "version": env!("CARGO_PKG_VERSION"), "config": config, "workbooks": workbooks }))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_messages_hide_the_data_folder() {
+        let root = std::env::temp_dir().join("bq-redact-test");
+        set_data_root(&root);
+        let msg = format!("writing {}/workbooks/X/pages/a.md: disk full", root.display());
+        assert_eq!(redact(&msg), "writing the data folder/workbooks/X/pages/a.md: disk full");
+    }
+
+    #[test]
+    fn byte_ranges() {
+        assert_eq!(parse_range("bytes=0-9", 100), Some(Ok((0, 9))));
+        assert_eq!(parse_range("bytes=90-", 100), Some(Ok((90, 99))));
+        assert_eq!(parse_range("bytes=-10", 100), Some(Ok((90, 99))));
+        assert_eq!(parse_range("bytes=50-500", 100), Some(Ok((50, 99))));
+        assert_eq!(parse_range("bytes=100-", 100), Some(Err(())));
+        assert_eq!(parse_range("bytes=9-3", 100), Some(Err(())));
+        assert_eq!(parse_range("bytes=0-1,5-6", 100), None);
+        assert_eq!(parse_range("items=0-1", 100), None);
+        assert_eq!(parse_range("bytes=-0", 100), Some(Err(())));
+    }
 }

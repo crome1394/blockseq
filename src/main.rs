@@ -176,6 +176,7 @@ async fn main() -> Result<()> {
 
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating {}", data_dir.display()))?;
+    api::set_data_root(&data_dir);
     let cleaned = workbooks::clean_temp(&data_dir);
     if cleaned > 0 {
         tracing::info!("removed {cleaned} temporary files left by an interrupted upload, export or import");
