@@ -142,43 +142,55 @@ workbook; nothing existing is changed.
 them with the password (or recovery key) you used when the backup was made.
 ";
 
-/// Copies the database and the mirrored folders into `stage` as one moment.
+/// Copies the database and the mirrored folders into `stage`.
 /// Returns the database file inside `stage`.
 ///
-/// Pass the live writer and hold its lock until this returns, so a save cannot
-/// change the database or the Markdown between the two copies. With `writer`
-/// left unset (the command-line export, which has no workbook lock), a write
-/// transaction is held across both copies instead. The caller zips `stage`
-/// after releasing the lock. The file copy is not fsynced.
-pub fn stage_snapshot(dir: &Path, stage: &Path, writer: Option<&Connection>) -> Result<PathBuf> {
+/// The database and the Markdown are copied as one moment: with `writer`
+/// (the live workbook's connection) its lock is held across both, and without
+/// it (the command-line export) a write transaction is. Assets are copied
+/// after the lock is released, so a large assets folder does not hold up
+/// saves. That is safe because an asset file is never changed in place, only
+/// added or deleted: the copy can only gain a file uploaded meanwhile, or
+/// miss one deleted meanwhile. The caller zips `stage` afterwards. The file
+/// copy is not fsynced.
+pub fn stage_snapshot(dir: &Path, stage: &Path, writer: Option<&parking_lot::Mutex<Connection>>) -> Result<PathBuf> {
     std::fs::create_dir_all(stage)?;
     let db_copy = stage.join(DB_FILE);
-    if let Some(conn) = writer {
-        snapshot(conn, &db_copy)?;
+    if let Some(writer) = writer {
+        let conn = writer.lock();
+        snapshot(&conn, &db_copy)?;
+        copy_folders(dir, stage, &LOCKED_FOLDERS, false)?;
     } else {
-        // Hold the write transaction across the file copy too. VACUUM INTO
-        // cannot run inside it; the online backup can. One connection holds
-        // the write lock so a save waits. A second copies the database: the
-        // backup API refuses the connection that owns the transaction, and
-        // VACUUM INTO cannot run inside one.
+        // VACUUM INTO cannot run inside a transaction; the online backup can.
+        // One connection holds the write lock so a save waits. A second
+        // copies the database: the backup API refuses the connection that
+        // owns the transaction.
         let hold = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
         crate::db::set_busy_timeout(&hold)?;
         hold.execute_batch("BEGIN IMMEDIATE")?;
         let src = Connection::open(dir.join(DB_FILE)).with_context(|| format!("opening {}", dir.display()))?;
         crate::db::set_busy_timeout(&src)?;
         src.backup("main", &db_copy, rusqlite::backup::NO_PROGRESS).context("copying the database")?;
-        copy_mirror(dir, stage)?;
+        copy_folders(dir, stage, &LOCKED_FOLDERS, false)?;
         hold.execute_batch("COMMIT")?;
-        return Ok(db_copy);
     }
-    copy_mirror(dir, stage)?;
+    copy_folders(dir, stage, &[ASSETS], true)?;
     Ok(db_copy)
 }
 
-/// Copies pages, journals, assets and the other mirrored folders. Hidden and
-/// temp files are left out, the same way the zip walks them.
-fn copy_mirror(dir: &Path, stage: &Path) -> Result<()> {
-    for folder in FOLDERS {
+/// The assets folder, copied outside the lock (see [`stage_snapshot`]).
+const ASSETS: &str = "assets";
+/// Every other mirrored folder, copied under the lock.
+const LOCKED_FOLDERS: [&str; 5] = ["pages", "journals", "logseq", "draws", "whiteboards"];
+
+/// Copies the given folders (and the imported key, with the locked ones).
+/// Hidden and temp files are left out, the same way the zip walks them.
+/// `unlocked`: files may come and go during the copy. One deleted meanwhile
+/// is skipped, and so is an empty file, which is the placeholder an upload
+/// creates for a moment before its data is moved in (an empty upload is
+/// refused, so no real asset is empty).
+fn copy_folders(dir: &Path, stage: &Path, folders: &[&str], unlocked: bool) -> Result<()> {
+    for folder in folders {
         let mut files = Vec::new();
         walk(&dir.join(folder), &mut files);
         for path in files {
@@ -187,12 +199,21 @@ fn copy_mirror(dir: &Path, stage: &Path) -> Result<()> {
             if let Some(parent) = to.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&path, &to).with_context(|| format!("copying {}", path.display()))?;
+            match std::fs::copy(&path, &to) {
+                Ok(0) if unlocked => {
+                    let _ = std::fs::remove_file(&to);
+                }
+                Ok(_) => {}
+                Err(e) if unlocked && e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(anyhow::Error::new(e).context(format!("copying {}", path.display()))),
+            }
         }
     }
-    let imported = dir.join(IMPORTED_KEY);
-    if imported.is_file() {
-        std::fs::copy(&imported, stage.join(IMPORTED_KEY))?;
+    if !unlocked {
+        let imported = dir.join(IMPORTED_KEY);
+        if imported.is_file() {
+            std::fs::copy(&imported, stage.join(IMPORTED_KEY))?;
+        }
     }
     Ok(())
 }
@@ -549,6 +570,28 @@ mod tests {
     }
 
     #[test]
+    fn staging_covers_every_mirrored_folder() {
+        let mut staged: Vec<&str> = LOCKED_FOLDERS.iter().copied().chain([ASSETS]).collect();
+        let mut all = FOLDERS.to_vec();
+        staged.sort_unstable();
+        all.sort_unstable();
+        assert_eq!(staged, all);
+    }
+
+    #[test]
+    fn assets_copied_after_the_lock_tolerate_changes() -> Result<()> {
+        let tmp = std::env::temp_dir().join(format!("bq-assets-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.join("src/assets"))?;
+        std::fs::write(tmp.join("src/assets/pic.png"), [1u8])?;
+        std::fs::write(tmp.join("src/assets/new_1_0.png"), [])?; // an upload's placeholder
+        copy_folders(&tmp.join("src"), &tmp.join("stage"), &[ASSETS], true)?;
+        assert!(tmp.join("stage/assets/pic.png").is_file());
+        assert!(!tmp.join("stage/assets/new_1_0.png").exists());
+        std::fs::remove_dir_all(&tmp)?;
+        Ok(())
+    }
+
+    #[test]
     fn the_zip_keeps_the_staged_moment() -> Result<()> {
         let tmp = std::env::temp_dir().join(format!("bq-stage-{}", uuid::Uuid::new_v4()));
         let src = tmp.join("src");
@@ -557,11 +600,12 @@ mod tests {
         std::fs::write(src.join("pages/Hello.md"), "- first\n")?;
         std::fs::write(src.join("assets/pic.png"), [1u8, 2, 3])?;
         std::fs::write(src.join("assets/.upload-x.part"), "nope")?;
-        let conn = crate::db::open(&src.join(DB_FILE))?;
+        let writer = parking_lot::Mutex::new(crate::db::open(&src.join(DB_FILE))?);
         let block = crate::db::Block { id: "a".into(), parent_id: None, content: "first".into(), collapsed: false };
-        crate::db::save_page(&conn, "Hello", 0, &[block], &[])?;
+        crate::db::save_page(&writer.lock(), "Hello", 0, &[block], &[])?;
         let stage = tmp.join("stage");
-        let db_copy = stage_snapshot(&src, &stage, Some(&conn))?;
+        let db_copy = stage_snapshot(&src, &stage, Some(&writer))?;
+        let conn = writer.into_inner();
         // A save after the copy must not appear in a zip of that copy.
         std::fs::write(src.join("pages/Hello.md"), "- second\n")?;
         std::fs::write(src.join("assets/pic.png"), [9u8, 9, 9])?;

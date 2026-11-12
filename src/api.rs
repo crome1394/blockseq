@@ -1308,18 +1308,16 @@ pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
     let config = s.root.join("config.json");
     let (wb2, zip_path) = (wb.clone(), tmp_zip.clone());
     let made = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        // Copy the database and the files under the writer lock, into a temp
-        // folder. The zip is built from that folder after the lock is released.
+        // Copy the database and the files into a temp folder (the database
+        // and Markdown under the writer lock, see stage_snapshot). The zip is
+        // built from that folder after the lock is released.
         let temp = std::env::temp_dir();
         let stage = temp.join(format!("blockseq-snap-{id}"));
         let result = (|| {
             // Room for the staged copy and, after that, for the zip.
             let live = backup::snapshot_bytes(&wb2.dir);
             enough_export_space(&temp, live.saturating_mul(2).saturating_add(1024 * 1024))?;
-            let db_copy = {
-                let conn = wb2.db.lock();
-                backup::stage_snapshot(&wb2.dir, &stage, Some(&conn))?
-            };
+            let db_copy = backup::stage_snapshot(&wb2.dir, &stage, Some(&wb2.db))?;
             let staged = crate::workbooks::tree_bytes(&stage);
             enough_export_space(&temp, staged.saturating_add(1024 * 1024))?;
             backup::write_zip(&wb2.id, &stage, &db_copy, &config, &zip_path)

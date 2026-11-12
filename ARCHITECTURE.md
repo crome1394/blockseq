@@ -348,9 +348,13 @@ CRDTs (conflict-free merge structures):
   must match `crypto.js`.
 - **Backups** (`src/backup.rs`, `backup-ui.js`). Export, while holding the
   workbook's connection, takes a `VACUUM INTO` snapshot and copies `pages/`,
-  `journals/`, `assets/`, `logseq/` (no hidden or temp files) into a temp
-  folder. The zip is built from that copy, so a save during compression cannot
-  mix two moments. `config.json` and a `blockseq-backup.json` manifest
+  `journals/`, `logseq/`, `draws/` and `whiteboards/` (no hidden or temp files)
+  into a temp folder. `blockseq export` holds a write transaction instead.
+  `assets/` is copied after the lock is released, so a large assets folder
+  does not hold up saves: asset files are only ever added or deleted, never
+  rewritten, so the copy can at most gain a file uploaded meanwhile or miss
+  one deleted meanwhile. The zip is built from that copy, so a save during
+  compression cannot mix two moments. `config.json` and a `blockseq-backup.json` manifest
   (`format: 1`) go in too. The zip is written on the temp filesystem, not in
   the data folder, and unlinked once opened and streamed. It is not started
   when the temp volume could not keep a 256 MB reserve after the staged copy
