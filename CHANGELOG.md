@@ -2,7 +2,7 @@
 
 All notable changes to Blockseq are listed here. There are no release tags yet, so entries are grouped by theme. The newest group is first, and the newest change is first inside each section.
 
-Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `b731e77` (2026-11-12).
+Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `396c49b` (2026-11-12).
 
 Opening an older database upgrades it in place. The current schema is **version 8**.
 
@@ -17,6 +17,18 @@ Opening an older database upgrades it in place. The current schema is **version 
 | 2 | Favourites on pages, and tag links marked apart from ordinary links. | `862359e` |
 
 On the move to version 6, history rows whose name matches a page that still exists are attached to that page. Rows left over from deleted pages are grouped one id per name. Copies that already shared a name cannot be split apart.
+
+## Restore into Main, env template, smaller files
+
+### Added
+
+- **Restore into Main.** Import backup can restore into Main instead of as a new workbook. If Main holds anything, it is first saved as `backups/before-restore-<time>.zip` (owner-only, newest 10 kept, listed under Settings → Backup), then its files move to the trash or, if you tick the box, into a workbook you name. A failure at any step leaves Main as it was. Restoring the wrong file is fixed by restoring the right one the same way. (`b0e5d6b`)
+- `deploy/blockseq.env.example` lists every setting, commented out with its default, including `BLOCKSEQ_DATA` and `RUST_LOG`. `install.sh` installs it the first time. (`943dd0c`)
+
+### Internal
+
+- The large files are split into modules, with code moved unchanged: `api.rs` → `api/` (`67ba221`), `db.rs` → `db/` (`b28016e`), `editor.js` → `editor.js` plus `secrets.js`, `codeblocks.js`, `blockmenus.js`, `formatbar.js`, `autocomplete.js`, `refs.js`, `menus.js` (`e267f09`), and `app.js` → `app.js` plus `workbooks-ui.js`, `tasks-pane.js`, `allpages.js` (`396c49b`).
+- The encryption browser test no longer fails at random under load. (`30868d3`, `cef5e7e`)
 
 ## Sign out, stored counts
 
