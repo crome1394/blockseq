@@ -39,7 +39,12 @@ pub struct WorkbookInfo {
     pub name: String,
     /// "blockseq" (ready), "logseq" (will be imported on open) or "empty".
     pub kind: &'static str,
+    /// The workbook's folder on the server.
+    pub path: String,
 }
+
+/// Where deleted workbooks go (inside workbooks/, hidden: never listed).
+pub const TRASH: &str = ".trash";
 
 impl Workbook {
     fn is_retired(&self) -> bool {
@@ -98,6 +103,11 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// A folder as shown in the workbook list (absolute when possible).
+fn shown(dir: &Path) -> String {
+    std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()).display().to_string()
+}
+
 /// Folder names allowed for workbooks: letters, digits, spaces, `-_.`,
 /// not starting with a dot or space, and not "main".
 pub fn valid_id(id: &str) -> bool {
@@ -141,7 +151,7 @@ impl Registry {
 
     /// Main first, then every folder in workbooks/, sorted by name.
     pub fn list(&self) -> Vec<WorkbookInfo> {
-        let mut out = vec![WorkbookInfo { id: MAIN.into(), name: "Main".into(), kind: "blockseq" }];
+        let mut out = vec![WorkbookInfo { id: MAIN.into(), name: "Main".into(), kind: "blockseq", path: shown(&self.root) }];
         let mut others: Vec<WorkbookInfo> = std::fs::read_dir(self.root.join("workbooks"))
             .into_iter()
             .flatten()
@@ -149,7 +159,7 @@ impl Registry {
             .filter(|e| e.path().is_dir())
             .filter_map(|e| {
                 let id = e.file_name().to_str()?.to_string();
-                valid_id(&id).then(|| WorkbookInfo { name: id.clone(), kind: Self::kind(&e.path()), id })
+                valid_id(&id).then(|| WorkbookInfo { name: id.clone(), kind: Self::kind(&e.path()), path: shown(&e.path()), id })
             })
             .collect();
         others.sort_by_key(|w| w.name.to_lowercase());
@@ -168,7 +178,7 @@ impl Registry {
             bail!("a workbook called {name} already exists");
         }
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        Ok(WorkbookInfo { id: name.into(), name: name.into(), kind: "empty" })
+        Ok(WorkbookInfo { id: name.into(), name: name.into(), kind: "empty", path: shown(&dir) })
     }
 
     /// Renames a workbook's folder (not Main). An open workbook is closed
@@ -190,14 +200,40 @@ impl Registry {
         if from != to && dst.exists() {
             bail!("a workbook called {to} already exists");
         }
+        self.move_closed(from, &src, &dst)?;
+        Ok(WorkbookInfo { id: to.into(), name: to.into(), kind: Self::kind(&dst), path: shown(&dst) })
+    }
+
+    /// Deletes a workbook (not Main) by moving its folder to
+    /// workbooks/.trash/<name> <date time>/, so it can still be recovered
+    /// by moving it back. Returns where it went.
+    pub fn delete(&self, id: &str) -> Result<PathBuf> {
+        if !valid_id(id) {
+            bail!("the Main workbook can't be deleted");
+        }
+        let src = self.root.join("workbooks").join(id);
+        if !src.is_dir() {
+            bail!("no workbook called {id}");
+        }
+        let trash = self.root.join("workbooks").join(TRASH);
+        std::fs::create_dir_all(&trash)?;
+        let dst = trash.join(format!("{id} {}", chrono::Local::now().format("%Y-%m-%d %H%M%S")));
+        self.move_closed(id, &src, &dst)?;
+        Ok(dst)
+    }
+
+    /// Moves a workbook's folder, closing the open workbook first: its
+    /// database is checkpointed and held while the folder moves, and old
+    /// handles are retired. On failure the workbook stays open as it was.
+    fn move_closed(&self, id: &str, src: &Path, dst: &Path) -> Result<()> {
         let mut open = self.open.lock();
-        let wb = open.remove(from);
+        let wb = open.remove(id);
         let result = {
             let guard = wb.as_ref().map(|w| w.db.lock());
             if let Some(conn) = &guard {
                 let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
             }
-            let r = std::fs::rename(&src, &dst).with_context(|| format!("renaming {}", src.display()));
+            let r = std::fs::rename(src, dst).with_context(|| format!("moving {}", src.display()));
             if r.is_ok() {
                 if let Some(w) = &wb {
                     w.retired.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -205,13 +241,12 @@ impl Registry {
             }
             r
         };
-        if let Err(e) = result {
+        if result.is_err() {
             if let Some(w) = wb {
-                open.insert(from.to_string(), w);
+                open.insert(id.to_string(), w);
             }
-            return Err(e);
         }
-        Ok(WorkbookInfo { id: to.into(), name: to.into(), kind: Self::kind(&dst) })
+        result
     }
 
     /// Restores a backup zip (or a zipped Logseq graph) as a new workbook.
@@ -241,7 +276,7 @@ impl Registry {
             let _ = std::fs::remove_dir_all(&tmp);
         }
         let (report, adopt) = result?;
-        let info = WorkbookInfo { id: name.into(), name: name.into(), kind: Self::kind(&dir) };
+        let info = WorkbookInfo { id: name.into(), name: name.into(), kind: Self::kind(&dir), path: shown(&dir) };
         Ok((info, report, adopt))
     }
 
@@ -480,6 +515,27 @@ mod tests {
         assert!(entries.iter().any(|n| n == "pages/Main page.md"));
         assert!(!entries.iter().any(|n| n.contains("workbooks/") || n.contains("Other page") || n.contains("pic.png")), "{entries:?}");
         drop((main, other, reg));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deleting_moves_the_workbook_to_the_trash() {
+        let root = std::env::temp_dir().join(format!("bq-del-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = Registry::new(root.clone());
+        reg.create("Gone").unwrap();
+        let wb = reg.get("Gone", &[]).unwrap().unwrap();
+        db::save_page(&wb.db.lock(), "Kept in trash", 0, &[block("g1", "still here")], &[]).unwrap();
+        assert!(reg.delete(MAIN).is_err());
+        let trash = reg.delete("Gone").unwrap();
+        assert!(!root.join("workbooks/Gone").exists());
+        assert!(trash.join("blockseq.db").exists());
+        assert!(reg.list().iter().all(|w| w.id != "Gone" && !w.id.starts_with('.')));
+        assert!(reg.get("Gone", &[]).unwrap().is_none());
+        // The trash survives the startup clean-up.
+        clean_temp(&root);
+        assert!(trash.join("blockseq.db").exists());
+        drop((wb, reg));
         std::fs::remove_dir_all(root).unwrap();
     }
 

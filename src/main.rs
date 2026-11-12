@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
         .route("/block", get(api::get_block).put(api::put_block))
         .route("/tasks", get(api::tasks))
         .route("/assets", get(api::list_assets).post(api::upload_asset).delete(api::delete_asset))
-        .route("/workbooks", get(api::list_workbooks).post(api::create_workbook))
+        .route("/workbooks", get(api::list_workbooks).post(api::create_workbook).delete(api::delete_workbook))
         .route("/workbooks/rename", post(api::rename_workbook))
         .route("/config", get(api::get_config).put(api::put_config))
         .route("/encryption", get(api::get_encryption).put(api::put_encryption))

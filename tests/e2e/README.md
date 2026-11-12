@@ -18,6 +18,7 @@ Screenshots go to the temporary folder printed at the end.
 | encryption | Password setup, recovery key, no plaintext on the server, in the Markdown mirror or on the clipboard; lock, unlock, wrong password |
 | slash-encrypted | `/encrypted` creates a label and an encrypted child; asks to unlock when locked |
 | review-fixes | Key proof (tampering with the public check is refused), pasted copies don't take blocks from their page, stale task-status changes are refused |
+| workbooks | Workbook folders shown, delete with typed confirmation (to `.trash`), Main protected |
 | csp | Security headers; images, PDFs, embeds, maths and code still work under the Content-Security-Policy; cross-site POST refused |
 | math-builder | Palette, slots, problems and fixes, hover mapping, editing formulas in place |
 | maths-render | LaTeX rendering, calendar week start, timestamps |

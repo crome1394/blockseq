@@ -39,7 +39,7 @@ done
 TESTS=("$@")
 if [[ ${#TESTS[@]} -eq 0 ]]; then
   # Order matters a little: encryption sets the password the others use.
-  TESTS=(encryption slash-encrypted review-fixes csp math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted)
+  TESTS=(encryption slash-encrypted review-fixes csp workbooks math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted)
 fi
 failed=0
 for t in "${TESTS[@]}"; do

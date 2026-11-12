@@ -624,7 +624,8 @@ pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) 
             cfg.main_name = (to != "Main").then(|| to.clone());
             Ok(())
         })?;
-        crate::workbooks::WorkbookInfo { id: MAIN.into(), name: to.clone(), kind: "blockseq" }
+        let path = s.workbooks.list().into_iter().next().map(|w| w.path).unwrap_or_default();
+        crate::workbooks::WorkbookInfo { id: MAIN.into(), name: to.clone(), kind: "blockseq", path }
     } else {
         let state = s.clone();
         let (from, dest) = (q.id.clone(), to.clone());
@@ -636,6 +637,24 @@ pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) 
     tracing::info!("renamed workbook {} to {}", q.id, info.name);
     s.notify_all(json!({ "type": "workbooks", "renamed": { "from": q.id, "to": info.id } }));
     Ok(Json(info).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct IdOnly {
+    id: String,
+}
+
+/// Deletes a workbook (not Main): its folder moves to workbooks/.trash/.
+pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiResult {
+    let state = s.clone();
+    let id = q.id.clone();
+    let trash = tokio::task::spawn_blocking(move || state.workbooks.delete(&id))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?
+        .map_err(|e| bad(format!("{e:#}")))?;
+    tracing::info!("deleted workbook {}: moved to {}", q.id, trash.display());
+    s.notify_all(json!({ "type": "workbooks", "deleted": q.id }));
+    Ok(Json(json!({ "trash": trash.display().to_string() })).into_response())
 }
 
 pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {

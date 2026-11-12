@@ -7,8 +7,12 @@ and you use them from any browser on your LAN or tailnet.
 - Daily journals, `[[page links]]`, `#tags`, `((block refs))`, linked references
 - Workbooks: separate sets of notes, each in its own folder; Logseq graphs
   copied onto the server are imported
-- Workbook menu (click the workbook name): open, rename, import a backup, or
-  create a workbook. Main can be renamed too (display name only)
+- Workbook menu (click the workbook name): open, rename, delete, import a
+  backup, or create a workbook; each row shows the workbook's folder on the
+  server. Main can be renamed too (display name only) but not deleted.
+  Deleting asks you to type the name and moves the folder to
+  `workbooks/.trash/` (move it back to undo, or remove it for good). Every
+  workbook is separate: its own database, Markdown files and assets
 - The status at the bottom shows when the workbook was last saved, to the second
 - Task statuses you define (Backlog, Todo, Doing, In Review, Done, Cancelled),
   colour-coded, with a task list in a side pane

@@ -747,6 +747,7 @@ async function openWorkbookDialog(selectId = workbook()) {
   const open = () => switchWorkbook(selected);
   openModal('Workbooks', body, [
     ['Rename…', () => { renameWorkbookDialog(selected); return false; }],
+    ['Delete…', () => { deleteWorkbookDialog(selected); return false; }, 'danger'],
     ['Import backup…', () => { importDialog(); return false; }],
     ['New workbook…', () => { newWorkbookDialog(); return false; }],
     ['Open', () => { open(); return false; }, 'primary'],
@@ -766,7 +767,10 @@ async function openWorkbookDialog(selectId = workbook()) {
     row.dataset.id = w.id;
     row.setAttribute('role', 'option');
     const note = w.id === workbook() ? 'open now' : w.kind === 'logseq' ? 'Logseq graph · imports on open' : w.kind === 'empty' ? 'new' : '';
-    row.append(el('span', '', w.name), el('span', 'muted small', note));
+    const label = el('span', 'wb-label-col');
+    label.append(el('span', 'wb-row-name', w.name), el('span', 'wb-path', w.path));
+    label.lastChild.title = 'Where this workbook is stored on the server';
+    row.append(label, el('span', 'muted small', note));
     // Click selects, double-click (or Enter) opens. The server opens (and,
     // for a Logseq graph, imports) it on first use.
     row.addEventListener('click', () => { selected = w.id; paint(); });
@@ -791,6 +795,45 @@ async function openWorkbookDialog(selectId = workbook()) {
     }
   });
   list.querySelector('.pick-row.selected')?.focus();
+}
+
+function deleteWorkbookDialog(id) {
+  const w = workbookList.find((x) => x.id === id);
+  if (!w) return;
+  if (id === 'main') {
+    toast("Main can't be deleted: it is the server's data folder itself");
+    return;
+  }
+  const body = el('div', 'dialog-form');
+  body.append(el('p', '', `Delete the workbook “${w.name}”: its pages, journals and files.`));
+  body.append(el('p', 'muted small', `Nothing is erased: the folder is moved to ${w.path.replace(/[/\\][^/\\]*$/, '')}/.trash/ on the server, where it can be moved back (or removed for good). Consider downloading a backup first (Settings → Backup).`));
+  const label = el('label', 'field');
+  label.append(el('span', '', `Type the name to confirm: ${w.name}`));
+  const input = el('input');
+  input.autocomplete = 'off';
+  label.append(input);
+  const err = el('p', 'error small');
+  body.append(label, err);
+  const go = async () => {
+    if (input.value.trim() !== w.name) { err.textContent = 'The name doesn’t match'; return; }
+    const r = await api.deleteWorkbook(id);
+    if (!r.ok) { err.textContent = r.data?.error || 'Could not delete it'; return; }
+    toast(`Deleted ${w.name} (moved to the server's trash folder)`);
+    await workbookGone(id);
+    openWorkbookDialog();
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+  const box = openModal(`Delete ${w.name}?`, body, [['Cancel', () => { openWorkbookDialog(id); return false; }], ['Delete workbook', () => { go(); return false; }, 'danger']]);
+  box.classList.add('no-overlay-close');
+  input.focus();
+}
+
+// A workbook was deleted (here or on another device): leave it if open.
+async function workbookGone(id) {
+  if (workbook() === id) {
+    await switchWorkbook('main');
+  }
+  await loadWorkbooks();
 }
 
 function renameWorkbookDialog(id) {
@@ -829,6 +872,7 @@ async function renamed(from, to) {
 
 async function workbooksChanged(ev) {
   if (ev.renamed) await renamed(ev.renamed.from, ev.renamed.to);
+  else if (ev.deleted) await workbookGone(ev.deleted);
   else await loadWorkbooks();
 }
 
