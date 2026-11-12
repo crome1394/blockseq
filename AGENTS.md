@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Guidance for AI coding agents (and people) working on Blockseq. Read
-[README.md](README.md) for what the app does and how it is deployed, and
+[README.md](README.md) and the guides in [docs/](docs/) for what the app does and how it is deployed, and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how it works inside. This file covers
 how to work on it.
 
@@ -126,7 +126,7 @@ cargo build --release              # release build embeds web/ in the binary
   every device must share (task statuses) live on the server (`config.json`).
 
 **Docs**
-- Update README.md (user-facing behaviour) and ARCHITECTURE.md (internals)
+- Update the user guides in docs/ (user-facing behaviour; README.md stays a short overview) and ARCHITECTURE.md (internals)
   in the same change as the code.
 
 ## Provenance (clean room)
