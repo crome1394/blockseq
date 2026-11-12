@@ -514,6 +514,9 @@ Handlers do their database and file work on Tokio's blocking pool
 (`api::blocking`, `read_json`, async `update_config` / `read_config`). The
 workbook registry has one gate per workbook id for opening and moving
 folders, so a slow open (a big Logseq import) only delays that workbook.
+Moving a folder drops the registry map before the checkpoint and the
+rename, and both of that workbook's connections wait out a lock, so another
+workbook is not stuck and a second connection does not fail at once.
 Deleting a workbook moves its folder to `workbooks/.trash/<name> <date>/`
 (hidden from the list, skipped by the startup clean-up); Main can't be
 deleted. API failures sent to browsers are a short code (`invalid`,

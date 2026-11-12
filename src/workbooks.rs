@@ -323,29 +323,40 @@ impl Registry {
 
     /// Moves a workbook's folder, closing the open workbook first: its
     /// database is checkpointed and held while the folder moves, and old
-    /// handles are retired. On failure the workbook stays open as it was.
+    /// handles are retired. The registry map is released before that work,
+    /// so other workbooks keep opening. On failure this workbook stays open
+    /// on the same connections.
     fn move_closed(&self, id: &str, src: &Path, dst: &Path) -> Result<()> {
-        // Not while the workbook is being opened.
+        // Not while the workbook is being opened, and not opened again until
+        // this returns. Only this id waits.
         let gate = self.gate(id);
         let _moving = gate.lock();
-        let mut open = self.open.lock();
-        let wb = open.remove(id);
-        let result = {
-            let guard = wb.as_ref().map(|w| w.db.lock());
-            if let Some(conn) = &guard {
-                let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+        let wb = self.open.lock().remove(id);
+        let result = (|| -> Result<()> {
+            // The read connection is the other handle on this file. Take it
+            // first so a query finishes, and make both wait out a lock
+            // instead of failing at once.
+            let read = wb.as_ref().map(|w| w.read());
+            let write = wb.as_ref().map(|w| w.db.lock());
+            if let Some(conn) = &read {
+                db::set_busy_timeout(conn)?;
             }
-            let r = std::fs::rename(src, dst).with_context(|| format!("moving {}", src.display()));
-            if r.is_ok()
-                && let Some(w) = &wb {
-                    w.retired.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-            r
-        };
+            if let Some(conn) = &write {
+                db::set_busy_timeout(conn)?;
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+            }
+            std::fs::rename(src, dst).with_context(|| format!("moving {}", src.display()))
+        })();
+        if result.is_ok()
+            && let Some(w) = &wb
+        {
+            w.retired.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if result.is_err()
-            && let Some(w) = wb {
-                open.insert(id.to_string(), w);
-            }
+            && let Some(w) = wb
+        {
+            self.open.lock().insert(id.to_string(), w);
+        }
         result
     }
 
@@ -782,6 +793,35 @@ mod tests {
             assert_eq!(main.usage().files, 700);
         }
         drop((main, reg));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_move_keeps_the_same_connections() {
+        let root = std::env::temp_dir().join(format!("bq-move-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = Registry::new(root.clone());
+        reg.create("Stay").unwrap();
+        reg.create("Other").unwrap();
+        let stay = reg.get("Stay", &[]).unwrap().unwrap();
+        let other = reg.get("Other", &[]).unwrap().unwrap();
+        db::save_page(&stay.db.lock(), "Kept", 0, &[block("s1", "still here")], &[]).unwrap();
+        // A file where the folder should go. The rename fails after the checkpoint.
+        let dst = root.join("workbooks/Taken");
+        std::fs::write(&dst, "not a folder").unwrap();
+        assert!(reg.move_closed("Stay", &root.join("workbooks/Stay"), &dst).is_err());
+        let again = reg.get("Stay", &[]).unwrap().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&stay, &again), "the failed move opened a second database");
+        assert!(db::get_page(&again.db.lock(), "Kept").unwrap().is_some());
+        assert!(std::sync::Arc::ptr_eq(&other, &reg.get("Other", &[]).unwrap().unwrap()));
+        // The same open connections can still be checkpointed and the folder renamed.
+        assert_eq!(reg.rename("Stay", "Later").unwrap().id, "Later");
+        assert!(stay.retired.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(reg.get("Stay", &[]).unwrap().is_none());
+        let later = reg.get("Later", &[]).unwrap().unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&stay, &later));
+        assert!(db::get_page(&later.db.lock(), "Kept").unwrap().is_some());
+        drop((stay, again, other, later, reg));
         std::fs::remove_dir_all(root).unwrap();
     }
 
