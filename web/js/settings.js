@@ -9,6 +9,7 @@ const DEFAULTS = {
   threading: true, // highlight the path from the edited block up to its parents
   threadAlways: false, // show lines from every block to its parent all the time
   linksNewTab: true, // open web links in a new browser tab
+  formatBar: true, // floating formatting bar while editing a block
   lockMinutes: 15, // lock encrypted blocks after this many idle minutes (0 = never)
   liveCode: true, // syntax colours while editing code blocks
   codeWrap: false, // wrap long lines in code blocks instead of scrolling sideways
@@ -71,6 +72,7 @@ export const CATEGORIES = [
     ['tagColors', 'Colour tags', 'Give each tag at the end of a block its own colour.'],
   ] },
   { id: 'editor', label: 'Editor', options: [
+    ['formatBar', 'Formatting bar while editing', 'Show a small bar of formatting buttons (bold, heading, alignment, colour, status, maths…) above the block you are editing, or below it near the top of the window.'],
     ['linksNewTab', 'Open links in a new tab', 'Web links (including ones made with /link) open in a new browser tab. When off, they open in this tab.'],
     ['threading', 'Bullet threading', 'Highlight the line from the block you are editing up through its parents.'],
     ['threadAlways', 'Always show bullet threading', 'Show the lines connecting every block to its parent all the time, not only while editing.'],

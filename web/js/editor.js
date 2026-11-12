@@ -813,6 +813,7 @@ export class PageEditor {
     ta.focus({ preventScroll: false });
     const pos = caret === 'end' ? ta.value.length : caret === 'start' ? 0 : Math.min(caret, ta.value.length);
     ta.setSelectionRange(pos, pos);
+    this.showBar(node);
     ta.addEventListener('input', (e) => this.onInput(node, ta, e));
     ta.addEventListener('keydown', (e) => this.onKey(node, ta, e));
     ta.addEventListener('paste', (e) => this.onPaste(node, ta, e));
@@ -841,6 +842,7 @@ export class PageEditor {
     this.rawId = null;
     this.burst = false;
     closeAutocomplete();
+    if (bar?.editor === this) hideBar();
     node.el?.classList.remove('editing');
     this.rerenderContent(node);
     this.updateThread();
@@ -864,6 +866,7 @@ export class PageEditor {
   }
 
   onInput(node, ta, e) {
+    if (bar?.node === node) positionBar(); // the block may have grown
     // Snapshot once at the start of a burst of typing.
     if (!this.burst) {
       this.checkpoint();
@@ -965,8 +968,10 @@ export class PageEditor {
       e.preventDefault();
       this.formatText(node, ta, matches(e, 'bold') ? '**' : '_');
     } else if (k === 'Escape') {
-      // Esc stops editing and selects the block (Esc again clears it).
       e.preventDefault();
+      // A menu from the format bar closes first; editing carries on.
+      if (document.querySelector('.menu')) return closeMenu();
+      // Esc stops editing and selects the block (Esc again clears it).
       this.selectBlocks(node);
     }
   }
@@ -1748,7 +1753,7 @@ export class PageEditor {
     this.applyValue(node, value);
   }
 
-  showBlockMenu(node, e) {
+  showBlockMenu(node, e, opts = {}) {
     lastEditor = this;
     const colors = el('div', 'menu-swatches');
     for (const c of COLORS) {
@@ -1814,7 +1819,123 @@ export class PageEditor {
         { label: 'Expand all', shortcut: 'Ctrl ↓', fn: () => this.setCollapsedDeep(node, false) },
         { label: 'Collapse all', shortcut: 'Ctrl ↑', fn: () => this.setCollapsedDeep(node, true) });
     }
-    showMenu(e.clientX, e.clientY, entries);
+    showMenu(e.clientX, e.clientY, entries, opts);
+  }
+
+  // ---- floating format bar ----------------------------------------------------
+  //
+  // While a block is edited, a small bar floats just above it (or below it
+  // when there is no room above, e.g. near the top of the window). Its
+  // buttons never take focus, so the cursor and selection stay put.
+
+  showBar(node) {
+    if (!getSetting('formatBar')) return hideBar();
+    if (!bar) bar = makeBar();
+    bar.editor = this;
+    bar.node = node;
+    const code = /^```/.test(node.content);
+    bar.el.classList.toggle('bar-code', code); // no inline marks in code
+    const align = node.props[ALIGN] || 'left';
+    bar.align.innerHTML = ALIGN_SVG[align];
+    bar.align.title = `Text alignment: ${align} (click to change)`;
+    const color = node.props[COLOR];
+    bar.color.dataset.color = color || '';
+    bar.heading.textContent = (() => {
+      const h = /^(#{1,6}) /.exec(stripStatus(node.content))?.[1].length;
+      return h ? `H${h}` : node.props[HEADING] === 'true' ? 'HA' : 'H';
+    })();
+    document.body.append(bar.el);
+    positionBar();
+  }
+
+  // Runs a / command at the cursor, exactly as typing it would.
+  barSlash(cmd) {
+    const node = this.editing;
+    const ta = this.ta;
+    if (!node || !ta) return;
+    this.beginOp();
+    runSlash(this, node, ta, cmd, ta.selectionStart);
+    if (bar?.node === node) positionBar();
+  }
+
+  barAction(action, button) {
+    const node = this.editing;
+    const ta = this.ta;
+    if (!node || !ta) return;
+    const r = button.getBoundingClientRect();
+    const keep = { keepFocus: true };
+    switch (action) {
+      case 'bold': return this.formatText(node, ta, '**');
+      case 'italic': return this.formatText(node, ta, '_');
+      case 'strike': return this.formatText(node, ta, '~~');
+      case 'highlight': return this.formatText(node, ta, '==');
+      case 'code': {
+        const { selectionStart: a, selectionEnd: b } = ta;
+        this.beginOp();
+        if (a === b) return this.replaceText(node, ta, a, b, '``', 1);
+        const sel = ta.value.slice(a, b);
+        return this.replaceText(node, ta, a, b, `\`${sel}\``, 1, 1 + sel.length);
+      }
+      case 'link': {
+        const { selectionStart: a, selectionEnd: b } = ta;
+        const sel = ta.value.slice(a, b);
+        this.beginOp();
+        if (/^https?:\/\/\S+$/.test(sel)) return this.replaceText(node, ta, a, b, `[text](${sel})`, 1, 5);
+        const text = `[${sel || 'text'}](https://)`;
+        return sel ? this.replaceText(node, ta, a, b, text, sel.length + 3, text.length - 1) : this.replaceText(node, ta, a, b, text, 1, 5);
+      }
+      case 'heading': {
+        const entries = [1, 2, 3, 4, 5, 6].map((n) => ({ label: `Heading ${n}`, fn: () => this.setHeadingStyle(node, n) }));
+        entries.push({ label: 'Auto heading (size by depth)', fn: () => this.setHeadingStyle(node, 'auto') }, '-', { label: 'Normal text', fn: () => this.setHeadingStyle(node, 0) });
+        return showMenu(r.left, r.bottom, entries, keep);
+      }
+      case 'align': {
+        const order = ['left', 'center', 'right'];
+        const next = order[(order.indexOf(node.props[ALIGN] || 'left') + 1) % 3];
+        return this.setProp(node, ALIGN, next === 'left' ? null : next);
+      }
+      case 'color': {
+        const sw = el('div', 'menu-swatches');
+        for (const c of [...COLORS, null]) {
+          const b = el('button', c ? `swatch sw-${c}` : 'swatch sw-none');
+          b.title = c || 'No colour';
+          if ((node.props[COLOR] || null) === c) b.classList.add('active');
+          b.addEventListener('click', () => { closeMenu(); this.setProp(node, COLOR, c); });
+          sw.append(b);
+        }
+        return showMenu(r.left, r.bottom, [{ element: sw }], keep);
+      }
+      case 'status':
+        return showStatusPicker(r.left, r.bottom, statusOf(node.content)?.word, (word) => {
+          this.beginOp();
+          this.setMarker(node, word);
+        });
+      case 'math': {
+        const at = ta.selectionStart;
+        const span = mathSpans(ta.value).find((m) => m.start < at && at < m.end);
+        return this.openMath(node, span || null, span ? null : at);
+      }
+      case 'page': case 'blockref': {
+        // Selected text becomes the reference; otherwise start one and search.
+        const { selectionStart: a, selectionEnd: b } = ta;
+        const sel = ta.value.slice(a, b);
+        if (sel && action === 'page') {
+          this.beginOp();
+          return this.replaceText(node, ta, a, b, `[[${sel}]]`);
+        }
+        return this.barSlash(action);
+      }
+      case 'blocks': case 'media': case 'dates': {
+        const entries = BAR_MENUS[action].map((id) => {
+          if (id === '-') return '-';
+          const cmd = SLASH_COMMANDS.find((c) => c.id === id);
+          return { label: cmd.label, shortcut: `/${id}`, fn: () => this.barSlash(id) };
+        });
+        return showMenu(r.left, r.bottom, entries, keep);
+      }
+      case 'more': return this.showBlockMenu(node, { clientX: r.left, clientY: r.bottom }, keep);
+      default:
+    }
   }
 
   // ---- saving and sync ---------------------------------------------------
@@ -2002,10 +2123,43 @@ const SLASH_COMMANDS = [
   { id: 'yesterday', label: 'Yesterday' },
 ];
 
+// A bare "/" shows a short menu: common commands, then groups that open
+// with Enter or →. Typing anything searches every command (slashMatches).
+const SLASH_TOP = ['link', 'page', 'blockref', 'code', 'table', 'numbered', 'quote', 'math', 'encrypted'];
+const SLASH_GROUPS = [
+  { key: 'headings', label: 'Headings', ids: ['h1', 'h2', 'h3'] },
+  { key: 'boxes', label: 'Admonitions & quote block', ids: ['tip', 'note', 'important', 'caution', 'warning', 'pinned', 'quoteblock'] },
+  { key: 'media', label: 'Upload & embed', ids: ['image', 'pdf', 'file', 'video'] },
+  { key: 'dates', label: 'Dates & times', ids: ['today', 'tomorrow', 'yesterday', 'time', 'timestamp'] },
+  { key: 'status', label: 'Task status', ids: null }, // from Settings
+];
+
+function statusCommands() {
+  return getStatuses().map((s) => ({ id: `status:${s.word}`, label: s.label, hint: 'task status', word: s.word }));
+}
+
+function slashMenu(group) {
+  const byId = (id) => SLASH_COMMANDS.find((c) => c.id === id);
+  const row = (c) => ({ label: `${esc(c.label)}${c.hint ? `<span class="cmd-hint">${esc(c.hint)}</span>` : ''}`, value: c.id });
+  if (group) {
+    const g = SLASH_GROUPS.find((x) => x.key === group);
+    const cmds = g.ids ? g.ids.map(byId) : statusCommands();
+    return [{ label: `‹ ${esc(g.label)}`, value: 'back', cls: 'ac-back' }, ...cmds.map(row)];
+  }
+  return [
+    ...SLASH_TOP.map((id) => row(byId(id))),
+    ...SLASH_GROUPS.map((g) => {
+      const names = (g.ids ? g.ids.map((id) => byId(id).label) : statusCommands().map((c) => c.label));
+      const preview = names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : '');
+      return { label: `${esc(g.label)}<span class="cmd-hint">${esc(preview)} ›</span>`, value: `group:${g.key}`, cls: 'ac-group' };
+    }),
+  ];
+}
+
 function slashMatches(query) {
   const q = query.toLowerCase();
   // Task statuses come from Settings, so they are added each time.
-  const statusCmds = getStatuses().map((s) => ({ id: `status:${s.word}`, label: s.label, hint: 'task status', word: s.word }));
+  const statusCmds = statusCommands();
   const hit = (c) => c.id.startsWith(q) || c.label.toLowerCase().includes(q) || c.word?.toLowerCase().startsWith(q);
   const first = (c) => c.id.startsWith(q) || c.label.toLowerCase().startsWith(q) || !!c.word?.toLowerCase().startsWith(q);
   return [...SLASH_COMMANDS, ...statusCmds].filter(hit).sort((a, b) => first(b) - first(a));
@@ -2104,11 +2258,13 @@ async function updateAutocomplete(editor, node, ta) {
   const seq = (ac?.seq || 0) + 1;
 
   let items = [];
+  // An open slash group survives until something is typed after the "/".
+  const group = kind === 'slash' && !query && ac?.ta === ta && ac.kind === 'slash' ? ac.group || null : null;
   if (kind === 'slash') {
-    items = slashMatches(query).map((c) => ({
+    items = query ? slashMatches(query).map((c) => ({
       label: `${esc(c.label)}${c.hint ? `<span class="cmd-hint">${esc(c.hint)}</span>` : ''}`,
       value: c.id,
-    }));
+    })) : slashMenu(group);
     if (!items.length) return closeAutocomplete(); // e.g. typing a path like /etc
   }
   if (!ac || ac.ta !== ta) {
@@ -2120,6 +2276,7 @@ async function updateAutocomplete(editor, node, ta) {
   ac.seq = seq;
   ac.kind = kind;
   ac.query = query;
+  ac.group = group;
 
   if (kind === 'page') {
     const q = query.toLowerCase();
@@ -2162,11 +2319,16 @@ async function updateAutocomplete(editor, node, ta) {
     ac.items = items;
     ac.index = 0;
     ac.el.replaceChildren(...items.map((it, i) => {
-      const row = el('div', 'item');
+      const row = el('div', `item${it.cls ? ` ${it.cls}` : ''}`);
       row.innerHTML = it.label;
       row.addEventListener('mousedown', (e) => { e.preventDefault(); ac.index = i; acceptAutocomplete(e.ctrlKey || e.metaKey); });
       return row;
     }));
+    if (kind === 'slash' && !query && !group) {
+      const foot = el('div', 'hint ac-foot');
+      foot.innerHTML = 'Type to search every command · <kbd>→</kbd> opens a group';
+      ac.el.append(foot);
+    }
     if (kind === 'tag') {
       const foot = el('div', 'hint ac-foot');
       foot.innerHTML = '<kbd>Ctrl</kbd> <kbd>⏎</kbd> to put the tag here instead of at the end of the line';
@@ -2198,13 +2360,43 @@ function handleAutocompleteKey(e) {
     acceptAutocomplete(e.ctrlKey || e.metaKey);
     return true;
   }
+  if (ac.kind === 'slash' && e.key === 'ArrowRight' && ac.items[ac.index]?.value.startsWith('group:')) {
+    e.preventDefault();
+    openSlashGroup(ac.items[ac.index].value.slice(6));
+    return true;
+  }
+  if (ac.kind === 'slash' && e.key === 'ArrowLeft' && ac.group) {
+    e.preventDefault();
+    openSlashGroup(null);
+    return true;
+  }
   return false;
+}
+
+// Shows one group of the bare "/" menu (null: back to the top).
+function openSlashGroup(key) {
+  if (!ac) return;
+  const { editor, node, ta } = ac;
+  const from = ac.group;
+  ac.group = key;
+  updateAutocomplete(editor, node, ta).then(() => {
+    // Coming back highlights the group that was open.
+    if (!key && from && ac) {
+      const i = ac.items.findIndex((it) => it.value === `group:${from}`);
+      if (i >= 0) { ac.index = i; highlight(); }
+    } else if (key && ac?.items.length > 1) {
+      ac.index = 1;
+      highlight();
+    }
+  });
 }
 
 function acceptAutocomplete(inline = false) {
   const { ta, editor, node, kind, query } = ac;
   const item = ac.items[ac.index];
   if (!item) return;
+  if (kind === 'slash' && item.value.startsWith('group:')) return openSlashGroup(item.value.slice(6));
+  if (kind === 'slash' && item.value === 'back') return openSlashGroup(null);
   const pos = ta.selectionStart;
   closeAutocomplete();
   if (kind === 'tag') {
@@ -2254,7 +2446,109 @@ function acceptAutocomplete(inline = false) {
 // entries: [label, fn, cls] arrays, {label, fn, shortcut, danger} objects,
 // {element} for custom rows, or '-' for a separator.
 // A small menu of coloured status badges; onPick(word or null).
-export function showStatusPicker(x, y, current, onPick) {
+// ---- format bar (one for the whole page; follows the block being edited) ----
+
+let bar = null;
+const barIcon = (d, extra = '') => `<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>${extra}</svg>`;
+const ALIGN_SVG = {
+  left: barIcon('M3 5h14M3 10h9M3 15h12'),
+  center: barIcon('M3 5h14M5.5 10h9M4 15h12'),
+  right: barIcon('M3 5h14M8 10h9M5 15h12'),
+};
+// [action, label (HTML), title, group]; group "mark" is hidden in code blocks.
+// Everything in the / menu is reachable here: common things as buttons, the
+// rest in small menus that show each item's slash command.
+const BAR_BUTTONS = [
+  ['bold', '<b>B</b>', 'Bold (Ctrl+B)', 'mark'],
+  ['italic', '<i>I</i>', 'Italic (Ctrl+I)', 'mark'],
+  ['strike', '<s>S</s>', 'Strikethrough ~~text~~', 'mark'],
+  ['highlight', '<mark>H</mark>', 'Highlight ==text==', 'mark'],
+  ['code', barIcon('M7 6l-4 4 4 4M13 6l4 4-4 4'), 'Inline code `text`', 'mark'],
+  ['link', barIcon('M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-.9.9M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l.9-.9'), 'Link [text](url)  /link', 'mark'],
+  ['page', '<span class="bar-text">[[ ]]</span>', 'Page reference [[ ]]  /page', 'mark'],
+  ['blockref', '<span class="bar-text">(( ))</span>', 'Block reference (( ))  /blockref', 'mark'],
+  '|',
+  ['heading', 'H', 'Heading  /h1 /h2 /h3'],
+  ['blocks', `${barIcon('M3 4h14v4H3zM3 12h6v4H3zM12 12h5v4h-5z')}<span class="bar-caret">▾</span>`, 'Insert: code block, table, list, quote, encrypted block, admonitions'],
+  ['media', `${barIcon('M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.2 1.2 0 0 1-1.7-1.7l5.6-5.6')}<span class="bar-caret">▾</span>`, 'Upload an image, PDF or file, or embed a video'],
+  ['dates', `${barIcon('M4 5h12v11H4zM4 8.5h12M7.5 3v3M12.5 3v3')}<span class="bar-caret">▾</span>`, 'Dates and times: today, tomorrow, yesterday, current time, timestamp'],
+  ['status', barIcon('M4 10.5l3.5 3.5L16 5.5'), 'Task status (Backlog, Todo, Doing…)'],
+  ['math', '∑', 'Maths (LaTeX) builder  /math'],
+  '|',
+  ['align', '', 'Text alignment'],
+  ['color', '<span class="bar-swatch"></span>', 'Block colour'],
+  ['more', '⋯', 'More (block menu)'],
+];
+
+// Menu groups: slash command ids, '-' for a divider.
+const BAR_MENUS = {
+  blocks: ['code', 'table', 'numbered', 'quote', 'quoteblock', 'encrypted', '-', 'tip', 'note', 'important', 'caution', 'warning', 'pinned'],
+  media: ['image', 'pdf', 'file', 'video'],
+  dates: ['today', 'tomorrow', 'yesterday', '-', 'time', 'timestamp'],
+};
+
+function makeBar() {
+  const root = el('div', 'format-bar');
+  root.setAttribute('role', 'toolbar');
+  root.setAttribute('aria-label', 'Formatting');
+  const b = { el: root, editor: null, node: null };
+  for (const def of BAR_BUTTONS) {
+    if (def === '|') { root.append(el('span', 'bar-sep')); continue; }
+    const [action, label, title, group] = def;
+    const btn = el('button', `bar-btn${group ? ` bar-${group}` : ''}`);
+    btn.type = 'button';
+    btn.innerHTML = label;
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    btn.dataset.action = action;
+    btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the cursor
+    btn.addEventListener('click', () => b.editor?.barAction(action, btn));
+    root.append(btn);
+    if (action === 'align') b.align = btn;
+    if (action === 'color') b.color = btn;
+    if (action === 'heading') b.heading = btn;
+  }
+  return b;
+}
+
+function hideBar() {
+  if (!bar) return;
+  bar.el.remove();
+  bar.editor = null;
+  bar.node = null;
+}
+
+// Above the block if it fits below the top of the window, else below it;
+// a block taller than the window keeps the bar pinned at the bottom edge.
+function positionBar() {
+  if (!bar?.node?.contentEl || !bar.el.isConnected) return;
+  const r = bar.node.contentEl.getBoundingClientRect();
+  const h = bar.el.offsetHeight;
+  const w = bar.el.offsetWidth;
+  const gap = 6;
+  const minTop = 8;
+  const maxTop = window.innerHeight - h - 8;
+  let top;
+  if (r.top - h - gap >= minTop) top = r.top - h - gap;
+  else if (r.bottom + gap <= maxTop) top = r.bottom + gap;
+  else top = maxTop;
+  const left = Math.max(8, Math.min(r.left - 4, window.innerWidth - w - 8));
+  const offscreen = r.bottom < 0 || r.top > window.innerHeight;
+  bar.el.style.top = `${Math.round(top)}px`;
+  bar.el.style.left = `${Math.round(left)}px`;
+  bar.el.style.visibility = offscreen ? 'hidden' : '';
+  bar.el.classList.toggle('below', top > r.top);
+}
+
+let barFrame = 0;
+const queueBar = () => {
+  if (!bar?.node || barFrame) return;
+  barFrame = requestAnimationFrame(() => { barFrame = 0; positionBar(); });
+};
+window.addEventListener('scroll', queueBar, { capture: true, passive: true });
+window.addEventListener('resize', queueBar);
+
+export function showStatusPicker(x, y, current, onPick, opts = { keepFocus: true }) {
   const entries = getStatuses().map((st) => {
     const item = el('div', 'item status-item');
     const b = el('span', 'status-badge', st.label);
@@ -2267,12 +2561,14 @@ export function showStatusPicker(x, y, current, onPick) {
   const none = el('div', 'item');
   none.append(el('span', 'muted', 'No status'));
   none.addEventListener('click', () => { closeMenu(); onPick(null); });
-  showMenu(x, y, [...entries, '-', { element: none }]);
+  showMenu(x, y, [...entries, '-', { element: none }], opts);
 }
 
-export function showMenu(x, y, entries) {
+export function showMenu(x, y, entries, opts = {}) {
   closeMenu();
   const menu = el('div', 'popup menu');
+  // Opened from the format bar: clicks must not end editing.
+  if (opts.keepFocus) menu.addEventListener('mousedown', (e) => e.preventDefault());
   for (const entry of entries) {
     if (entry === '-') { menu.append(el('div', 'menu-sep')); continue; }
     if (entry.element) { menu.append(entry.element); continue; }

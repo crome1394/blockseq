@@ -254,6 +254,20 @@ Proxmox backups of the whole container are a good second layer.
 | `/`                  | Command menu (link, code, table, TODO, headings, numbered list, dates) |
 | Ctrl+K               | Search                                     |
 
+**The / menu:** a bare `/` shows a short list: common commands, then groups
+(Headings, Admonitions & quote block, Upload & embed, Dates & times, Task
+status) that open with **Enter** or **→** (**←** goes back). Typing after the `/`
+searches every command, e.g. `/tab` or `/warn`.
+
+**Formatting bar:** while you edit a block, a small bar floats just above it (or
+below it when the block is near the top of the window). It has bold, italic,
+strikethrough, highlight, inline code, link, page and block references,
+headings, and menus for everything else in the / menu (blocks and admonitions,
+uploads and video, dates and times), plus task status, the maths builder,
+alignment, colour and the block menu. Its menus show each item's / command.
+The bar never takes the cursor away; Esc closes an open menu first. Turn it
+off in *Settings → Editor → Formatting bar while editing*.
+
 **Code blocks:** type ```` ``` ```` (optionally with a language, e.g. ```` ```bash ````) and
 press Tab or Enter, or use `/code`. The code editor opens with the cursor inside.
 Click any code block to edit it again. Code blocks longer than 20 lines start

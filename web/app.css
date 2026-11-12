@@ -1588,3 +1588,32 @@ math.math merror { color: var(--danger); background: none; border: 0; }
 html.wide .embed-wrap.embed-tweet { width: 550px; }
 .embed-wrap.embed-tweet iframe { display: block; width: 100%; height: 260px; border: 0; aspect-ratio: auto; background: transparent; }
 .tweet-link { display: inline-block; font-size: 12px; margin-top: 2px; }
+
+/* Floating format bar (editor.js) */
+.format-bar { position: fixed; z-index: 40; display: flex; align-items: center; gap: 1px; padding: 3px; max-width: calc(100vw - 16px); overflow-x: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); scrollbar-width: none; }
+.format-bar::-webkit-scrollbar { display: none; }
+.bar-btn { flex: none; min-width: 28px; height: 28px; padding: 0 6px; border: none; border-radius: 5px; background: none; color: var(--text);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1; }
+.bar-btn:hover { background: var(--accent-soft); color: var(--accent); }
+.bar-btn mark { padding: 0 2px; border-radius: 2px; }
+.bar-btn[data-action="heading"] { font-weight: 700; font-size: 13px; min-width: 30px; }
+.bar-btn[data-action="math"] { font-size: 16px; }
+.bar-sep { flex: none; width: 1px; height: 18px; margin: 0 3px; background: var(--border); }
+.format-bar.bar-code .bar-mark, .format-bar.bar-code .bar-sep:first-of-type { display: none; }
+.bar-swatch { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--muted); display: inline-block; }
+.bar-btn[data-color="yellow"] .bar-swatch { background: #e6b400; border-color: #e6b400; }
+.bar-btn[data-color="red"] .bar-swatch { background: #e5484d; border-color: #e5484d; }
+.bar-btn[data-color="pink"] .bar-swatch { background: #e93d82; border-color: #e93d82; }
+.bar-btn[data-color="green"] .bar-swatch { background: #30a46c; border-color: #30a46c; }
+.bar-btn[data-color="blue"] .bar-swatch { background: #3e83f8; border-color: #3e83f8; }
+.bar-btn[data-color="purple"] .bar-swatch { background: #8e4ec6; border-color: #8e4ec6; }
+.bar-btn[data-color="gray"] .bar-swatch { background: #8b8d98; border-color: #8b8d98; }
+@media print { .format-bar { display: none; } }
+.bar-text { font-family: var(--mono); font-size: 11.5px; letter-spacing: -0.5px; }
+.bar-caret { font-size: 9px; margin-left: 1px; color: var(--muted); }
+
+/* Bare "/" menu: groups and the back row. */
+.autocomplete .ac-group { font-weight: 600; }
+.autocomplete .ac-group .cmd-hint { font-weight: 400; }
+.autocomplete .ac-back { color: var(--muted); font-weight: 600; }
