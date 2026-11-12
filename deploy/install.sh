@@ -30,10 +30,12 @@ install -m 644 "$HERE/blockseq.service" /etc/systemd/system/blockseq.service
 
 if [[ ! -f /etc/blockseq.env ]]; then
   cat > /etc/blockseq.env <<'EOF'
-# Listen address. 0.0.0.0 = reachable on the LAN and over Tailscale.
-BLOCKSEQ_ADDR=0.0.0.0:3030
-# Require a password (browser login prompt, any username). Strongly
-# recommended if anything other than your own devices can reach this port.
+# Listen address. The default is this machine only. To reach Blockseq from
+# other devices, set a password or BLOCKSEQ_HOSTS below, then change this
+# to 0.0.0.0:3030. The server refuses a non-local address when both are unset.
+BLOCKSEQ_ADDR=127.0.0.1:3030
+# Require a password (browser login prompt, any username). Required, along
+# with or instead of BLOCKSEQ_HOSTS, before listening beyond localhost.
 #BLOCKSEQ_PASSWORD=change-me
 # Host names Blockseq answers to (IP addresses and localhost always work).
 # Blocks "DNS rebinding" tricks from other websites. Example:

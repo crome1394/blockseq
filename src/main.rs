@@ -1,11 +1,13 @@
 //! Blockseq: a self-hosted, Logseq-style outliner.
 //!
 //! Configuration (environment variables):
-//!   `BLOCKSEQ_ADDR`      listen address            (default 0.0.0.0:3030)
+//!   `BLOCKSEQ_ADDR`      listen address            (default 127.0.0.1:3030)
 //!   `BLOCKSEQ_DATA`      data directory            (default ./data); holds the
 //!                      "Main" workbook (database, Markdown mirror, assets/),
 //!                      other workbooks in workbooks/<name>/, and config.json
-//!   `BLOCKSEQ_PASSWORD`  require this password via HTTP basic auth (optional)
+//!   `BLOCKSEQ_PASSWORD`  require this password via HTTP basic auth (optional
+//!                      on localhost; required to listen on other addresses
+//!                      unless `BLOCKSEQ_HOSTS` is set)
 //!   `BLOCKSEQ_MAX_UPLOAD_MB`  largest file upload in MB (default 2048)
 //!   `BLOCKSEQ_TRUSTED_PROXIES`  reverse proxy addresses whose X-Forwarded-For
 //!                      is used for the wrong-password limit (optional)
@@ -103,6 +105,25 @@ async fn static_file(uri: Uri) -> Response {
     }
 }
 
+/// True when `addr` is this machine only (`127.0.0.1`, `::1`, `localhost`).
+/// `0.0.0.0` and `::` are not: they accept connections from other hosts.
+fn listen_is_loopback(addr: &str) -> bool {
+    let host = if let Some(rest) = addr.strip_prefix('[')
+        && let Some((host, _)) = rest.split_once(']')
+    {
+        host
+    } else {
+        match addr.rsplit_once(':') {
+            // A bare IPv6 address has colons and no port (`::1`).
+            Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) && !host.contains(':') => host,
+            _ => addr,
+        }
+    };
+    let host = host.trim();
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 async fn shutdown_signal(state: Arc<AppState>) {
     let ctrl_c = tokio::signal::ctrl_c();
     match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
@@ -187,9 +208,21 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let addr = std::env::var("BLOCKSEQ_ADDR").unwrap_or_else(|_| "0.0.0.0:3030".into());
+    let addr = std::env::var("BLOCKSEQ_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".into());
     let data_dir = PathBuf::from(std::env::var("BLOCKSEQ_DATA").unwrap_or_else(|_| "data".into()));
     let password = std::env::var("BLOCKSEQ_PASSWORD").ok().filter(|p| !p.is_empty());
+    let allowed_hosts = guard::parse_hosts(&std::env::var("BLOCKSEQ_HOSTS").unwrap_or_default());
+    // A notes database on a LAN address with neither a password nor a host
+    // allowlist is readable by anyone who can route to it, and by a web page
+    // that rebinds its name onto this machine. Localhost stays open so a
+    // reverse proxy on the same host can be the only door.
+    if !listen_is_loopback(&addr) && password.is_none() && allowed_hosts.is_empty() {
+        anyhow::bail!(
+            "refusing to listen on {addr} with no password and no BLOCKSEQ_HOSTS. \
+             Set BLOCKSEQ_PASSWORD, or set BLOCKSEQ_HOSTS to the names you use, \
+             or listen on 127.0.0.1 only (and put a proxy in front)."
+        );
+    }
     let max_upload_mb: u64 = std::env::var("BLOCKSEQ_MAX_UPLOAD_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(2048);
 
     std::fs::create_dir_all(&data_dir)
@@ -207,7 +240,7 @@ async fn main() -> Result<()> {
         events: broadcast::channel(256).0,
         password,
         max_upload: max_upload_mb * 1024 * 1024,
-        allowed_hosts: guard::parse_hosts(&std::env::var("BLOCKSEQ_HOSTS").unwrap_or_default()),
+        allowed_hosts,
         trusted_proxies: auth::parse_proxies(&std::env::var("BLOCKSEQ_TRUSTED_PROXIES").unwrap_or_default()),
         limiter: auth::Limiter::default(),
     });
@@ -278,4 +311,20 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_loopback_listens_without_a_password() {
+        assert!(listen_is_loopback("127.0.0.1:3030"));
+        assert!(listen_is_loopback("[::1]:3030"));
+        assert!(listen_is_loopback("::1"));
+        assert!(listen_is_loopback("localhost:3030"));
+        assert!(!listen_is_loopback("0.0.0.0:3030"));
+        assert!(!listen_is_loopback("[::]:3030"));
+        assert!(!listen_is_loopback("10.0.0.5:3030"));
+    }
 }

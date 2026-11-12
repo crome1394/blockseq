@@ -61,7 +61,7 @@ Settings are environment variables (on a server: `/etc/blockseq.env`):
 
 | Variable            | Default        | Meaning                                         |
 |---------------------|----------------|-------------------------------------------------|
-| `BLOCKSEQ_ADDR`     | `0.0.0.0:3030` | Listen address                                  |
+| `BLOCKSEQ_ADDR`     | `127.0.0.1:3030` | Listen address. A non-local address is refused unless `BLOCKSEQ_PASSWORD` or `BLOCKSEQ_HOSTS` is set |
 | `BLOCKSEQ_DATA`     | `./data`       | Where the workbooks are stored                  |
 | `BLOCKSEQ_PASSWORD` | unset          | If set, the browser asks for this password      |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `2048`     | Largest file you can upload, in MB              |
