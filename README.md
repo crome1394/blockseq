@@ -522,7 +522,8 @@ Click a day to open its journal; if none exists, it's created. ‹ › change mo
 and clicking the month name returns to today. Hidden on narrow (phone) screens.
 
 **Workbooks:** the box under the Blockseq name shows the workbook you're in;
-click it (or press **w**) to switch. *+ New workbook* makes an empty one. Each
+click it (or press **w**) to switch, or to create, rename, delete or import
+one (*New workbook…*, *Rename…*, *Delete…*, *Import backup…*). Each
 workbook has its own pages, journals, favorites and assets; task statuses are
 shared. Each browser remembers which workbook it was on.
 

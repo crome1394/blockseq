@@ -933,7 +933,6 @@ window.addEventListener('message', (e) => {
     if (frame.contentWindow === e.source) frame.style.height = `${Math.ceil(height)}px`;
   }
 });
-document.getElementById('new-workbook').addEventListener('click', newWorkbookDialog);
 
 // ---- assets --------------------------------------------------------------------
 

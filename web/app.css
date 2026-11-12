@@ -341,16 +341,6 @@ html.sidebar-hidden #sidebar { display: none; }
 html.sidebar-hidden main { padding-left: 64px; }
 html.wide main { max-width: none; }
 
-.nav-action {
-  text-align: left;
-  border: none;
-  background: none;
-  color: var(--muted);
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 14px;
-}
-.nav-action:hover { background: var(--border); color: var(--text); }
 
 .side-heading { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 0 8px 4px; }
 .favorites .fav-list { display: flex; flex-direction: column; gap: 1px; }
@@ -453,7 +443,7 @@ main {
   .brand { padding: 0; margin-top: 0; }
   #menu-toggle { top: 8px; left: 8px; }
   html.sidebar-hidden main { padding: 52px 16px 40vh; }
-  .favorites, .nav-action { display: none; }
+  .favorites { display: none; }
   .search-wrap { order: 3; flex-basis: 100%; }
   #sidebar nav { flex-direction: row; }
   .sidebar-button { margin: 0 0 0 auto; order: 2; }
