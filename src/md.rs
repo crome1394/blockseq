@@ -309,7 +309,7 @@ pub fn rename_refs(content: &str, old: &str, new: &str) -> Option<String> {
                     continue;
                 }
             }
-            let c = rest.chars().next().unwrap();
+            let Some(c) = rest.chars().next() else { break };
             piece.push(c);
             i += c.len_utf8();
         }
@@ -370,7 +370,7 @@ pub fn page_name_from_file(folder: &str, file_stem: &str) -> Option<String> {
         if bytes[i] == b'%' && i + 2 < bytes.len()
             && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit()
         {
-            let hex = |c: u8| (c as char).to_digit(16).unwrap() as u8;
+            let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8; // checked just above
             out.push(hex(bytes[i + 1]) * 16 + hex(bytes[i + 2]));
             i += 3;
             continue;
@@ -428,7 +428,7 @@ pub fn parse_outline(text: &str) -> Vec<Block> {
             });
             stack.push(Open { indent, id });
             content_col = indent + 2;
-            in_fence = blocks.last().unwrap().content.trim_start().starts_with("```");
+            in_fence = blocks.last().is_some_and(|b| b.content.trim_start().starts_with("```"));
             continue;
         }
         let Some(block) = blocks.last_mut() else {

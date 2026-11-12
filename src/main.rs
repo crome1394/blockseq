@@ -135,11 +135,19 @@ async fn static_file(uri: Uri) -> Response {
 
 async fn shutdown_signal(state: Arc<AppState>) {
     let ctrl_c = tokio::signal::ctrl_c();
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("install SIGTERM handler");
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = term.recv() => {},
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut term) => {
+            tokio::select! {
+                _ = ctrl_c => {},
+                _ = term.recv() => {},
+            }
+        }
+        // Without a SIGTERM handler systemd's stop still ends the process;
+        // only the tidy-up below is skipped.
+        Err(e) => {
+            tracing::warn!("no SIGTERM handler: {e}");
+            let _ = ctrl_c.await;
+        }
     }
     tracing::info!("shutting down");
     // Each workbook's lock waits for a save in progress; then the database

@@ -10,7 +10,7 @@ use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -33,6 +33,35 @@ impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         tracing::error!("{e:#}");
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+    }
+}
+
+impl From<std::io::Error> for ApiError {
+    fn from(e: std::io::Error) -> Self {
+        anyhow::Error::from(e).into()
+    }
+}
+
+impl From<tokio::task::JoinError> for ApiError {
+    fn from(e: tokio::task::JoinError) -> Self {
+        anyhow::Error::from(e).into()
+    }
+}
+
+impl From<serde_json::Error> for ApiError {
+    fn from(e: serde_json::Error) -> Self {
+        anyhow::Error::from(e).into()
+    }
+}
+
+/// Sets a header whose value comes from data (a file name, a length); an
+/// unusable value is skipped rather than failing the response.
+fn set_header(h: &mut HeaderMap, name: header::HeaderName, value: &str) {
+    match HeaderValue::from_str(value) {
+        Ok(v) => {
+            h.insert(name, v);
+        }
+        Err(_) => tracing::warn!("left out the {name} header: unusable value"),
     }
 }
 
@@ -105,7 +134,7 @@ impl FromRequestParts<Arc<AppState>> for Wb {
         let lookup = id.clone();
         let wb = tokio::task::spawn_blocking(move || state.workbooks.get(&lookup, &words))
             .await
-            .map_err(|e| anyhow::anyhow!(e))??;
+            ??;
         wb.map(Wb).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no workbook called {id}")))
     }
 }
@@ -387,7 +416,7 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
         .unwrap_or("file")
         .to_string();
     let dir = wb.assets_dir();
-    tokio::fs::create_dir_all(&dir).await.map_err(|e| anyhow::anyhow!(e))?;
+    tokio::fs::create_dir_all(&dir).await?;
     // Hidden temp name: valid_name() rejects it, so it is never served.
     let tmp = dir.join(format!(".upload-{}.part", uuid::Uuid::new_v4()));
     let result = receive_upload(&tmp, body, s.max_upload).await;
@@ -404,7 +433,7 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
         let (dir, tmp) = (dir.clone(), tmp.clone());
         tokio::task::spawn_blocking(move || assets::place(&dir, &tmp, &stem, &ext, db::now_ms()))
             .await
-            .map_err(|e| anyhow::anyhow!(e))?
+            ?
     };
     let name = match placed {
         Ok(name) => name,
@@ -422,7 +451,7 @@ pub async fn upload_asset(State(s): Shared, Wb(wb): Wb, headers: HeaderMap, body
 /// detection). Fails if the body is empty or bigger than `max` bytes.
 async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64) -> Result<Vec<u8>, ApiError> {
     use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(tmp).await.map_err(|e| anyhow::anyhow!(e))?;
+    let mut file = tokio::fs::File::create(tmp).await?;
     let mut stream = body.into_data_stream();
     let mut head = Vec::with_capacity(16);
     let mut total: u64 = 0;
@@ -438,12 +467,12 @@ async fn receive_upload(tmp: &std::path::Path, body: Body, max: u64) -> Result<V
         if head.len() < 16 {
             head.extend_from_slice(&chunk[..chunk.len().min(16 - head.len())]);
         }
-        file.write_all(&chunk).await.map_err(|e| anyhow::anyhow!(e))?;
+        file.write_all(&chunk).await?;
     }
     if total == 0 {
         return Err(bad("empty upload"));
     }
-    file.sync_all().await.map_err(|e| anyhow::anyhow!(e))?;
+    file.sync_all().await?;
     Ok(head)
 }
 
@@ -479,7 +508,7 @@ fn parse_range(header: &str, len: u64) -> Option<Result<(u64, u64), ()>> {
 /// forever. Supports range requests, so videos can seek, and streams the
 /// file instead of loading it into memory.
 pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap) -> Response {
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use tokio::io::AsyncSeekExt;
     if !assets::valid_name(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -504,52 +533,29 @@ pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap)
         None => (StatusCode::OK, 0, len.saturating_sub(1)),
     };
     let count = if len == 0 { 0 } else { end - start + 1 };
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(4);
-    tokio::spawn(async move {
-        let mut file = match tokio::fs::File::open(&path).await {
-            Ok(f) => f,
-            Err(e) => return drop(tx.send(Err(e)).await),
-        };
-        if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
-            return drop(tx.send(Err(e)).await);
-        }
-        let mut left = count;
-        let mut buf = vec![0u8; 64 * 1024];
-        while left > 0 {
-            let want = buf.len().min(left as usize);
-            match file.read(&mut buf[..want]).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    left -= n as u64;
-                    if tx.send(Ok(Bytes::copy_from_slice(&buf[..n]))).await.is_err() {
-                        break; // the browser stopped reading
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e)).await;
-                    break;
-                }
-            }
-        }
-    });
+    let Ok(mut file) = tokio::fs::File::open(&path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if start > 0 && file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
 
     let (ctype, inline, csp) = assets::serve_policy(&name);
     let disposition = format!("{}; filename=\"{name}\"", if inline { "inline" } else { "attachment" });
-    let mut res = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)).into_response();
+    let mut res = file_body(file, Some(count)).into_response();
     *res.status_mut() = status;
     let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, ctype.parse().unwrap());
+    set_header(h, header::CONTENT_TYPE, &ctype);
     h.insert(header::CONTENT_LENGTH, count.into());
-    h.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-    h.insert(header::CACHE_CONTROL, "private, max-age=31536000, immutable".parse().unwrap());
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-    h.insert(header::CONTENT_DISPOSITION, disposition.parse().unwrap());
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=31536000, immutable"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    set_header(h, header::CONTENT_DISPOSITION, &disposition);
     if let Some(csp) = csp {
-        h.insert(header::CONTENT_SECURITY_POLICY, csp.parse().unwrap());
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(csp));
     }
     if status == StatusCode::PARTIAL_CONTENT {
-        h.insert(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}").parse().unwrap());
+        set_header(h, header::CONTENT_RANGE, &format!("bytes {start}-{end}/{len}"));
     }
     res
 }
@@ -561,7 +567,7 @@ pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
     let dir = wb.assets_dir();
     let list = tokio::task::spawn_blocking(move || assets::list(&dir))
         .await
-        .map_err(|e| anyhow::anyhow!(e))??;
+        ??;
     let out: Vec<_> = list
         .into_iter()
         .map(|a| {
@@ -631,7 +637,7 @@ pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) 
         let (from, dest) = (q.id.clone(), to.clone());
         tokio::task::spawn_blocking(move || state.workbooks.rename(&from, &dest))
             .await
-            .map_err(|e| anyhow::anyhow!(e))?
+            ?
             .map_err(|e| bad(format!("{e:#}")))?
     };
     tracing::info!("renamed workbook {} to {}", q.id, info.name);
@@ -650,7 +656,7 @@ pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiRe
     let id = q.id.clone();
     let trash = tokio::task::spawn_blocking(move || state.workbooks.delete(&id))
         .await
-        .map_err(|e| anyhow::anyhow!(e))?
+        ?
         .map_err(|e| bad(format!("{e:#}")))?;
     tracing::info!("deleted workbook {}: moved to {}", q.id, trash.display());
     s.notify_all(json!({ "type": "workbooks", "deleted": q.id }));
@@ -747,25 +753,29 @@ pub async fn put_config(State(s): Shared, Json(body): Json<StatusesBody>) -> Api
         Ok(())
     })
     .await
-    .map_err(|e| anyhow::anyhow!(e))??;
+    ??;
     s.notify_all(json!({ "type": "config" }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 // ---- backup ---------------------------------------------------------------------
 
-/// Streams a file that is already open (and maybe already unlinked).
-fn file_body(mut file: tokio::fs::File) -> Body {
+/// Streams an open file (maybe already unlinked) from its current position,
+/// at most `limit` bytes. Stops when the browser stops reading.
+fn file_body(mut file: tokio::fs::File, limit: Option<u64>) -> Body {
     use tokio::io::AsyncReadExt;
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(4);
     tokio::spawn(async move {
         let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            match file.read(&mut buf).await {
+        let mut left = limit.unwrap_or(u64::MAX);
+        while left > 0 {
+            let want = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+            match file.read(&mut buf[..want]).await {
                 Ok(0) => break,
                 Ok(n) => {
+                    left -= n as u64;
                     if tx.send(Ok(Bytes::copy_from_slice(&buf[..n]))).await.is_err() {
-                        break;
+                        break; // the browser stopped reading
                     }
                 }
                 Err(e) => {
@@ -794,26 +804,23 @@ pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
         result
     })
     .await
-    .map_err(|e| anyhow::anyhow!(e))?;
+    ?;
     if let Err(e) = made {
         let _ = std::fs::remove_file(&tmp_zip);
         return Err(e.into());
     }
-    let file = tokio::fs::File::open(&tmp_zip).await.map_err(|e| anyhow::anyhow!(e))?;
-    let len = file.metadata().await.map_err(|e| anyhow::anyhow!(e))?.len();
+    let file = tokio::fs::File::open(&tmp_zip).await?;
+    let len = file.metadata().await?.len();
     // The open handle keeps the data readable; the name goes away now.
     let _ = tokio::fs::remove_file(&tmp_zip).await;
     let main_name = s.read_config()?.main_name.unwrap_or_else(|| "Main".into());
     let label = if wb.id == MAIN { main_name.as_str() } else { wb.id.as_str() };
-    let mut res = file_body(file).into_response();
+    let mut res = file_body(file, None).into_response();
     let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, "application/zip".parse().unwrap());
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/zip"));
     h.insert(header::CONTENT_LENGTH, len.into());
-    h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    h.insert(
-        header::CONTENT_DISPOSITION,
-        format!("attachment; filename=\"{}\"", backup::file_name(label)).parse().unwrap(),
-    );
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    set_header(h, header::CONTENT_DISPOSITION, &format!("attachment; filename=\"{}\"", backup::file_name(label)));
     Ok(res)
 }
 
@@ -827,7 +834,7 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
     if folder.join(&name).exists() {
         return Err(bad(format!("a workbook called {name} already exists")));
     }
-    tokio::fs::create_dir_all(&folder).await.map_err(|e| anyhow::anyhow!(e))?;
+    tokio::fs::create_dir_all(&folder).await?;
     let tmp = folder.join(format!(".upload-{}.zip", uuid::Uuid::new_v4()));
     if let Err(e) = receive_upload(&tmp, body, s.max_upload).await {
         let _ = tokio::fs::remove_file(&tmp).await;
@@ -839,7 +846,7 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
     let (state, zip, wb_name) = (s.clone(), tmp.clone(), name.clone());
     let result = tokio::task::spawn_blocking(move || state.workbooks.restore(&wb_name, &zip, server_key.as_ref(), max_bytes))
         .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+        ?;
     let _ = tokio::fs::remove_file(&tmp).await;
     let (info, mut report, adopt) = result.map_err(|e| bad(format!("{e:#}")))?;
     if let Some(key) = adopt {
@@ -848,7 +855,7 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
             Ok(match &cfg.encryption {
                 // A password was set while the upload ran: treat the key as different.
                 Some(now) if now.check != key.check => {
-                    let text = serde_json::to_string_pretty(&key).map_err(|e| anyhow::anyhow!(e))?;
+                    let text = serde_json::to_string_pretty(&key)?;
                     crate::config::write_durable(&key_file, text.as_bytes())?;
                     backup::KeyOutcome::Different
                 }
@@ -888,7 +895,7 @@ pub async fn get_imported_key(Wb(wb): Wb) -> ApiResult {
 pub async fn done_imported_key(Wb(wb): Wb) -> ApiResult {
     let path = wb.dir.join(backup::IMPORTED_KEY);
     if path.exists() {
-        std::fs::rename(&path, wb.dir.join(format!(".{}.old", backup::IMPORTED_KEY))).map_err(|e| anyhow::anyhow!(e))?;
+        std::fs::rename(&path, wb.dir.join(format!(".{}.old", backup::IMPORTED_KEY)))?;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
