@@ -395,7 +395,17 @@ impl Registry {
         }
         let import = Self::kind(&dir) == "logseq";
         let db_path = dir.join(DB_FILE);
-        let conn = db::open(&db_path).with_context(|| format!("opening workbook {id}"))?;
+        // A Logseq graph is imported into a partial file and renamed into
+        // place only after every page is saved. Creating blockseq.db first
+        // would make the next open skip the import and rewrite the Markdown.
+        let conn = if import {
+            let (conn, report) = open_imported(&dir, &db_path, task_words)
+                .with_context(|| format!("importing Logseq graph {id}"))?;
+            tracing::info!("workbook {id}: imported Logseq graph ({report})");
+            conn
+        } else {
+            db::open(&db_path).with_context(|| format!("opening workbook {id}"))?
+        };
         let reads = db::open_read(&db_path).with_context(|| format!("opening workbook {id} for reading"))?;
         let integrity = db::quick_check(&conn);
         if integrity == "ok" {
@@ -417,10 +427,6 @@ impl Registry {
             integrity,
             usage_cache: Mutex::new(None),
         });
-        if import {
-            let report = import_logseq(&wb, task_words)?;
-            tracing::info!("workbook {id}: imported Logseq graph ({report})");
-        }
         // Publish before the mirror rewrite so other requests are not stuck
         // on this gate for the whole graph. The lock is dropped first.
         self.open.lock().insert(id.to_string(), wb.clone());
@@ -512,20 +518,91 @@ fn copy_files(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Imports the Markdown pages and journals of a Logseq graph folder.
-fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
-    // Keep the originals: the mirror rewrites pages/ and journals/ afterwards.
-    let backup = wb.dir.join("logseq-original");
-    if !backup.exists() {
-        copy_files(&wb.dir.join("pages"), &backup.join("pages"))?;
-        copy_files(&wb.dir.join("journals"), &backup.join("journals"))?;
-        copy_files(&wb.dir.join("logseq"), &backup.join("logseq"))?;
+/// Removes a SQLite file and the WAL/SHM names SQLite would use beside it.
+fn remove_sqlite_files(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    remove_sidecars(path);
+}
+
+fn remove_sidecars(path: &Path) {
+    let Some(dir) = path.parent() else { return };
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(suffix);
+        let _ = std::fs::remove_file(dir.join(name));
     }
-    let conn = wb.db.lock();
-    let (mut pages, mut skipped) = (0, 0);
+}
+
+/// Imports a Logseq graph into `db_path`. The database is built as
+/// `blockseq.db.partial` and renamed into place only after every file is
+/// saved. On any error the partial file is removed and `db_path` is not
+/// created, so the next open still sees a Logseq graph and tries again.
+fn open_imported(dir: &Path, db_path: &Path, task_words: &[String]) -> Result<(Connection, String)> {
+    let partial = db_path.with_file_name(format!("{DB_FILE}.partial"));
+    remove_sqlite_files(&partial);
+    let conn = match db::open(&partial) {
+        Ok(conn) => conn,
+        Err(e) => {
+            remove_sqlite_files(&partial);
+            return Err(e).context("creating the import database");
+        }
+    };
+    let report = match import_logseq(&conn, dir, task_words) {
+        Ok(report) => report,
+        Err(e) => {
+            drop(conn);
+            remove_sqlite_files(&partial);
+            return Err(e);
+        }
+    };
+    if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
+        drop(conn);
+        remove_sqlite_files(&partial);
+        return Err(e).context("finishing the Logseq import");
+    }
+    drop(conn);
+    if let Ok(file) = std::fs::File::open(&partial) {
+        let _ = file.sync_all();
+    }
+    remove_sidecars(&partial);
+    if let Err(e) = std::fs::rename(&partial, db_path) {
+        remove_sqlite_files(&partial);
+        return Err(e).with_context(|| format!("finishing the import into {}", db_path.display()));
+    }
+    if let Some(parent) = db_path.parent()
+        && let Ok(folder) = std::fs::File::open(parent)
+    {
+        let _ = folder.sync_all();
+    }
+    let conn = db::open(db_path).context("opening the imported workbook")?;
+    Ok((conn, report))
+}
+
+/// A save during import counts only when the page was actually written.
+fn require_saved(outcome: db::SaveOutcome, path: &Path) -> Result<()> {
+    match outcome {
+        db::SaveOutcome::Saved(_) => Ok(()),
+        db::SaveOutcome::Conflict(_, _) => bail!("{} was not imported: it conflicted with a page already saved", path.display()),
+        db::SaveOutcome::ForeignIds(_) => bail!("{} was not imported: its blocks belong to another page", path.display()),
+        db::SaveOutcome::Deleted => bail!("{} was not imported: that page was deleted during the import", path.display()),
+    }
+}
+
+/// Imports the Markdown pages and journals of a Logseq graph folder.
+fn import_logseq(conn: &Connection, dir: &Path, task_words: &[String]) -> Result<String> {
+    // Keep the originals: the mirror rewrites pages/ and journals/ afterwards.
+    // On a retry the copy is already there, and must not be replaced with the
+    // mirror's version of the files.
+    let backup = dir.join("logseq-original");
+    if !backup.exists() {
+        copy_files(&dir.join("pages"), &backup.join("pages"))?;
+        copy_files(&dir.join("journals"), &backup.join("journals"))?;
+        copy_files(&dir.join("logseq"), &backup.join("logseq"))?;
+    }
+    let (mut pages, mut skipped, mut merged) = (0, 0, 0);
     let mut seen_ids: HashSet<String> = HashSet::new();
     for folder in ["pages", "journals"] {
-        let Ok(entries) = std::fs::read_dir(wb.dir.join(folder)) else { continue };
+        let Ok(entries) = std::fs::read_dir(dir.join(folder)) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
@@ -558,28 +635,46 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
                     b.id = new;
                 }
             }
-            let version = db::get_page(&conn, &name)?.map_or(0, |p| p.version);
-            db::save_page(&conn, &name, version, &blocks, task_words)
-                .with_context(|| format!("importing {}", path.display()))?;
+            let existing = db::get_page(conn, &name)?;
+            let outcome = if let Some(page) = &existing {
+                let prior = db::get_blocks(conn, &page.id)?;
+                if prior.iter().any(|b| !b.content.trim().is_empty()) {
+                    // A second file for the same page is appended. Replacing
+                    // it would drop the first file, often with no history.
+                    let mut combined = prior;
+                    combined.extend(blocks);
+                    merged += 1;
+                    db::save_page_noting(conn, &name, page.version, &combined, task_words, "before a Logseq file with the same name was merged")?
+                } else {
+                    db::save_page(conn, &name, page.version, &blocks, task_words)?
+                }
+            } else {
+                db::save_page(conn, &name, 0, &blocks, task_words)?
+            };
+            require_saved(outcome, &path).with_context(|| format!("importing {}", path.display()))?;
             pages += 1;
         }
     }
     // Favourites from logseq/config.edn: `:favorites ["a" "b"]`.
     let mut favorites = 0;
-    if let Ok(edn) = std::fs::read_to_string(wb.dir.join("logseq").join("config.edn"))
+    if let Ok(edn) = std::fs::read_to_string(dir.join("logseq").join("config.edn"))
         && let Some(start) = edn.find(":favorites") {
             let rest = &edn[start..];
             if let (Some(open), Some(close)) = (rest.find('['), rest.find(']'))
                 && open < close {
                     for name in rest[open + 1..close].split('"').skip(1).step_by(2) {
                         if !name.trim().is_empty() {
-                            db::set_favorite(&conn, name.trim(), true)?;
+                            db::set_favorite(conn, name.trim(), true)?;
                             favorites += 1;
                         }
                     }
                 }
         }
-    Ok(format!("{pages} pages, {favorites} favorites, {skipped} files skipped"))
+    let mut report = format!("{pages} pages, {favorites} favorites, {skipped} files skipped");
+    if merged > 0 {
+        report.push_str(&format!(", {merged} files merged into a page of the same name"));
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -729,5 +824,60 @@ mod tests {
         }
         assert!(!root.join("workbooks/.import-x").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_logseq_import_keeps_the_markdown_and_retries() {
+        let root = std::env::temp_dir().join(format!("bq-logseq-{}", uuid::Uuid::new_v4()));
+        let graph = root.join("workbooks/Graph");
+        std::fs::create_dir_all(graph.join("pages")).unwrap();
+        let alpha = "- from alpha\n";
+        let beta = "title:: Alpha\n- from beta\n";
+        std::fs::write(graph.join("pages/Alpha.md"), alpha).unwrap();
+        std::fs::write(graph.join("pages/Beta.md"), beta).unwrap();
+        // A directory where the partial database should go makes the import fail
+        // before any page is written.
+        std::fs::create_dir_all(graph.join("blockseq.db.partial")).unwrap();
+        let reg = Registry::new(root.clone());
+        assert!(reg.get("Graph", &[]).is_err());
+        assert!(!graph.join("blockseq.db").exists());
+        assert_eq!(std::fs::read_to_string(graph.join("pages/Alpha.md")).unwrap(), alpha);
+        assert!(!graph.join("logseq-original").exists());
+
+        std::fs::remove_dir_all(graph.join("blockseq.db.partial")).unwrap();
+        let wb = reg.get("Graph", &[]).unwrap().unwrap();
+        assert!(graph.join("blockseq.db").is_file());
+        assert!(!graph.join("blockseq.db.partial").exists());
+        let conn = wb.db.lock();
+        let page = db::get_page(&conn, "Alpha").unwrap().unwrap();
+        let text: String = db::get_blocks(&conn, &page.id).unwrap().into_iter().map(|b| b.content).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("from alpha"), "{text}");
+        assert!(text.contains("from beta"), "{text}");
+        let kept = db::history(&conn, "Alpha").unwrap();
+        assert!(kept.iter().any(|e| e.reason.contains("same name")), "{kept:?}");
+        drop(conn);
+        assert_eq!(std::fs::read_to_string(graph.join("logseq-original/pages/Alpha.md")).unwrap(), alpha);
+        assert_eq!(std::fs::read_to_string(graph.join("logseq-original/pages/Beta.md")).unwrap(), beta);
+        drop(wb);
+        drop(reg);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_save_that_does_not_stick_fails_the_import() {
+        let dir = std::env::temp_dir().join(format!("bq-imp-err-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("pages")).unwrap();
+        std::fs::write(dir.join("pages/Hello.md"), "- hello\n").unwrap();
+        std::fs::write(dir.join("pages/Second.md"), "- second\n").unwrap();
+        let conn = db::open(&dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_second BEFORE INSERT ON pages WHEN NEW.name = 'Second' BEGIN SELECT RAISE(ABORT, 'disk trouble'); END;",
+        )
+        .unwrap();
+        let err = import_logseq(&conn, &dir, &[]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("Second") || msg.contains("disk trouble"), "{msg}");
+        drop(conn);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

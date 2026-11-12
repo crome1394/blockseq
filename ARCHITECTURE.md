@@ -226,8 +226,12 @@ CRDTs (conflict-free merge structures):
   space indentation, `id::` and `collapsed::` lines, code fences kept intact,
   page properties as the first block), names come from file names (`___` → `/`,
   `%XX` decoded, `2026_11_11` → journal, `title::` wins) and block ids are made
-  unique across the workbook. `:favorites` in `logseq/config.edn` become
-  favourites. Then the mirror rewrites the files in Blockseq's format.
+  unique across the workbook. A second file for the same page is appended.
+  `:favorites` in `logseq/config.edn` become favourites. The database is written
+  to `blockseq.db.partial` and renamed to `blockseq.db` only after every file
+  is saved; a failed import removes the partial file, leaves the Markdown, and
+  is tried again on the next open. Then the mirror rewrites the files in
+  Blockseq's format.
 - **Tasks.** `config.json` lists the status words. A block whose first word is
   one gets a `refs` row to `task` with `tag = 2` (implied, not in the text), so
   the *task* page shows every task and `GET /api/tasks` can list them. When
