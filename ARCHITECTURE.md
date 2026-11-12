@@ -118,9 +118,11 @@ favorite    INT (0/1)
 After every successful save the server writes the page as a Logseq-format file
 (`pages/<name>.md` or `journals/YYYY_MM_DD.md`, tab-indented, with
 `collapsed:: true` where needed). Writes go to a temp file and are then renamed
-into place. The mirror is rebuilt for all pages at startup and removed when a
-page is deleted. **SQLite is the source of truth**: the mirror is a readable
-backup and an escape hatch, and it is never read back.
+into place. They are not fsynced (unlike `config.json`). The mirror is rebuilt
+from the database for all pages at startup (`rebuild_mirror`), which is how a
+mirror that was lost or only partly written is recovered, and it is removed
+when a page is deleted. **SQLite is the source of truth**: the mirror is a
+readable backup and an escape hatch, and it is never read back.
 
 ## Saving and sync
 
@@ -146,6 +148,11 @@ edit → markDirty() ─ 600 ms debounce ─►   PUT /api/page?name=X
 version = 8, dirty = false  ◄──────────   200 { page }
 ```
 
+The writer's connection uses `PRAGMA synchronous = FULL` in WAL mode, so a
+commit does not return until the WAL is on disk. A power cut cannot drop the
+last save. Every connection to a database file sets a 5 second `busy_timeout`,
+so a short save finishes instead of failing the other request.
+
 Why whole-page saves with a version check instead of per-block operations or
 CRDTs (conflict-free merge structures):
 
@@ -161,8 +168,9 @@ CRDTs (conflict-free merge structures):
 
 - `changeSeq` counts edits, so typing during an in-flight save keeps the
   editor dirty and triggers another save.
-- If the network fails, the editor is marked `offline` and retries every
-  4 seconds. Nothing is lost while the tab stays open.
+- If the network fails, or the server answers 503, the editor is marked
+  `offline` and retries every 4 seconds. Any other failure stays dirty until
+  the next edit. Nothing is lost while the tab stays open.
 - On **409**, autosave pauses and a banner offers *Use their version* (load the
   server copy) or *Keep mine* (adopt the server's version number and save
   again, overwriting).

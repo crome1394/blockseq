@@ -132,8 +132,9 @@ impl Workbook {
         self.dir.join("assets")
     }
 
-    /// Writes the page as a Logseq Markdown file. This is a readable backup;
-    /// the database stays the source of truth, so failures are only logged.
+    /// Writes the page as a Logseq Markdown file. SQLite is the source of
+    /// truth, so a failure is only logged. The write is not fsynced: if power
+    /// is lost, the next startup rebuilds every mirror from the database.
     pub fn write_mirror(&self, page: &db::PageMeta, blocks: &[db::Block]) {
         if self.is_retired() {
             return;
@@ -180,6 +181,9 @@ impl Workbook {
     }
 }
 
+/// Temp file, then rename. Not fsynced, unlike `config.json`. A crash can
+/// leave the mirror behind the database; startup `rebuild_mirror` rewrites
+/// it from SQLite, which is the recovery path.
 fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

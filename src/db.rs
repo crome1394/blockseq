@@ -206,11 +206,25 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// How long a connection waits when another one holds the write lock.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Every connection to a database file waits out a short lock instead of
+/// failing at once. In-memory connections used by tests do not need this.
+pub fn set_busy_timeout(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(())
+}
+
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    set_busy_timeout(&conn)?;
+    // synchronous is per connection, not stored in the file. FULL makes a
+    // commit wait until the WAL is on disk, so a power cut cannot drop the
+    // last save. NORMAL could. A process crash still rolls an open savepoint
+    // back either way. Readers do not set this; they do not commit.
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;",
+        "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;",
     )?;
     conn.execute_batch(SCHEMA)?;
     migrate(&conn)?;
@@ -230,7 +244,7 @@ pub fn open(path: &Path) -> Result<Connection> {
 /// writing. The writer must already have opened the file (so the WAL index exists).
 pub fn open_read(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    set_busy_timeout(&conn)?;
     conn.pragma_update(None, "query_only", true)?;
     Ok(conn)
 }
@@ -1302,6 +1316,24 @@ mod tests {
             content: content.into(),
             collapsed: false,
         }
+    }
+
+    #[test]
+    fn writer_waits_and_syncs_in_full() {
+        let dir = std::env::temp_dir().join(format!("bq-sync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let conn = open(&path).unwrap();
+        let sync: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+        let busy: i64 = conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        assert_eq!((sync, busy), (2, 5000)); // 2 is FULL
+        drop(conn);
+        let read = open_read(&path).unwrap();
+        let busy: i64 = read.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        assert_eq!(busy, 5000);
+        drop(read);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

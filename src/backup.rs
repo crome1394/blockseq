@@ -9,8 +9,6 @@
 
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
-
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -52,7 +50,7 @@ pub fn snapshot(conn: &Connection, to: &Path) -> Result<()> {
 /// instead of failing the snapshot.
 pub fn snapshot_file(db: &Path, to: &Path) -> Result<()> {
     let conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    crate::db::set_busy_timeout(&conn)?;
     snapshot(&conn, to)
 }
 
@@ -341,6 +339,7 @@ pub fn import_zip(src: &Path, dest: &Path, server_key: Option<&Encryption>, max_
 /// Refuses databases that are damaged or from a newer Blockseq.
 fn check_db(path: &Path) -> Result<()> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).context("the backup's database won't open")?;
+    crate::db::set_busy_timeout(&conn)?;
     let ok: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0)).context("the backup's database is damaged")?;
     if ok != "ok" {
         bail!("the backup's database is damaged ({ok})");
@@ -354,6 +353,7 @@ fn check_db(path: &Path) -> Result<()> {
 
 fn has_sealed_blocks(path: &Path) -> Result<bool> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    crate::db::set_busy_timeout(&conn)?;
     Ok(conn.query_row("SELECT EXISTS (SELECT 1 FROM blocks WHERE content LIKE '%encrypted:: v1:%')", [], |r| r.get(0))?)
 }
 
