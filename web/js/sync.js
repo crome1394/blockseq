@@ -22,10 +22,18 @@ class SyncMethods {
   async offerDraft(pending) {
     const token = {};
     this.draftToken = token;
-    const live = await openTabs();
-    if (this.draftToken !== token || this.disposed || this.draft) return;
-    const sendingHere = [...editors].some((ed) => ed !== this && ed.name === this.name && (ed.dirty || ed.saving));
-    const draft = pending.find((d) => (d.owner === clientId ? !sendingHere : !live.has(d.owner)));
+    let draft = null;
+    // A page that was just left can hold its lock for a moment (the browser
+    // keeps it around briefly), so look again for a little while before
+    // treating a copy as belonging to an open tab.
+    for (let attempt = 0; attempt < 10 && !draft; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, 1000));
+      const live = await openTabs();
+      if (this.draftToken !== token || this.disposed || this.draft) return;
+      const sendingHere = [...editors].some((ed) => ed !== this && ed.name === this.name && (ed.dirty || ed.saving));
+      draft = pending.find((d) => (d.owner === clientId ? !sendingHere : !live.has(d.owner)));
+      if (!pending.some((d) => d.owner !== clientId && live.has(d.owner))) break;
+    }
     if (!draft) return;
     this.draft = draft;
     const caret = this.ta?.selectionStart;
