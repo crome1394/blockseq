@@ -2,3 +2,4 @@ status at start: Saved
 pushed off: true
 did not reconnect on its own: true
 reconnected when shown: true
+new stream after a 502: true

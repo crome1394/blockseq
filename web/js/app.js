@@ -555,7 +555,16 @@ function connectEvents() {
     if (opened) resyncAll(); // we may have missed events while disconnected
     opened = true;
   };
-  es.onerror = () => setConnected(false);
+  es.onerror = () => {
+    setConnected(false);
+    // A dropped connection is retried by the browser itself. An error
+    // response (a proxy's 502 while Blockseq restarts, 401 once signed out)
+    // closes the stream for good, so start a new one after a pause.
+    if (es.readyState === EventSource.CLOSED && events === es) {
+      events = null;
+      setTimeout(() => { if (!events && !document.hidden) connectEvents(); }, 5000);
+    }
+  };
   es.onmessage = (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }

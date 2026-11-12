@@ -30,4 +30,18 @@ await p.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 await sleep(1500);
 console.log("reconnected when shown:", streams === before + 1 && !(await status()).includes("paused"));
 others.forEach((ac) => ac.abort());
+
+// An error response (a proxy's 502 while Blockseq restarts) closes an
+// EventSource for good. The tab must start a new stream once it can.
+const S = Deno.args[0];
+const sh = (cmd: string) => new Deno.Command("bash", { args: ["-c", cmd] }).outputSync();
+sh("kill $(ss -ltnp | grep ':3939 ' | grep -o 'pid=[0-9]*' | cut -d= -f2)");
+await sleep(300);
+const fake = Deno.serve({ port: 3939, hostname: "127.0.0.1", onListen() {} }, () => new Response("bad gateway", { status: 502 }));
+await sleep(4000); // the browser retries the dropped stream and gets the 502
+const afterBad = streams;
+await fake.shutdown();
+sh(`(BLOCKSEQ_DATA=${S}/data BLOCKSEQ_ADDR=127.0.0.1:3939 nohup ${Deno.env.get("BLOCKSEQ_BIN") ?? "./target/debug/blockseq"} >> ${S}/server.log 2>&1 &)`);
+await sleep(8000);
+console.log("new stream after a 502:", streams > afterBad && !(await status()).includes("Reconnecting"));
 await browser.close();
