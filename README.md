@@ -397,6 +397,9 @@ download or delete. *Only unused* finds files no block links to any more.
 (or moves there if it's already open). **↑ ↓** (or **j k**) move, **Space**
 (or Ctrl+Enter) sets the next status, **s** (or Ctrl+Shift+Enter) picks one,
 **Enter** opens the task with the cursor in it, **g e** goes back to the editor
+(a task you change stays in the list for a few seconds even if it no longer
+matches, e.g. with no status, so you can keep cycling; the list order never
+changes when a status does)
 and **Esc** closes the list. **g l** locks or unlocks encrypted blocks.
 
 **Task statuses:** use `/` and the status name, or press **Ctrl+Enter** to step

@@ -1666,3 +1666,7 @@ html.wide .embed-wrap.embed-tweet { width: 550px; }
 .task-list:focus { outline: none; }
 .task-row:focus { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
 .tasks-keys { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+
+/* A task changed from the list that will leave it in a few seconds. */
+.task-row.lingering { opacity: 0.6; }
+.status-badge.no-status { background: none; border: 1px dashed var(--border); color: var(--muted); }

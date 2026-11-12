@@ -1064,12 +1064,15 @@ function toggleTasks({ fromKey = false } = {}) {
 }
 
 let taskFocusId = null; // the task row the keyboard is on
+let taskFocusIndex = 0; // its position, for when that task leaves the list
+let lastTaskOrder = []; // task ids as last shown (to keep a lingering task in place)
 
 function focusTasks() {
   const list = document.querySelector('.tasks-pane .task-list');
   if (!list) return;
   const rows = [...list.querySelectorAll('.task-row')];
-  (rows.find((r) => r.dataset.id === taskFocusId) || rows[0] || list).focus();
+  const row = rows.find((r) => r.dataset.id === taskFocusId) || rows[Math.min(taskFocusIndex, rows.length - 1)] || list;
+  row.focus();
 }
 
 // "Go to the editor": the page or journal you were working in.
@@ -1080,8 +1083,22 @@ function focusEditor() {
   else toast('No page open to edit');
 }
 
+// A task changed from the list stays visible for a few seconds even if it no
+// longer matches (no status, or done while completed ones are hidden), so
+// cycling with Space / Ctrl+Enter can carry on: … → Cancelled → no status →
+// Backlog → …. Every change restarts the delay.
+const LINGER_MS = 6000;
+const lingering = new Map(); // task id → { task, until }
+let lingerTimer = null;
+
 async function setTaskStatus(t, word) {
-  const r = await api.putBlock(t.id, withStatus(t.content, word), t.content);
+  const content = withStatus(t.content, word);
+  taskFocusId = t.id;
+  lingering.set(t.id, { task: { ...t, content, st: statusOf(content) }, until: Date.now() + LINGER_MS });
+  clearTimeout(lingerTimer);
+  lingerTimer = setTimeout(() => renderTasks(), LINGER_MS + 100);
+  const r = await api.putBlock(t.id, content, t.content);
+  if (!r.ok) lingering.delete(t.id);
   if (r.status === 409) toast('That task was changed elsewhere; the list is refreshed, try again');
   else if (!r.ok) toast(r.data?.error || 'Could not change the status');
   await renderTasks({ focus: true });
@@ -1103,6 +1120,17 @@ async function renderTasks({ focus = false } = {}) {
   label.append(box, ' Show completed');
   const items = tasks.map((t) => ({ ...t, st: statusOf(t.content) })).filter((t) => t.st);
   const open = items.filter((t) => !t.st.done).length;
+  // Recently changed tasks: shown even if filtered out; a task that lost its
+  // status (so the server no longer lists it) goes back where it was.
+  const now = Date.now();
+  for (const [id, l] of lingering) if (l.until < now) lingering.delete(id);
+  for (const [id, l] of lingering) {
+    const at = items.findIndex((t) => t.id === id);
+    if (at !== -1) { items[at].keep = true; continue; }
+    const before = lastTaskOrder.slice(0, Math.max(0, lastTaskOrder.indexOf(id))).reverse().find((x) => items.some((t) => t.id === x));
+    const pos = before ? items.findIndex((t) => t.id === before) + 1 : items.findIndex((t) => t.page_name === l.task.page_name);
+    items.splice(pos < 0 ? items.length : pos, 0, { ...l.task, keep: true });
+  }
   controls.append(el('span', 'muted small', `${open} open`), label);
   const list = el('div', 'task-list');
   list.tabIndex = -1;
@@ -1110,25 +1138,31 @@ async function renderTasks({ focus = false } = {}) {
   list.setAttribute('aria-label', 'Tasks');
   const byId = new Map();
   let lastPage = null;
+  const shown = [];
   for (const t of items) {
-    if (t.st.done && !showDone) continue;
+    if (t.st?.done && !showDone && !t.keep) continue;
+    shown.push(t.id);
     if (t.page_name !== lastPage) {
       const h = el('a', 'task-page', t.page_name);
       h.href = pageHref(t.page_name);
       list.append(h);
       lastPage = t.page_name;
     }
-    const row = el('div', 'task-row' + (t.st.done ? ' done' : ''));
-    row.innerHTML = `${badgeHtml(t.st)}<span class="task-text">${inline(taskTitle(t.content))}</span>`;
+    const row = el('div', 'task-row' + (t.st?.done ? ' done' : '') + (t.keep && (!t.st || (t.st.done && !showDone)) ? ' lingering' : ''));
+    const badge = t.st ? badgeHtml(t.st) : '<button type="button" class="status-badge no-status" title="Change status">No status</button>';
+    row.innerHTML = `${badge}<span class="task-text">${inline(taskTitle(t.content))}</span>`;
     row.tabIndex = -1;
     row.dataset.id = t.id;
     row.setAttribute('role', 'option');
     byId.set(t.id, t);
-    row.addEventListener('focus', () => { taskFocusId = t.id; });
+    row.addEventListener('focus', () => {
+      taskFocusId = t.id;
+      taskFocusIndex = [...list.querySelectorAll('.task-row')].indexOf(row);
+    });
     row.querySelector('.status-badge').addEventListener('click', (e) => {
       e.stopPropagation();
       taskFocusId = t.id;
-      showStatusPicker(e.clientX, e.clientY, t.st.word, (word) => setTaskStatus(t, word));
+      showStatusPicker(e.clientX, e.clientY, t.st?.word, (word) => setTaskStatus(t, word));
     });
     row.addEventListener('click', (e) => {
       if (e.target.closest('a')) return;
@@ -1155,10 +1189,10 @@ async function renderTasks({ focus = false } = {}) {
     if (matches(e, 'statusPicker') || (plain && e.key === 's')) {
       e.preventDefault();
       const r = rows[i].querySelector('.status-badge').getBoundingClientRect();
-      showStatusPicker(r.left, r.bottom, t.st.word, (word) => setTaskStatus(t, word));
+      showStatusPicker(r.left, r.bottom, t.st?.word, (word) => setTaskStatus(t, word));
     } else if (matches(e, 'cycleStatus') || (plain && e.key === ' ')) {
       e.preventDefault();
-      setTaskStatus(t, nextStatus(t.st.word));
+      setTaskStatus(t, nextStatus(t.st?.word));
     } else if (plain && e.key === 'Enter') {
       e.preventDefault();
       location.hash = `${pageHref(t.page_name)}?b=${t.id}&edit=1`;
@@ -1167,6 +1201,7 @@ async function renderTasks({ focus = false } = {}) {
   const hint = el('div', 'tasks-keys muted small');
   hint.textContent = `↑ ↓ move · Space next status · s choose · Enter edit · ${prettyKey(keyFor('focusEditor'))} editor · Esc close`;
   body.replaceChildren(controls, list, hint);
+  lastTaskOrder = shown;
   if (keepFocus) focusTasks();
 }
 

@@ -417,7 +417,9 @@ pub struct TaskHit {
     pub journal_day: Option<i64>,
 }
 
-/// Every block with a task status, newest pages first.
+/// Every block with a task status: journals newest first, then other pages
+/// by name. The order doesn't depend on when a page last changed, so
+/// changing a task's status never moves it in the task list.
 pub fn tasks(conn: &Connection) -> Result<Vec<TaskHit>> {
     let mut stmt = conn.prepare(
         "SELECT b.id, b.content, p.name, p.journal_day FROM refs r
@@ -425,7 +427,7 @@ pub fn tasks(conn: &Connection) -> Result<Vec<TaskHit>> {
          JOIN pages p ON p.id = b.page_id
          WHERE r.target_lower = ?1 AND (r.tag = 2 OR r.tag = 1)
          GROUP BY b.id
-         ORDER BY p.journal_day DESC NULLS LAST, p.updated_at DESC, b.position",
+         ORDER BY p.journal_day DESC NULLS LAST, p.name_lower, b.position",
     )?;
     let rows = stmt.query_map([TASK_PAGE], |r| {
         Ok(TaskHit { id: r.get(0)?, content: r.get(1)?, page_name: r.get(2)?, journal_day: r.get(3)? })

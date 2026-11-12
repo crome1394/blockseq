@@ -1,0 +1,5 @@
+cancelled -> no status: "cycle me" | still listed: true | badge: No status
+ctrl+enter ->  BACKLOG | focus kept: cycle me | page group didn't move: true
+now: DONE
+done still listed after the delay (show completed on): true
+after the delay listed: false | focus on: neighbour task
