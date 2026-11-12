@@ -39,7 +39,7 @@ done
 TESTS=("$@")
 if [[ ${#TESTS[@]} -eq 0 ]]; then
   # Order matters a little: encryption sets the password the others use.
-  TESTS=(encryption slash-encrypted review-fixes csp workbooks history tasks-keys tasks-cycle task-no-self-conflict conflict-diff logseq-macros math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted draft-tabs live-cap signin)
+  TESTS=(encryption slash-encrypted review-fixes csp workbooks history tasks-keys tasks-cycle task-no-self-conflict conflict-diff logseq-macros math-builder maths-render format-bar slash-menu align sidebar draft draft-encrypted draft-tabs live-cap signin restore-main)
   # A second browser engine, when Firefox is installed (FIREFOX=/path to choose).
   if [[ -x "${FIREFOX:-/usr/bin/firefox}" ]]; then TESTS+=(firefox); fi
 fi

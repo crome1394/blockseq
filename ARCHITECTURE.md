@@ -29,7 +29,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/auth.rs` | Optional password: browser sign-in page and sign-out, basic auth for other clients (SHA-256 compare) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; the full map drops the oldest client; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
 | `src/session.rs` | Browser sign-in sessions: cookie, hashed tokens in `sessions.json`, 90-day idle limit |
 | `src/guard.rs` | Outermost middleware: refuses cross-site non-GET requests (`Sec-Fetch-Site`, else `Origin` vs `Host`; `X-Forwarded-Host` only when the TCP peer is in `BLOCKSEQ_TRUSTED_PROXIES`) and host names outside `BLOCKSEQ_HOSTS`; adds the CSP (HTML only), `X-Frame-Options`, `Referrer-Policy`, `nosniff` |
-| `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks (`POST /api/import`) |
+| `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks or into Main (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
 | `src/db.rs` | Schema, all SQL, save transaction with version check, search, backlinks |
 | `src/md.rs` | Journal names, link/tag extraction, task detection, Logseq Markdown export and import (`parse_outline`) |
@@ -304,6 +304,9 @@ CRDTs (conflict-free merge structures):
   | `GET /api/block?id=` | `get_block` | content and page name, for `((refs))` |
   | `GET /login` | `auth::login_page` | sign-in form (open; redirects home when no password is set) |
   | `POST /api/login` | `auth::login` | form `password`, `next`: starts a session, 303 to `next` or back to `/login?e=wrong|locked` (open) |
+  | `POST /api/import?name=` / `?into=main&keep=` | `import` | restore a backup zip as a new workbook, or into Main (see Restore into Main) |
+  | `GET /api/backups` | `list_backups` | before-restore zips in `backups/`, newest first |
+  | `GET /api/backups/{name}` | `get_backup` | download one (name must match `before-restore-*.zip`) |
   | `POST /api/logout?all=` | `auth::logout` | ends this browser's session, or all with `all=1`; clears the cookie |
   | `GET /api/session` | `auth::session_info` | `{password}`: whether signing in is used |
   | `GET /api/events` | `events` | SSE, 15 s keep-alive; at most 32 subscribers per process; a new one closes the oldest after sending it `{"type":"replaced"}`, and that tab stays off (status "live updates paused") until it is shown again |
@@ -378,6 +381,20 @@ CRDTs (conflict-free merge structures):
   and re-wraps it with a new password. It refuses a stored count above 600,000
   before it runs, and the browser does the same before unlocking. Its formats
   must match `crypto.js`.
+- **Restore into Main** (`Registry::restore_into_main`, `api::restore_upload`).
+  The zip is unpacked and checked into `workbooks/.restoring-main-<uuid>/incoming`
+  first. If Main has blocks or assets, `zip_workbook` saves it to
+  `backups/before-restore-<time>.zip` (0600, the newest 10 kept) and the
+  restore stops if that fails. Then, under Main's gate with both connections
+  held and the WAL checkpointed, `move_items` renames Main's own entries
+  (`MAIN_ITEMS`: the database files, mirror folders, assets, imported key;
+  not `workbooks/`, `config.json`, `sessions.json` or `backups/`) to
+  `old-main/`, and the incoming ones into the data folder. A failed move puts
+  back every entry already moved, and Main stays open on its old
+  connections. Finally `old-main/` is renamed to `workbooks/<keep>` or
+  `workbooks/.trash/Main <time>`. A leftover `.restoring-main-*` folder is
+  never cleaned up automatically; startup logs it as an error. Other tabs get
+  `workbooks` and `resync` events.
 - **Backups** (`src/backup.rs`, `backup-ui.js`). Export, while holding the
   workbook's connection, takes a `VACUUM INTO` snapshot and copies `pages/`,
   `journals/`, `logseq/`, `draws/` and `whiteboards/` (no hidden or temp files)

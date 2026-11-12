@@ -85,6 +85,73 @@ pub struct WorkbookInfo {
 /// Where deleted workbooks go (inside workbooks/, hidden: never listed).
 pub const TRASH: &str = ".trash";
 
+/// What belongs to the Main workbook in the data folder. Everything else
+/// there (workbooks/, config.json, sessions.json, backups/) is shared and
+/// stays when Main is replaced by a restore.
+const MAIN_ITEMS: [&str; 11] = [
+    "blockseq.db",
+    "blockseq.db-wal",
+    "blockseq.db-shm",
+    "pages",
+    "journals",
+    "assets",
+    "logseq",
+    "draws",
+    "whiteboards",
+    crate::backup::IMPORTED_KEY,
+    STALE_MIRROR,
+];
+
+/// Folder in workbooks/ that holds a half-finished Restore into Main. Never
+/// removed automatically: if one is left after a crash, the log says so.
+const RESTORING_MAIN: &str = ".restoring-main-";
+
+/// Moves the listed items that exist in `from` into `to` (same filesystem,
+/// so each move is a rename). If one fails, the ones already moved go back
+/// and the error is returned. An item already in `to` is an error, never
+/// replaced. Returns the names moved.
+fn move_items(from: &Path, to: &Path, names: &[&str]) -> Result<Vec<String>> {
+    std::fs::create_dir_all(to).with_context(|| format!("creating {}", to.display()))?;
+    let mut moved: Vec<String> = Vec::new();
+    let result = (|| -> Result<()> {
+        for name in names {
+            let src = from.join(name);
+            if std::fs::symlink_metadata(&src).is_err() {
+                continue;
+            }
+            let dst = to.join(name);
+            if std::fs::symlink_metadata(&dst).is_ok() {
+                bail!("{} is in the way", dst.display());
+            }
+            std::fs::rename(&src, &dst).with_context(|| format!("moving {}", src.display()))?;
+            moved.push((*name).to_string());
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        put_back(to, from, &moved);
+        return Err(e);
+    }
+    Ok(moved)
+}
+
+/// Undoes `move_items` (best effort; anything that cannot move back is logged).
+fn put_back(moved_to: &Path, home: &Path, names: &[String]) {
+    for name in names.iter().rev() {
+        if let Err(e) = std::fs::rename(moved_to.join(name), home.join(name)) {
+            tracing::error!("could not move {name} back from {}: {e}. Move it back by hand.", moved_to.display());
+        }
+    }
+}
+
+/// What a Restore into Main did with the Main it replaced.
+pub struct MainRestore {
+    pub report: backup::ImportReport,
+    pub adopt: Option<crate::config::Encryption>,
+    /// Where the old Main's files went: a workbook folder or the trash.
+    pub set_aside: PathBuf,
+}
+
 impl Workbook {
     /// How much space the workbook uses. Main's folder holds the other
     /// workbooks (workbooks/), which aren't counted. Cached for a little
@@ -105,7 +172,7 @@ impl Workbook {
             let Ok(kind) = std::fs::metadata(&path).map(|m| m.file_type()) else { continue };
             if kind.is_dir() {
                 match name.as_str() {
-                    "workbooks" if self.id == MAIN => {}
+                    "workbooks" | "backups" if self.id == MAIN => {}
                     "assets" => u.files += dir_size(&path),
                     _ => u.other += dir_size(&path),
                 }
@@ -491,6 +558,102 @@ impl Registry {
         Ok((info, report, adopt))
     }
 
+    /// Restores a backup zip as Main. The zip is unpacked and checked in a
+    /// hidden folder first. Then Main is closed and its files move (rename,
+    /// nothing copied) into workbooks/`keep_as`, or into the trash when
+    /// `keep_as` is None, and the restored files move into the data folder.
+    /// If a step fails, every file moved so far goes back and Main stays as
+    /// it was. Shared files (config.json, workbooks/, ...) are not touched.
+    /// The caller zips a Main that has content beforehand.
+    pub fn restore_into_main(
+        &self,
+        zip: &Path,
+        server_key: Option<&crate::config::Encryption>,
+        max_bytes: u64,
+        keep_as: Option<&str>,
+    ) -> Result<MainRestore> {
+        let folder = self.root.join("workbooks");
+        let final_dir = match keep_as.map(str::trim) {
+            Some(name) => {
+                if !valid_id(name) {
+                    bail!("use letters, digits, spaces, dashes, dots or underscores (not \"main\")");
+                }
+                let dir = folder.join(name);
+                if dir.exists() {
+                    bail!("a workbook called {name} already exists");
+                }
+                dir
+            }
+            None => folder.join(TRASH).join(format!("Main {}", chrono::Local::now().format("%Y-%m-%d %H%M%S"))),
+        };
+        let work = folder.join(format!("{RESTORING_MAIN}{}", uuid::Uuid::new_v4()));
+        let incoming = work.join("incoming");
+        let aside = work.join("old-main");
+        let unpacked = backup::import_zip(zip, &incoming, server_key, max_bytes);
+        let (report, adopt) = match unpacked {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&work);
+                return Err(e);
+            }
+        };
+
+        // Close Main: nothing opens it until this returns, a running query
+        // or save finishes first, and the database is checkpointed so the
+        // file moves whole.
+        let gate = self.gate(MAIN);
+        let _moving = gate.lock();
+        let wb = self.open.lock().remove(MAIN);
+        let swapped = (|| -> Result<()> {
+            let read = wb.as_ref().map(|w| w.read());
+            let write = wb.as_ref().map(|w| w.db.lock());
+            if let Some(conn) = &read {
+                db::set_busy_timeout(conn)?;
+            }
+            if let Some(conn) = &write {
+                db::set_busy_timeout(conn)?;
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+            }
+            let old = move_items(&self.root, &aside, &MAIN_ITEMS)?;
+            if let Err(e) = move_items(&incoming, &self.root, &MAIN_ITEMS) {
+                put_back(&aside, &self.root, &old);
+                return Err(e);
+            }
+            Ok(())
+        })();
+        match swapped {
+            Ok(()) => {
+                if let Some(w) = &wb {
+                    w.retired.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            Err(e) => {
+                if let Some(w) = wb {
+                    self.open.lock().insert(MAIN.to_string(), w);
+                }
+                let _ = std::fs::remove_dir_all(&incoming);
+                let _ = std::fs::remove_dir(&work);
+                return Err(e.context("restoring into Main (Main was left as it was)"));
+            }
+        }
+        // The restore is done. Put the old files where they were asked to go;
+        // if that last move fails they stay in the hidden folder, intact.
+        if let Some(parent) = final_dir.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let set_aside = match std::fs::rename(&aside, &final_dir) {
+            Ok(()) => final_dir,
+            Err(e) => {
+                tracing::error!("the previous Main is in {} (could not move it to {}: {e})", aside.display(), final_dir.display());
+                aside
+            }
+        };
+        // Only files a backup carries but Main does not use are left here.
+        let _ = std::fs::remove_dir_all(&incoming);
+        let _ = std::fs::remove_dir(&work);
+        Ok(MainRestore { report, adopt, set_aside })
+    }
+
     /// Returns an open workbook, opening (and if needed importing) it first.
     /// Blocking: call from `spawn_blocking`.
     pub fn get(&self, id: &str, task_words: &[String]) -> Result<Option<std::sync::Arc<Workbook>>> {
@@ -592,6 +755,13 @@ pub fn clean_temp(root: &Path) -> usize {
     for (path, name) in entries(&root.join("workbooks")) {
         if name.starts_with(".upload-") || name.starts_with(".import-") {
             remove(&path);
+        } else if name.starts_with(RESTORING_MAIN) {
+            // A Restore into Main was cut short. Its files are kept: they may
+            // be the previous Main.
+            tracing::error!(
+                "{} is left from an interrupted Restore into Main. old-main/ in it holds the previous Main; check Main and move files back by hand if needed.",
+                path.display()
+            );
         }
     }
     // Every workbook: partial uploads and Markdown temp files.
@@ -796,6 +966,89 @@ fn import_logseq(conn: &Connection, dir: &Path, task_words: &[String]) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_move_puts_everything_back() {
+        let root = std::env::temp_dir().join(format!("bq-moveback-{}", uuid::Uuid::new_v4()));
+        let (from, to) = (root.join("from"), root.join("to"));
+        std::fs::create_dir_all(from.join("pages")).unwrap();
+        std::fs::write(from.join("blockseq.db"), "db").unwrap();
+        std::fs::write(from.join("pages/a.md"), "- a").unwrap();
+        std::fs::create_dir_all(to.join("pages")).unwrap(); // in the way
+        assert!(move_items(&from, &to, &MAIN_ITEMS).is_err());
+        assert_eq!(std::fs::read_to_string(from.join("blockseq.db")).unwrap(), "db");
+        assert!(from.join("pages/a.md").is_file());
+        assert!(!to.join("blockseq.db").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A backup zip of a workbook holding one page `name` with `text`.
+    fn backup_of(root: &Path, name: &str, text: &str) -> PathBuf {
+        let src = root.join(format!("src-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        std::fs::write(src.join("assets/pic.png"), "png").unwrap();
+        {
+            let conn = db::open(&src.join(DB_FILE)).unwrap();
+            db::save_page(&conn, name, 0, &[block("r1", text)], &[]).unwrap();
+        }
+        let stage = root.join(format!("stage-{}", uuid::Uuid::new_v4()));
+        let db_copy = backup::stage_snapshot(&src, &stage, None).unwrap();
+        let zip = root.join(format!("{name}.zip"));
+        let config = root.join("backup-config.json");
+        crate::config::Config::default().save(&config).unwrap();
+        backup::write_zip("src", &stage, &db_copy, &config, &zip).unwrap();
+        zip
+    }
+
+    fn page_names(wb: &Workbook) -> Vec<String> {
+        db::list_pages(&wb.db.lock()).unwrap().into_iter().map(|p| p.name).collect()
+    }
+
+    #[test]
+    fn restore_into_main_sets_the_old_main_aside() {
+        let root = std::env::temp_dir().join(format!("bq-rmain-{}", uuid::Uuid::new_v4()));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("config.json"), "{}").unwrap();
+        let reg = Registry::new(data.clone());
+        let main = reg.get(MAIN, &[]).unwrap().unwrap();
+        db::save_page(&main.db.lock(), "Old page", 0, &[block("o1", "old text")], &[]).unwrap();
+        drop(main);
+
+        // Kept as a workbook.
+        let zip = backup_of(&root, "Restored page", "new text");
+        let done = reg.restore_into_main(&zip, None, 1 << 30, Some("Main before")).unwrap();
+        assert_eq!(done.set_aside, data.join("workbooks/Main before"));
+        let main = reg.get(MAIN, &[]).unwrap().unwrap();
+        assert_eq!(page_names(&main), vec!["Restored page"]);
+        assert!(main.assets_dir().join("pic.png").is_file());
+        let kept = reg.get("Main before", &[]).unwrap().unwrap();
+        assert_eq!(page_names(&kept), vec!["Old page"]);
+        // Shared files stay.
+        assert_eq!(std::fs::read_to_string(data.join("config.json")).unwrap(), "{}");
+        drop(main);
+
+        // To the trash this time; restoring the wrong file is undone the same way.
+        let zip2 = backup_of(&root, "Second", "again");
+        let done = reg.restore_into_main(&zip2, None, 1 << 30, None).unwrap();
+        assert!(done.set_aside.starts_with(data.join("workbooks").join(TRASH)));
+        let trashed = db::open(&done.set_aside.join(DB_FILE)).unwrap();
+        assert_eq!(db::list_pages(&trashed).unwrap()[0].name, "Restored page");
+        let main = reg.get(MAIN, &[]).unwrap().unwrap();
+        assert_eq!(page_names(&main), vec!["Second"]);
+        assert!(!std::fs::read_dir(data.join("workbooks")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with(RESTORING_MAIN)));
+
+        // A bad zip changes nothing.
+        let junk = root.join("junk.zip");
+        std::fs::write(&junk, "not a zip").unwrap();
+        assert!(reg.restore_into_main(&junk, None, 1 << 30, None).is_err());
+        assert_eq!(page_names(&reg.get(MAIN, &[]).unwrap().unwrap()), vec!["Second"]);
+        // A name that is taken is refused before anything moves.
+        assert!(reg.restore_into_main(&zip, None, 1 << 30, Some("Main before")).is_err());
+        assert_eq!(page_names(&reg.get(MAIN, &[]).unwrap().unwrap()), vec!["Second"]);
+        drop((main, trashed));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn mirror_files_under_an_old_name_are_set_aside() {

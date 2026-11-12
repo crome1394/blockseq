@@ -64,25 +64,71 @@ export function importDialog(file) {
     return;
   }
   const body = el('div', 'dialog-form');
-  body.append(el('p', 'small', `Restore ${file.name} (${(file.size / 1048576).toFixed(1)} MB) as a new workbook. Nothing that exists now is changed.`));
+  body.append(el('p', 'small', `Restore ${file.name} (${(file.size / 1048576).toFixed(1)} MB).`));
+  const choice = (value, label, checked) => {
+    const row = el('label', 'check-row');
+    const radio = el('input');
+    radio.type = 'radio';
+    radio.name = 'restore-target';
+    radio.value = value;
+    radio.checked = checked;
+    row.append(radio, el('span', '', label));
+    return row;
+  };
+  const asNew = choice('new', 'As a new workbook (nothing that exists now is changed)', true);
+  const asMain = choice('main', 'Into Main, in place of what Main holds now', false);
   const field = el('label', 'field');
   field.append(el('span', '', 'Workbook name'));
   const input = el('input');
   input.value = nameFromFile(file);
   input.maxLength = 64;
   field.append(input);
+  // Into Main: what happens to the current Main.
+  const mainBox = el('div', 'restore-main');
+  const keepRow = el('label', 'check-row');
+  const keepCheck = el('input');
+  keepCheck.type = 'checkbox';
+  keepRow.append(keepCheck, el('span', '', 'Also keep the current Main as a workbook named'));
+  const keepName = el('input');
+  keepName.value = `Main before restore ${new Date().toISOString().slice(0, 10)}`;
+  keepName.maxLength = 64;
+  keepName.disabled = true;
+  keepCheck.addEventListener('change', () => { keepName.disabled = !keepCheck.checked; if (keepCheck.checked) keepName.select(); });
+  const keepField = el('label', 'field');
+  keepField.append(keepName);
+  mainBox.append(
+    el('p', 'muted small', 'If Main holds anything, a backup zip of it is saved on the server first (listed under Settings → Backup). Then its files move to the trash, or to the workbook named here. Nothing is deleted.'),
+    keepRow,
+    keepField,
+  );
+  // .field sets display, which would override the hidden attribute.
+  const show = (node, on) => { node.style.display = on ? '' : 'none'; };
+  show(mainBox, false);
   const err = el('p', 'error small');
-  body.append(field, el('p', 'muted small', 'A Blockseq backup or a zipped Logseq graph (with pages/ and journals/) both work.'), err);
+  body.append(asNew, asMain, field, mainBox, el('p', 'muted small', 'A Blockseq backup or a zipped Logseq graph (with pages/ and journals/) both work.'), err);
+  const intoMain = () => asMain.querySelector('input').checked;
+  for (const r of [asNew, asMain]) {
+    r.querySelector('input').addEventListener('change', () => {
+      show(field, !intoMain());
+      show(mainBox, intoMain());
+    });
+  }
   const box = openModal('Import backup', body, [['Cancel'], ['Import', () => false, 'primary']]);
   box.classList.add('no-overlay-close');
   const go = box.querySelector('.modal-actions .primary');
   const run = async () => {
+    const main = intoMain();
     const name = input.value.trim();
-    if (!name) return;
+    const keep = keepCheck.checked ? keepName.value.trim() : '';
+    if (main ? keepCheck.checked && !keep : !name) return;
+    if (main && !confirm(`Replace what is in Main with ${file.name}?${keep ? ` The current Main is kept as “${keep}”.` : ' The current Main is saved as a zip and moved to the trash.'}`)) return;
     err.textContent = '';
     go.disabled = true;
+    const url = main
+      ? `/api/import?into=main${keep ? `&keep=${encodeURIComponent(keep)}` : ''}`
+      : `/api/import?name=${encodeURIComponent(name)}`;
     try {
-      const data = await upload(`/api/import?name=${encodeURIComponent(name)}`, file, (f) => {
+      const data = await upload(url, file, (f) => {
         go.textContent = f < 1 ? `Uploading ${Math.round(f * 100)}%` : 'Unpacking…';
       });
       closeModal();
@@ -98,9 +144,18 @@ export function importDialog(file) {
   input.select();
 }
 
-function afterImport({ workbook: wb, report }) {
+function afterImport({ workbook: wb, report, previous }) {
   const what = report.kind === 'logseq' ? 'Logseq graph' : 'backup';
   document.dispatchEvent(new CustomEvent('blockseq:open-workbook', { detail: { id: wb.id } }));
+  if (previous) {
+    // Into Main: say where the previous Main went.
+    const parts = [];
+    if (previous.zip) parts.push(`saved as ${previous.zip} (Settings → Backup)`);
+    parts.push(previous.kept ? `kept as the workbook “${previous.moved_to.split('/').pop()}”` : 'moved to the trash');
+    toast(`Restored the ${what} into Main. The previous Main was ${parts.join(' and ')}.`, 10000);
+    if (report.key === 'different') setTimeout(() => rekeyDialog(true), 600);
+    return;
+  }
   if (report.key === 'adopted') {
     toast(`Restored the ${what} as ${wb.name}. This server now uses the backup's encryption password.`);
   } else if (report.key === 'different') {
@@ -219,8 +274,25 @@ export async function backupPanel() {
   imp.addEventListener('click', () => importDialog());
   importRow.append(imp);
   wrap.append(el('h4', 'settings-subheading', 'Restore'),
-    el('p', 'small', 'Restores a backup zip as a new workbook, next to the ones you have. A zipped Logseq graph works too.'),
+    el('p', 'small', 'Restores a backup zip as a new workbook next to the ones you have, or into Main. A zipped Logseq graph works too.'),
     importRow);
+  try {
+    const saved = await api.backups();
+    if (saved.length) {
+      const list = el('div', 'backup-list');
+      for (const b of saved) {
+        const row = el('div', 'backup-row');
+        const a = el('a', '', b.name);
+        a.href = `/api/backups/${encodeURIComponent(b.name)}`;
+        a.download = b.name;
+        row.append(a, el('span', 'muted small', `${(b.size / 1048576).toFixed(1)} MB`));
+        list.append(row);
+      }
+      wrap.append(el('h4', 'settings-subheading', 'Saved before a restore'),
+        el('p', 'muted small', 'Main as it was before each Restore into Main (the last 10). Restore one with Import backup.'),
+        list);
+    }
+  } catch { /* offline */ }
   try {
     if ((await api.importedKey()).encryption) {
       const row = el('div', 'status-actions security-actions');

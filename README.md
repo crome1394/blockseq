@@ -275,8 +275,20 @@ password (or recovery key) opens the blocks again. Keep the recovery key
 somewhere other than next to your backups.
 
 **Import backup…** (Settings → Backup, or the workbook menu) restores a zip
-as a **new** workbook; nothing that exists is changed or overwritten. For
-encrypted blocks:
+as a **new** workbook; nothing that exists is changed or overwritten.
+
+Or restore it **into Main**, e.g. on a rebuilt server. Nothing is lost
+either way:
+
+- If Main holds anything, it is first saved as a zip in
+  `/var/lib/blockseq/backups/` (the last 10 are kept; Settings → Backup lists
+  them for download, and Import backup restores one).
+- Then Main's files move to the trash (`workbooks/.trash/Main <date>`), or,
+  if you tick the box, into a workbook you name.
+- If anything fails along the way, Main is left as it was. Restored the
+  wrong file? Restore the right one into Main the same way.
+
+For encrypted blocks:
 
 - Same server (same password): they just work.
 - A server with no password yet: it starts using the backup's password.

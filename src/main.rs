@@ -322,6 +322,8 @@ async fn main() -> Result<()> {
         .route("/encryption/imported", get(api::get_imported_key).delete(api::done_imported_key))
         .route("/export", get(api::export))
         .route("/import", post(api::import))
+        .route("/backups", get(api::list_backups))
+        .route("/backups/{name}", get(api::get_backup))
         .route("/events", get(api::events))
         .route("/login", post(auth::login))
         .route("/logout", post(auth::logout))

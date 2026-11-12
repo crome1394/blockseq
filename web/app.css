@@ -1686,3 +1686,11 @@ html.wide .embed-wrap.embed-tweet { width: 550px; }
 span.diff-del, span.diff-add { background: none; }
 .diff-same { color: var(--muted); }
 .diff-fold { padding: 2px 10px; color: var(--muted); font-style: italic; font-family: inherit; }
+
+/* Import backup: where to restore, and what happens to the current Main. */
+.check-row { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0; font-size: 14px; cursor: pointer; }
+.check-row input { margin-top: 3px; flex: none; }
+.restore-main { margin: 4px 0 0 24px; }
+.restore-main input:disabled { opacity: 0.5; }
+.backup-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.backup-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; overflow-wrap: anywhere; }

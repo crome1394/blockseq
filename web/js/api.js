@@ -79,6 +79,8 @@ export const api = {
   // { password: true } when signing in is used (BLOCKSEQ_PASSWORD is set).
   session: () => getJson('/api/session', { global: true }),
   // Ends this browser's session, or every browser's with `all`.
+  // Zips of Main saved before each Restore into Main, newest first.
+  backups: () => getJson('/api/backups', { global: true }),
   logout: (all = false) => request('POST', `/api/logout${all ? '?all=1' : ''}`, undefined, { global: true }),
   page: (name) => getJson(`/api/page?name=${enc(name)}`),
   // Resolves to {ok, status, data}; status 409 means the page changed elsewhere.

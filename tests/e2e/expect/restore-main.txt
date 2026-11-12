@@ -1,0 +1,13 @@
+empty Main restored: true
+no zip for an empty Main: true true
+Main replaced: true
+old Main kept as a workbook: true
+zip saved first: true
+zip downloads: true
+bad backup name refused: true
+previous Main to the trash: true
+two zips listed: true
+page shows the restored Main: true
+settings lists them: true
+after restart: true true
+nothing half-done left: true
