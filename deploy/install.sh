@@ -29,26 +29,7 @@ install -m 755 "$BIN" /usr/local/bin/blockseq
 install -m 644 "$HERE/blockseq.service" /etc/systemd/system/blockseq.service
 
 if [[ ! -f /etc/blockseq.env ]]; then
-  cat > /etc/blockseq.env <<'EOF'
-# Listen address. Leave this on localhost and reach Blockseq through a TLS
-# proxy on this machine (Caddy). Do not publish port 3030. The server refuses
-# a non-local address when neither BLOCKSEQ_PASSWORD nor BLOCKSEQ_HOSTS is set.
-BLOCKSEQ_ADDR=127.0.0.1:3030
-# Password to use Blockseq. Browsers get a sign-in page (with sign out);
-# scripts use HTTP basic auth (any username). Recommended.
-#BLOCKSEQ_PASSWORD=
-# Host names Blockseq answers to (IP addresses and localhost always work).
-# Blocks "DNS rebinding" tricks from other websites. Example:
-#BLOCKSEQ_HOSTS=blockseq.example.com
-# Reverse proxy (e.g. Caddy) addresses: lets the wrong-password
-# limit see each real client instead of the proxy. Example:
-#BLOCKSEQ_TRUSTED_PROXIES=10.0.0.1
-#BLOCKSEQ_MAX_UPLOAD_MB=256
-# Set to 1 to show full server paths in the browser (Assets, workbooks).
-# Leave unset to show paths relative to the data folder.
-#BLOCKSEQ_EXPOSE_PATHS=1
-EOF
-  chmod 640 /etc/blockseq.env
+  install -m 640 "$HERE/blockseq.env.example" /etc/blockseq.env
 fi
 
 systemctl daemon-reload

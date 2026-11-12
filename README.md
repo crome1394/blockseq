@@ -127,7 +127,9 @@ cargo build --release
 
 `install.sh` creates a `blockseq` system user, keeps data in
 `/var/lib/blockseq`, installs a hardened systemd unit and writes
-`/etc/blockseq.env` (only the first time). Check it with
+`/etc/blockseq.env` (only the first time) from `deploy/blockseq.env.example`,
+which lists every setting, commented out, with its default; compare an older
+env file against it to see settings added since. Check it with
 `systemctl status blockseq` and `curl -s http://127.0.0.1:3030/api/health`.
 
 ### Upgrading

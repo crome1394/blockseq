@@ -5,8 +5,9 @@
 //!   `BLOCKSEQ_DATA`      data directory            (default ./data); holds the
 //!                      "Main" workbook (database, Markdown mirror, assets/),
 //!                      other workbooks in workbooks/<name>/, and config.json
-//!   `BLOCKSEQ_PASSWORD`  require this password via HTTP basic auth (optional
-//!                      on localhost; required to listen on other addresses
+//!   `BLOCKSEQ_PASSWORD`  require this password: a sign-in page for browsers,
+//!                      HTTP basic auth for other clients (optional on
+//!                      localhost; required to listen on other addresses
 //!                      unless `BLOCKSEQ_HOSTS` is set)
 //!   `BLOCKSEQ_MAX_UPLOAD_MB`  largest file upload in MB (default 256)
 //!   `BLOCKSEQ_EXPOSE_PATHS`  set to 1 to include full server paths in API
@@ -18,6 +19,9 @@
 //!   `BLOCKSEQ_HOSTS`     host names to serve, comma-separated (optional; IP
 //!                      addresses and localhost always work). Protects
 //!                      against DNS rebinding when no password is set.
+//!   `RUST_LOG`           log detail (default info)
+//!
+//! deploy/blockseq.env.example lists all of them with notes.
 
 mod api;
 mod auth;
