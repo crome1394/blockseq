@@ -11,13 +11,35 @@ Environment=BLOCKSEQ_DATA=/var/lib/blockseq
 ExecStart=/usr/local/bin/blockseq
 Restart=on-failure
 RestartSec=2
+# Shutdown finishes saves and tidies the databases first (a few seconds).
+TimeoutStopSec=15
+# New files are readable by the service only (no "other" access).
+UMask=0027
 
-# Hardening: the service can only write to its data directory.
+# Hardening: the service can only write to its data directory, and gets no
+# access to devices, kernel settings or other users' files. If the service
+# won't start inside a particular container, comment out the last group
+# first (run `journalctl -u blockseq` to see which setting it names).
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/blockseq
+PrivateDevices=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target
