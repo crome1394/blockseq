@@ -1099,6 +1099,12 @@ async function setTaskStatus(t, word) {
   lingerTimer = setTimeout(() => renderTasks(), LINGER_MS + 100);
   const r = await api.putBlock(t.id, content, t.content);
   if (!r.ok) lingering.delete(t.id);
+  // The server tags the change as this tab's own, so the live-update stream
+  // won't tell this tab's editor; tell it here, or its next save would
+  // conflict with the change just made.
+  if (r.ok) {
+    for (const ed of editors) if (ed.lower === t.page_name.toLowerCase()) ed.remoteChanged(r.data.page.version);
+  }
   if (r.status === 409) toast('That task was changed elsewhere; the list is refreshed, try again');
   else if (!r.ok) toast(r.data?.error || 'Could not change the status');
   await renderTasks({ focus: true });

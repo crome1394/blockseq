@@ -1,0 +1,3 @@
+PUT /api/block -> 200
+editor shows: Doing pane task
+conflict bar: false
