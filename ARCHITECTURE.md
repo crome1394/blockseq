@@ -111,7 +111,9 @@ favorite    INT (0/1)
 - **Migrations.** `PRAGMA user_version` holds the schema version. `db::migrate`
   runs at startup and upgrades older databases step by step. v2 added
   `pages.favorite` and `refs.tag`, and marks existing tag refs by re-reading
-  every block's text.
+  every block's text. v7 added `blocks.search_id`, the rowid of the block's row in
+  `blocks_fts` (whose `block_id` column FTS5 cannot index), so a save deletes
+  search rows directly.
 
 ### Markdown mirror
 
@@ -359,12 +361,13 @@ CRDTs (conflict-free merge structures):
   the data folder, and unlinked once opened and streamed. It is not started
   when the temp volume could not keep a 256 MB reserve after the staged copy
   and the zip. Media and archives are stored, the rest deflated. An upload is
-  refused when free space on its volume, minus the cap of every upload already
-  in flight, would fall
-  below a 256 MB reserve. Import streams the upload to disk,
+  refused when free space on its volume, minus what every upload already in
+  flight reserved, would fall below a 256 MB reserve. Each upload reserves its
+  Content-Length (the upload limit when it sends none); a restore also
+  reserves the unpacked size the zip declares. Import streams the upload to disk,
   unpacks only known paths (via `enclosed_name`, so no traversal; a single
   wrapping folder is stripped) into `workbooks/.import-<uuid>/`, caps the
-  unpacked size at 4× the upload limit, checks the database (`quick_check`,
+  unpacked size at the zip's declared size (at most 4× the upload limit), checks the database (`quick_check`,
   `user_version` not newer) and only then renames the folder into place. Key
   handling compares the backup's `encryption.check` with the server's: same →
   nothing; server has none → the wrapping is written to `imported-key.json`,

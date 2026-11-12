@@ -2,12 +2,13 @@
 
 All notable changes to Blockseq are listed here. There are no release tags yet, so entries are grouped by theme. The newest group is first, and the newest change is first inside each section.
 
-Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `5a425ac` (2026-11-12).
+Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `55341cd` (2026-11-12).
 
-Opening an older database upgrades it in place. The current schema is **version 6**.
+Opening an older database upgrades it in place. The current schema is **version 7**.
 
 | Version | What an upgrade adds | Commit |
 | --- | --- | --- |
+| 7 | Each block stores the rowid of its search-index row, and the index is rebuilt once to fill it. | `8d22396` |
 | 6 | History rows store the page id. The index on that column is created during the upgrade, after the column exists. | `3267afc`, `242dc97` |
 | 5 | Each kept version stores its block count and word count. | `35d1b87` |
 | 4 | Each page stores a word count, and block text is full-text indexed. | `62dea30` |
@@ -15,6 +16,14 @@ Opening an older database upgrades it in place. The current schema is **version 
 | 2 | Favourites on pages, and tag links marked apart from ordinary links. | `862359e` |
 
 On the move to version 6, history rows whose name matches a page that still exists are attached to that page. Rows left over from deleted pages are grouped one id per name. Copies that already shared a name cannot be split apart.
+
+## Performance and free space
+
+### Fixed
+
+- Backups copy `assets/` after releasing the write lock. Before, the Download backup button and `blockseq export` (which `install.sh` runs before upgrades) held it for the whole asset copy, so saves stalled, and failed with 503 after 5 seconds through the CLI. The database and Markdown are still copied as one moment. (`55341cd`)
+- An upload reserves its own size (its Content-Length), not the whole `BLOCKSEQ_MAX_UPLOAD_MB`, so a small paste no longer needs the full limit free. An upload whose declared size is over the limit is refused at once. A restore reserves what the zip says it unpacks to, capped at 4× the limit, and the unpack stops at that size. (`eebd474`)
+- Saves no longer slow down as the workbook grows. The search index was cleaned with one full scan per block on every save (about 0.5 s for an 80-block page at 50,000 blocks); rows are now deleted by a rowid each block stores, about 1 ms for the same save. (`8d22396`)
 
 ## Cleanup
 
