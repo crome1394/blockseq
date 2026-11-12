@@ -536,6 +536,8 @@ function resyncAll() {
   refreshCalendar();
   clearRefCache();
   invalidatePageNames();
+  reloadStatuses();
+  loadWorkbooks();
   for (const ed of editors) ed.remoteChanged();
   refreshView();
 }
@@ -555,8 +557,10 @@ function connectEvents() {
     if (ev.type === 'resync') return resyncAll();
     if (ev.type === 'workbooks') return workbooksChanged(ev);
     if (ev.type === 'encryption') return;
-    if (!ev.name) return; // everything below is about one page
+    // These carry no page name. Handle them before that check, or a status
+    // change in another tab never arrives.
     if (ev.type === 'config') return reloadStatuses();
+    if (!ev.name) return; // everything below is about one page
     if (ev.wb && ev.wb !== workbook()) return; // another workbook
     refreshCalendar(); // our own saves can add a journal dot too
     refreshTasks();

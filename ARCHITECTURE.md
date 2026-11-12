@@ -215,7 +215,8 @@ CRDTs (conflict-free merge structures):
 - **Missed events** are covered three ways. A receiver that falls behind gets
   a `resync` event. A reconnected `EventSource` triggers a full resync. So does
   the tab becoming visible again (e.g. after a laptop sleeps). A resync reloads
-  every clean editor.
+  every clean editor, the task statuses, and the workbook list. A `config`
+  event (it has no page name) reloads the statuses in other tabs.
 
 ## Server details
 
