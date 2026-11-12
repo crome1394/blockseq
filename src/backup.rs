@@ -154,7 +154,8 @@ them with the password (or recovery key) you used when the backup was made.
 /// miss one deleted meanwhile. The caller zips `stage` afterwards. The file
 /// copy is not fsynced.
 pub fn stage_snapshot(dir: &Path, stage: &Path, writer: Option<&parking_lot::Mutex<Connection>>) -> Result<PathBuf> {
-    std::fs::create_dir_all(stage)?;
+    // Only this user may look inside: the stage holds every note.
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700).create(stage)?;
     let db_copy = stage.join(DB_FILE);
     if let Some(writer) = writer {
         let conn = writer.lock();
@@ -222,7 +223,15 @@ fn copy_folders(dir: &Path, stage: &Path, folders: &[&str], unlocked: bool) -> R
 /// `db_copy` is a snapshot made with [`snapshot`]; `config` is config.json.
 /// `dir` should be a [`stage_snapshot`] copy when a save might still be running.
 pub fn write_zip(workbook: &str, dir: &Path, db_copy: &Path, config: &Path, out: &Path) -> Result<()> {
-    let file = std::fs::File::create(out).with_context(|| format!("creating {}", out.display()))?;
+    // Readable by the owner only, like the data folder it copies.
+    let file = std::os::unix::fs::OpenOptionsExt::mode(
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true),
+        0o600,
+    )
+    .open(out)
+    .with_context(|| format!("creating {}", out.display()))?;
+    // A file that already existed keeps its old mode otherwise.
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     let mut zip = ZipWriter::new(std::io::BufWriter::new(file));
     let mut text = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated).unix_permissions(0o644);
     if let Some(now) = zip_time(std::time::SystemTime::now()) {
@@ -606,6 +615,8 @@ mod tests {
         let stage = tmp.join("stage");
         let db_copy = stage_snapshot(&src, &stage, Some(&writer))?;
         let conn = writer.into_inner();
+        let mode = |p: &Path| std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(p).unwrap().permissions()) & 0o777;
+        assert_eq!(mode(&stage), 0o700);
         // A save after the copy must not appear in a zip of that copy.
         std::fs::write(src.join("pages/Hello.md"), "- second\n")?;
         std::fs::write(src.join("assets/pic.png"), [9u8, 9, 9])?;
@@ -617,6 +628,7 @@ mod tests {
         cfg.save(&tmp.join("config.json"))?;
         let zip = tmp.join("b.zip");
         write_zip("src", &stage, &db_copy, &tmp.join("config.json"), &zip)?;
+        assert_eq!(mode(&zip), 0o600);
         let dest = tmp.join("dest");
         import_zip(&zip, &dest, None, 1 << 30)?;
         assert_eq!(std::fs::read_to_string(dest.join("pages/Hello.md"))?, "- first\n");

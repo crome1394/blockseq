@@ -299,6 +299,10 @@ Example `/etc/cron.d/blockseq-backup` (keeps 30 days):
 On the server, the commands find `/var/lib/blockseq` themselves; elsewhere
 set `BLOCKSEQ_DATA`. Container or VM snapshots are a good second layer.
 
+Treat backup zips (and `/var/backups/blockseq`) like the data folder itself:
+they hold every note in plain text except `#Encrypted` blocks, plus the
+locked copy of the encryption key. Keep them somewhere only you can read.
+
 ## Keyboard
 
 | Key                  | Action                                     |
