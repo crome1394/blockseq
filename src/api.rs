@@ -73,17 +73,36 @@ impl IntoResponse for ApiError {
 
 type ApiResult = Result<Response, ApiError>;
 
+/// Runs blocking work (SQLite, files) on Tokio's blocking thread pool, so a
+/// slow query or disk never stalls the threads serving other requests.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ApiError> + Send + 'static) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f).await?
+}
+
 /// Changes config.json: one change at a time (the settings lock is held
 /// throughout), always starting from the file on disk, and refusing to touch
 /// a damaged file. `f` may reject the change with any ApiError.
-fn update_config<T>(s: &AppState, f: impl FnOnce(&mut Config) -> Result<T, ApiError>) -> Result<T, ApiError> {
-    let mut cached = s.config.write();
-    let path = s.config_path();
-    let mut cfg = Config::load(&path)?;
-    let out = f(&mut cfg)?;
-    cfg.save(&path)?;
-    *cached = cfg;
-    Ok(out)
+async fn update_config<T: Send + 'static>(
+    s: &Arc<AppState>,
+    f: impl FnOnce(&mut Config) -> Result<T, ApiError> + Send + 'static,
+) -> Result<T, ApiError> {
+    let s = s.clone();
+    blocking(move || {
+        let mut cached = s.config.write();
+        let path = s.config_path();
+        let mut cfg = Config::load(&path)?;
+        let out = f(&mut cfg)?;
+        cfg.save(&path)?;
+        *cached = cfg;
+        Ok(out)
+    })
+    .await
+}
+
+/// config.json as it is on disk, read on the blocking pool.
+async fn read_config(s: &Arc<AppState>) -> Result<Config, ApiError> {
+    let s = s.clone();
+    blocking(move || Ok(s.read_config()?)).await
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -145,16 +164,18 @@ pub struct NameQuery {
 }
 
 pub async fn get_page(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
-    let conn = wb.db.lock();
-    let page = db::get_page(&conn, &q.name)?;
-    let blocks = match &page {
-        Some(p) => db::get_blocks(&conn, &p.id)?,
-        None => vec![],
-    };
-    let backlinks = db::backlinks(&conn, &q.name)?;
-    let name = page.as_ref().map(|p| p.name.clone()).unwrap_or(q.name.trim().to_string());
-    Ok(Json(json!({ "name": name, "page": page, "blocks": blocks, "backlinks": backlinks }))
-        .into_response())
+    blocking(move || {
+        let conn = wb.db.lock();
+        let page = db::get_page(&conn, &q.name)?;
+        let blocks = match &page {
+            Some(p) => db::get_blocks(&conn, &p.id)?,
+            None => vec![],
+        };
+        let backlinks = db::backlinks(&conn, &q.name)?;
+        let name = page.as_ref().map(|p| p.name.clone()).unwrap_or(q.name.trim().to_string());
+        Ok(Json(json!({ "name": name, "page": page, "blocks": blocks, "backlinks": backlinks })).into_response())
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -170,37 +191,37 @@ pub async fn put_page(
     headers: HeaderMap,
     Json(body): Json<SaveBody>,
 ) -> ApiResult {
-    let words = s.task_words();
-    let outcome = {
-        // The Markdown file is written under the same lock as the database,
-        // so two quick saves can't leave the older text in the file.
-        let conn = wb.db.lock();
-        let outcome = db::save_page(&conn, &q.name, body.base_version, &body.blocks, &words)
-            .map_err(|e| bad(format!("{e:#}")))?;
-        if let SaveOutcome::Saved(page) = &outcome {
-            wb.write_mirror(page, &body.blocks);
-        }
-        outcome
-    };
-    match outcome {
-        SaveOutcome::Saved(page) => {
-            s.notify(&wb, json!({
-                "type": "page", "name": page.name, "version": page.version, "client": client_id(&headers)
-            }));
-            prune(&s, &wb, &client_id(&headers));
-            Ok(Json(json!({ "page": page })).into_response())
-        }
-        SaveOutcome::Conflict(page, blocks) => Ok((
-            StatusCode::CONFLICT,
-            Json(json!({ "page": page, "blocks": blocks })),
-        )
-            .into_response()),
-        SaveOutcome::ForeignIds(ids) => Ok((
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "some blocks belong to another page", "foreign_ids": ids })),
-        )
-            .into_response()),
-    }
+    let client = client_id(&headers);
+    blocking(move || {
+        let words = s.task_words();
+        let outcome = {
+            // The Markdown file is written under the same lock as the
+            // database, so two quick saves can't leave the older text in it.
+            let conn = wb.db.lock();
+            let outcome = db::save_page(&conn, &q.name, body.base_version, &body.blocks, &words)
+                .map_err(|e| bad(format!("{e:#}")))?;
+            if let SaveOutcome::Saved(page) = &outcome {
+                wb.write_mirror(page, &body.blocks);
+            }
+            outcome
+        };
+        Ok(match outcome {
+            SaveOutcome::Saved(page) => {
+                s.notify(&wb, json!({ "type": "page", "name": page.name, "version": page.version, "client": client }));
+                prune(&s, &wb, &client);
+                Json(json!({ "page": page })).into_response()
+            }
+            SaveOutcome::Conflict(page, blocks) => {
+                (StatusCode::CONFLICT, Json(json!({ "page": page, "blocks": blocks }))).into_response()
+            }
+            SaveOutcome::ForeignIds(ids) => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "some blocks belong to another page", "foreign_ids": ids })),
+            )
+                .into_response(),
+        })
+    })
+    .await
 }
 
 pub async fn delete_page(
@@ -209,32 +230,39 @@ pub async fn delete_page(
     Query(q): Query<NameQuery>,
     headers: HeaderMap,
 ) -> ApiResult {
-    let deleted = {
-        let conn = wb.db.lock();
-        let deleted = db::delete_page(&conn, &q.name)?;
-        if let Some(page) = &deleted {
-            wb.remove_mirror(page);
-        }
-        deleted
-    };
-    let Some(page) = deleted else {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    };
-    s.notify(&wb, json!({ "type": "deleted", "name": page.name, "client": client_id(&headers) }));
-    prune(&s, &wb, &client_id(&headers));
-    Ok(StatusCode::NO_CONTENT.into_response())
+    let client = client_id(&headers);
+    blocking(move || {
+        let deleted = {
+            let conn = wb.db.lock();
+            let deleted = db::delete_page(&conn, &q.name)?;
+            if let Some(page) = &deleted {
+                wb.remove_mirror(page);
+            }
+            deleted
+        };
+        let Some(page) = deleted else {
+            return Ok(StatusCode::NOT_FOUND.into_response());
+        };
+        s.notify(&wb, json!({ "type": "deleted", "name": page.name, "client": client }));
+        prune(&s, &wb, &client);
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
 }
 
 /// Creates an empty page if it doesn't exist (used by the calendar to create
 /// a journal day). Returns the page either way.
 pub async fn ensure_page(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
-    let name = q.name.trim();
+    let name = q.name.trim().to_string();
     if name.is_empty() {
         return Err(bad("page name is empty"));
     }
-    let conn = wb.db.lock();
-    db::ensure_page(&conn, name, db::now_ms())?;
-    Ok(Json(json!({ "page": db::get_page(&conn, name)? })).into_response())
+    blocking(move || {
+        let conn = wb.db.lock();
+        db::ensure_page(&conn, &name, db::now_ms())?;
+        Ok(Json(json!({ "page": db::get_page(&conn, &name)? })).into_response())
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -251,27 +279,30 @@ pub async fn rename_page(
     Query(q): Query<RenameQuery>,
     headers: HeaderMap,
 ) -> ApiResult {
-    let words = s.task_words();
     let client = client_id(&headers);
-    let out = {
-        let conn = wb.db.lock();
-        let out = db::rename_page(&conn, &q.name, &q.to, &words).map_err(|e| bad(format!("{e:#}")))?;
-        wb.remove_mirror(&out.old);
-        let blocks = db::get_blocks(&conn, &out.page.id)?;
-        wb.write_mirror(&out.page, &blocks);
-        for (page, blocks) in &out.changed {
-            wb.write_mirror(page, blocks);
+    blocking(move || {
+        let words = s.task_words();
+        let out = {
+            let conn = wb.db.lock();
+            let out = db::rename_page(&conn, &q.name, &q.to, &words).map_err(|e| bad(format!("{e:#}")))?;
+            wb.remove_mirror(&out.old);
+            let blocks = db::get_blocks(&conn, &out.page.id)?;
+            wb.write_mirror(&out.page, &blocks);
+            for (page, blocks) in &out.changed {
+                wb.write_mirror(page, blocks);
+            }
+            out
+        };
+        s.notify(&wb, json!({ "type": "deleted", "name": out.old.name, "client": "" }));
+        for (page, _) in &out.changed {
+            s.notify(&wb, json!({ "type": "page", "name": page.name, "version": page.version, "client": "" }));
         }
-        out
-    };
-    s.notify(&wb, json!({ "type": "deleted", "name": out.old.name, "client": "" }));
-    for (page, _) in &out.changed {
-        s.notify(&wb, json!({ "type": "page", "name": page.name, "version": page.version, "client": "" }));
-    }
-    s.notify(&wb, json!({ "type": "page", "name": out.page.name, "version": out.page.version, "client": "" }));
-    prune(&s, &wb, &client);
-    let updated = out.changed.iter().filter(|(p, _)| p.id != out.page.id).count();
-    Ok(Json(json!({ "page": out.page, "merged": out.merged, "updated_pages": updated })).into_response())
+        s.notify(&wb, json!({ "type": "page", "name": out.page.name, "version": out.page.version, "client": "" }));
+        prune(&s, &wb, &client);
+        let updated = out.changed.iter().filter(|(p, _)| p.id != out.page.id).count();
+        Ok(Json(json!({ "page": out.page, "merged": out.merged, "updated_pages": updated })).into_response())
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -288,27 +319,38 @@ pub async fn set_favorite(
     Query(q): Query<FavoriteQuery>,
     headers: HeaderMap,
 ) -> ApiResult {
-    let name = q.name.trim();
+    let name = q.name.trim().to_string();
     if name.is_empty() {
         return Err(bad("page name is empty"));
     }
-    db::set_favorite(&wb.db.lock(), name, q.on)?;
-    s.notify(&wb, json!({ "type": "favorite", "name": name, "client": client_id(&headers) }));
-    Ok(StatusCode::NO_CONTENT.into_response())
+    let client = client_id(&headers);
+    blocking(move || {
+        db::set_favorite(&wb.db.lock(), &name, q.on)?;
+        s.notify(&wb, json!({ "type": "favorite", "name": name, "client": client }));
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
+}
+
+/// Runs `f` on the workbook's database (on the blocking thread pool) and
+/// returns its result as JSON.
+async fn read_json<T: serde::Serialize + Send + 'static>(
+    wb: Arc<Workbook>,
+    f: impl FnOnce(&rusqlite::Connection) -> anyhow::Result<T> + Send + 'static,
+) -> ApiResult {
+    blocking(move || Ok(Json(f(&wb.db.lock())?).into_response())).await
 }
 
 pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
-    let pages = db::list_pages(&wb.db.lock())?;
-    Ok(Json(pages).into_response())
+    read_json(wb, db::list_pages).await
 }
 
 pub async fn sidebar(Wb(wb): Wb) -> ApiResult {
-    Ok(Json(db::sidebar(&wb.db.lock())?).into_response())
+    read_json(wb, db::sidebar).await
 }
 
 pub async fn names(Wb(wb): Wb) -> ApiResult {
-    let names = db::all_names(&wb.db.lock())?;
-    Ok(Json(names).into_response())
+    read_json(wb, db::all_names).await
 }
 
 #[derive(Deserialize)]
@@ -319,8 +361,7 @@ pub struct JournalQuery {
 
 pub async fn journals(Wb(wb): Wb, Query(q): Query<JournalQuery>) -> ApiResult {
     let limit = q.limit.unwrap_or(10).clamp(1, 100);
-    let pages = db::journals(&wb.db.lock(), q.before, limit)?;
-    Ok(Json(pages).into_response())
+    read_json(wb, move |c| db::journals(c, q.before, limit)).await
 }
 
 #[derive(Deserialize)]
@@ -331,8 +372,7 @@ pub struct SearchQuery {
 
 pub async fn search(Wb(wb): Wb, Query(q): Query<SearchQuery>) -> ApiResult {
     let limit = q.limit.unwrap_or(30).clamp(1, 200);
-    let results = db::search(&wb.db.lock(), &q.q, limit)?;
-    Ok(Json(results).into_response())
+    read_json(wb, move |c| db::search(c, &q.q, limit)).await
 }
 
 #[derive(Deserialize)]
@@ -341,10 +381,13 @@ pub struct IdQuery {
 }
 
 pub async fn get_block(Wb(wb): Wb, Query(q): Query<IdQuery>) -> ApiResult {
-    match db::get_block(&wb.db.lock(), &q.id)? {
-        Some(b) => Ok(Json(b).into_response()),
-        None => Ok(StatusCode::NOT_FOUND.into_response()),
-    }
+    blocking(move || {
+        Ok(match db::get_block(&wb.db.lock(), &q.id)? {
+            Some(b) => Json(b).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        })
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -363,35 +406,37 @@ pub async fn put_block(
     headers: HeaderMap,
     Json(body): Json<BlockBody>,
 ) -> ApiResult {
-    let words = s.task_words();
-    let page = {
-        let conn = wb.db.lock();
-        match db::update_block(&conn, &q.id, &body.content, body.expected.as_deref(), &words)? {
-            db::UpdateOutcome::Missing => return Ok(StatusCode::NOT_FOUND.into_response()),
-            db::UpdateOutcome::Changed(current) => {
-                return Ok((StatusCode::CONFLICT, Json(json!({ "error": "the block changed elsewhere", "current": current }))).into_response());
+    let client = client_id(&headers);
+    blocking(move || {
+        let words = s.task_words();
+        let page = {
+            let conn = wb.db.lock();
+            match db::update_block(&conn, &q.id, &body.content, body.expected.as_deref(), &words)? {
+                db::UpdateOutcome::Missing => return Ok(StatusCode::NOT_FOUND.into_response()),
+                db::UpdateOutcome::Changed(current) => {
+                    return Ok((StatusCode::CONFLICT, Json(json!({ "error": "the block changed elsewhere", "current": current }))).into_response());
+                }
+                db::UpdateOutcome::Saved(page, blocks) => {
+                    wb.write_mirror(&page, &blocks);
+                    page
+                }
             }
-            db::UpdateOutcome::Saved(page, blocks) => {
-                wb.write_mirror(&page, &blocks);
-                page
-            }
-        }
-    };
-    s.notify(&wb, json!({
-        "type": "page", "name": page.name, "version": page.version, "client": client_id(&headers)
-    }));
-    prune(&s, &wb, &client_id(&headers));
-    Ok(Json(json!({ "page": page })).into_response())
+        };
+        s.notify(&wb, json!({ "type": "page", "name": page.name, "version": page.version, "client": client }));
+        prune(&s, &wb, &client);
+        Ok(Json(json!({ "page": page })).into_response())
+    })
+    .await
+}
+
+/// Pages whose #Encrypted blocks still need encrypting (done by the browser).
+pub async fn encryption_pending(Wb(wb): Wb) -> ApiResult {
+    read_json(wb, db::encryption_pending).await
 }
 
 /// Every block with a task status (the client filters open / finished).
-/// Pages whose #Encrypted blocks still need encrypting (done by the browser).
-pub async fn encryption_pending(Wb(wb): Wb) -> ApiResult {
-    Ok(Json(db::encryption_pending(&wb.db.lock())?).into_response())
-}
-
 pub async fn tasks(Wb(wb): Wb) -> ApiResult {
-    Ok(Json(db::tasks(&wb.db.lock())?).into_response())
+    read_json(wb, db::tasks).await
 }
 
 /// Server-sent events: tells other open tabs/devices when something changes.
@@ -563,11 +608,7 @@ pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap)
 /// Files in the workbook's assets folder, newest first, with the pages that
 /// mention each one.
 pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
-    let usage = db::asset_usage(&wb.db.lock())?;
-    let dir = wb.assets_dir();
-    let list = tokio::task::spawn_blocking(move || assets::list(&dir))
-        .await
-        ??;
+    let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.db.lock())?, assets::list(&wb.assets_dir())?))).await?;
     let out: Vec<_> = list
         .into_iter()
         .map(|a| {
@@ -606,9 +647,11 @@ pub async fn delete_asset(
 // ---- workbooks and shared settings --------------------------------------------
 
 pub async fn list_workbooks(State(s): Shared) -> ApiResult {
-    let mut list = s.workbooks.list();
-    if let Some(name) = s.read_config()?.main_name {
-        list[0].name = name;
+    let main_name = read_config(&s).await?.main_name;
+    let state = s.clone();
+    let mut list = blocking(move || Ok(state.workbooks.list())).await?;
+    if let (Some(name), Some(first)) = (main_name, list.first_mut()) {
+        first.name = name;
     }
     Ok(Json(list).into_response())
 }
@@ -626,10 +669,12 @@ pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) 
         if to.is_empty() || to.chars().count() > 64 || to.chars().any(char::is_control) {
             return Err(bad("use 1 to 64 characters"));
         }
-        update_config(&s, |cfg| {
-            cfg.main_name = (to != "Main").then(|| to.clone());
+        let name = to.clone();
+        update_config(&s, move |cfg| {
+            cfg.main_name = (name != "Main").then_some(name);
             Ok(())
-        })?;
+        })
+        .await?;
         let path = s.workbooks.list().into_iter().next().map(|w| w.path).unwrap_or_default();
         crate::workbooks::WorkbookInfo { id: MAIN.into(), name: to.clone(), kind: "blockseq", path }
     } else {
@@ -664,7 +709,8 @@ pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiRe
 }
 
 pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
-    let info = s.workbooks.create(&q.name).map_err(|e| bad(format!("{e:#}")))?;
+    let state = s.clone();
+    let info = blocking(move || state.workbooks.create(&q.name).map_err(|e| bad(format!("{e:#}")))).await?;
     s.notify_all(json!({ "type": "workbooks" }));
     Ok(Json(info).into_response())
 }
@@ -682,7 +728,7 @@ pub struct StatusesBody {
 /// The wrapped key for #Encrypted blocks (useless without the password).
 pub async fn get_encryption(State(s): Shared) -> ApiResult {
     // Read from disk: the terminal reset command may have changed it.
-    let cfg = s.read_config()?;
+    let cfg = read_config(&s).await?;
     Ok(Json(json!({ "encryption": cfg.encryption })).into_response())
 }
 
@@ -705,7 +751,7 @@ pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) 
     if e.version != 1 || e.iterations < 100_000 || e.rk_iterations < 10_000 {
         return Err(bad("unsupported encryption settings"));
     }
-    update_config(&s, |cfg| {
+    update_config(&s, move |cfg| {
         if let Some(existing) = &cfg.encryption {
             let forbidden = || ApiError(StatusCode::FORBIDDEN, "unlock with the current password first".into());
             if body.encryption.check != existing.check {
@@ -729,9 +775,10 @@ pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) 
         } else if body.encryption.proof_hash.is_none() {
             return Err(bad("a new password needs a key proof (reload Blockseq and try again)"));
         }
-        cfg.encryption = Some(body.encryption.clone());
+        cfg.encryption = Some(body.encryption);
         Ok(())
-    })?;
+    })
+    .await?;
     s.notify_all(json!({ "type": "encryption" }));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -740,11 +787,12 @@ pub async fn put_encryption(State(s): Shared, Json(body): Json<EncryptionBody>) 
 /// tasks in every open workbook.
 pub async fn put_config(State(s): Shared, Json(body): Json<StatusesBody>) -> ApiResult {
     // Change only the statuses; keep everything else in the file as it is.
-    let words = update_config(&s, |cfg| {
+    let words = update_config(&s, move |cfg| {
         cfg.statuses = body.statuses;
         cfg.validate().map_err(|e| bad(format!("{e:#}")))?;
         Ok(cfg.task_words())
-    })?;
+    })
+    .await?;
     let state = s.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         for wb in state.workbooks.open_workbooks() {
@@ -813,7 +861,7 @@ pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
     let len = file.metadata().await?.len();
     // The open handle keeps the data readable; the name goes away now.
     let _ = tokio::fs::remove_file(&tmp_zip).await;
-    let main_name = s.read_config()?.main_name.unwrap_or_else(|| "Main".into());
+    let main_name = read_config(&s).await?.main_name.unwrap_or_else(|| "Main".into());
     let label = if wb.id == MAIN { main_name.as_str() } else { wb.id.as_str() };
     let mut res = file_body(file, None).into_response();
     let h = res.headers_mut();
@@ -840,7 +888,7 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(e);
     }
-    let server_key = s.read_config()?.encryption;
+    let server_key = read_config(&s).await?.encryption;
     // Backups compress well, so allow them to unpack to more than the upload limit.
     let max_bytes = s.max_upload.saturating_mul(4);
     let (state, zip, wb_name) = (s.clone(), tmp.clone(), name.clone());
@@ -851,7 +899,7 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
     let (info, mut report, adopt) = result.map_err(|e| bad(format!("{e:#}")))?;
     if let Some(key) = adopt {
         let key_file = folder.join(&name).join(backup::IMPORTED_KEY);
-        let outcome = update_config(&s, |cfg| {
+        let outcome = update_config(&s, move |cfg| {
             Ok(match &cfg.encryption {
                 // A password was set while the upload ran: treat the key as different.
                 Some(now) if now.check != key.check => {
@@ -861,11 +909,12 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
                 }
                 Some(_) => backup::KeyOutcome::Same,
                 None => {
-                    cfg.encryption = Some(key.clone());
+                    cfg.encryption = Some(key);
                     backup::KeyOutcome::Adopted
                 }
             })
-        })?;
+        })
+        .await?;
         if outcome == backup::KeyOutcome::Adopted {
             s.notify_all(json!({ "type": "encryption" }));
         }
@@ -878,32 +927,45 @@ pub async fn import(State(s): Shared, Query(q): Query<NameQuery>, body: Body) ->
 
 /// Pages holding encrypted blocks (the browser re-encrypts them after an import).
 pub async fn sealed_pages(Wb(wb): Wb) -> ApiResult {
-    Ok(Json(db::sealed_pages(&wb.db.lock())?).into_response())
+    read_json(wb, db::sealed_pages).await
 }
 
 /// The key a restored workbook's encrypted blocks use, when it differs from
 /// this server's (still wrapped: only a password or recovery key opens it).
 pub async fn get_imported_key(Wb(wb): Wb) -> ApiResult {
-    let key: Option<crate::config::Encryption> = std::fs::read_to_string(wb.dir.join(backup::IMPORTED_KEY))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok());
-    Ok(Json(json!({ "encryption": key })).into_response())
+    blocking(move || {
+        let key: Option<crate::config::Encryption> = std::fs::read_to_string(wb.dir.join(backup::IMPORTED_KEY))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok());
+        Ok(Json(json!({ "encryption": key })).into_response())
+    })
+    .await
 }
 
 /// Called once every block was re-encrypted. Kept under a hidden name rather
 /// than deleted, in case something was missed.
 pub async fn done_imported_key(Wb(wb): Wb) -> ApiResult {
-    let path = wb.dir.join(backup::IMPORTED_KEY);
-    if path.exists() {
-        std::fs::rename(&path, wb.dir.join(format!(".{}.old", backup::IMPORTED_KEY)))?;
-    }
-    Ok(StatusCode::NO_CONTENT.into_response())
+    blocking(move || {
+        let path = wb.dir.join(backup::IMPORTED_KEY);
+        if path.exists() {
+            std::fs::rename(&path, wb.dir.join(format!(".{}.old", backup::IMPORTED_KEY)))?;
+        }
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
 }
 
 /// For monitoring (no password needed; shows no notes): the server runs,
 /// config.json reads, and each open workbook's database answers and passed
 /// its startup check. 503 if anything is wrong.
 pub async fn health(State(s): Shared) -> Response {
+    match tokio::task::spawn_blocking(move || health_report(&s)).await {
+        Ok(res) => res,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+fn health_report(s: &AppState) -> Response {
     let config = match s.read_config() {
         Ok(_) => "ok".to_string(),
         Err(e) => format!("{e:#}"),
