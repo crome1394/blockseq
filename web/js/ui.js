@@ -96,6 +96,14 @@ export function setConnected(value) {
   updateStatus();
 }
 
+// The server closed this tab's live updates for a newer tab (too many open).
+// They resume when this tab is shown again.
+let livePaused = false;
+export function setLivePaused(value) {
+  livePaused = value;
+  updateStatus();
+}
+
 export function updateStatus() {
   const el = document.getElementById('status');
   if (!el) return;
@@ -105,6 +113,7 @@ export function updateStatus() {
   if (all.some((e) => e.conflict)) { text = 'Conflict: choose a version'; cls = 'bad'; }
   else if (all.some((e) => e.offline)) { text = 'Offline: changes not saved yet'; cls = 'bad'; }
   else if (all.some((e) => e.dirty || e.saving)) { text = 'Saving…'; cls = 'busy'; }
+  else if (livePaused) { text = 'Saved · live updates paused'; cls = 'ok'; }
   else if (!connected) { text = 'Reconnecting…'; cls = 'busy'; }
   el.className = `status ${cls}`;
   if (cls === 'ok' && lastSaved) {

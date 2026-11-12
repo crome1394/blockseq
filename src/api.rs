@@ -663,7 +663,9 @@ pub async fn restore_version(State(s): Shared, Wb(wb): Wb, Query(q): Query<Histo
 }
 
 /// How many live-update streams one process keeps. Each open tab is one.
-/// A connection past this closes the oldest stream.
+/// A connection past this closes the oldest stream. That stream first gets a
+/// `replaced` event, and its tab stays disconnected until it is shown again,
+/// so tabs beyond the cap do not keep pushing each other off.
 pub const MAX_EVENT_SUBSCRIBERS: usize = 32;
 
 /// Open server-sent-event streams, oldest first.
@@ -719,6 +721,8 @@ impl EventSubs {
 struct CappedEvents {
     live: BroadcastStream<String>,
     close: oneshot::Receiver<()>,
+    /// The `replaced` event was sent; the stream ends next.
+    replaced: bool,
     _permit: EventPermit,
 }
 
@@ -727,8 +731,13 @@ impl Stream for CappedEvents {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        if Pin::new(&mut this.close).poll(cx).is_ready() {
+        if this.replaced {
             return Poll::Ready(None);
+        }
+        if Pin::new(&mut this.close).poll(cx).is_ready() {
+            // Tell the tab why, so it does not reconnect straight away.
+            this.replaced = true;
+            return Poll::Ready(Some(Ok(Event::default().data(r#"{"type":"replaced"}"#))));
         }
         match Pin::new(&mut this.live).poll_next(cx) {
             // A client that fell behind is told to reload everything it shows.
@@ -745,7 +754,7 @@ impl Stream for CappedEvents {
 /// Server-sent events: tells other open tabs and devices when something changes.
 pub async fn events(State(s): Shared) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let (permit, close) = s.event_subs.admit();
-    let stream = CappedEvents { live: BroadcastStream::new(s.events.subscribe()), close, _permit: permit };
+    let stream = CappedEvents { live: BroadcastStream::new(s.events.subscribe()), close, replaced: false, _permit: permit };
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
@@ -1667,7 +1676,7 @@ mod tests {
         let (tx, rx) = tokio::sync::broadcast::channel(1);
         let subs = Arc::new(EventSubs::new(4));
         let (permit, close) = subs.admit();
-        let mut stream = CappedEvents { live: BroadcastStream::new(rx), close, _permit: permit };
+        let mut stream = CappedEvents { live: BroadcastStream::new(rx), close, replaced: false, _permit: permit };
         tx.send("{\"type\":\"page\"}".to_string()).unwrap();
         assert!(stream.next().await.unwrap().is_ok());
         // The channel holds one message, so the second send reports a lag.
@@ -1681,9 +1690,13 @@ mod tests {
         let mut old_stream = CappedEvents {
             live: BroadcastStream::new(tx.subscribe()),
             close: old_rx,
+            replaced: false,
             _permit: old,
         };
         let _newer = one.admit();
+        // The pushed-off tab is told why, then the stream ends.
+        let last = old_stream.next().await.unwrap().unwrap();
+        assert!(format!("{last:?}").contains("replaced"));
         assert!(old_stream.next().await.is_none());
     }
 }

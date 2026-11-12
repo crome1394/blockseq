@@ -5,7 +5,7 @@ import { api, clientId, explain, invalidatePageNames, getPageNames } from './api
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
-import { toast, updateStatus, setConnected, openModal, closeModal, copyText, noteSaved, resetSaved } from './ui.js';
+import { toast, updateStatus, setConnected, setLivePaused, openModal, closeModal, copyText, noteSaved, resetSaved } from './ui.js';
 import { decorateCode } from './code.js';
 import { onSettingChange, getSetting, setSetting } from './settings.js';
 import { settingsForm } from './settings-ui.js';
@@ -542,8 +542,13 @@ function resyncAll() {
   refreshView();
 }
 
+// The open stream, or null while live updates are paused (see 'replaced').
+let events = null;
+
 function connectEvents() {
   const es = new EventSource('/api/events');
+  events = es;
+  setLivePaused(false);
   let opened = false;
   es.onopen = () => {
     setConnected(true);
@@ -555,6 +560,14 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     if (ev.type === 'resync') return resyncAll();
+    if (ev.type === 'replaced') {
+      // Too many tabs are open. Stay off until this tab is shown again,
+      // instead of reconnecting and pushing another tab off in turn.
+      es.close();
+      events = null;
+      setLivePaused(true);
+      return;
+    }
     if (ev.type === 'workbooks') return workbooksChanged(ev);
     if (ev.type === 'encryption') return;
     // These carry no page name. Handle them before that check, or a status
@@ -578,7 +591,9 @@ function connectEvents() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') resyncAll();
+  if (document.visibilityState !== 'visible') return;
+  if (!events) connectEvents();
+  resyncAll();
 });
 
 window.addEventListener('beforeunload', (e) => {
