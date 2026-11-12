@@ -933,8 +933,11 @@ function showUsage(u) {
   if (!box || !u) return;
   box.hidden = false;
   box.querySelector('.usage-value').textContent = formatSize(u.total);
-  box.title = `${workbookName(workbook())} uses ${formatSize(u.total)} on the server:\n`
-    + `database (with page history) ${formatSize(u.database)}\nfiles ${formatSize(u.files)}\nMarkdown copies and other ${formatSize(u.other)}`;
+  box.title = `${workbookName(workbook())} uses ${formatSize(u.total)} on the server`
+    + `${u.folder ? ` (${u.folder})` : ''}:\n`
+    + `• assets/ (uploaded files): ${formatSize(u.files)}\n`
+    + `• database, with page history: ${formatSize(u.database)}\n`
+    + `• Markdown copies and other: ${formatSize(u.other)}`;
 }
 
 // Embedded X posts report their height from inside their frame.

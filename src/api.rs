@@ -382,7 +382,8 @@ pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
 pub async fn sidebar(Wb(wb): Wb) -> ApiResult {
     blocking(move || {
         let side = db::sidebar(&wb.db.lock())?;
-        let usage = wb.usage();
+        let mut usage = serde_json::to_value(wb.usage())?;
+        usage["folder"] = json!(std::path::absolute(&wb.dir).unwrap_or_else(|_| wb.dir.clone()).display().to_string());
         Ok(Json(json!({
             "journal_days": side.journal_days,
             "favorites": side.favorites,

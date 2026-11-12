@@ -49,7 +49,9 @@ pub struct Usage {
 
 const USAGE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Total size of regular files under `dir` (symlinks not followed).
+/// Total size of the files under `dir`. Symlinked files count (their
+/// target's size); symlinked folders inside aren't followed, so a link back
+/// up the tree can't loop.
 fn dir_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries
@@ -57,6 +59,7 @@ fn dir_size(dir: &Path) -> u64 {
         .map(|e| match e.file_type() {
             Ok(t) if t.is_dir() => dir_size(&e.path()),
             Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            Ok(t) if t.is_symlink() => std::fs::metadata(e.path()).ok().filter(std::fs::Metadata::is_file).map_or(0, |m| m.len()),
             _ => 0,
         })
         .sum()
@@ -80,6 +83,7 @@ impl Workbook {
     /// workbooks (workbooks/), which aren't counted. Cached for a little
     /// while: walking a big assets folder after every save would be waste.
     pub fn usage(&self) -> Usage {
+        // (Main's folder is the data folder, which also holds workbooks/.)
         let mut cache = self.usage_cache.lock();
         if let Some((at, u)) = *cache
             && at.elapsed() < USAGE_TTL
@@ -90,7 +94,8 @@ impl Workbook {
         for entry in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
-            let Ok(kind) = entry.file_type() else { continue };
+            // Follows a symlinked top-level folder (e.g. assets/ kept on a NAS).
+            let Ok(kind) = std::fs::metadata(&path).map(|m| m.file_type()) else { continue };
             if kind.is_dir() {
                 match name.as_str() {
                     "workbooks" if self.id == MAIN => {}
@@ -636,6 +641,17 @@ mod tests {
         assert_eq!(main.usage().files, 1000);
         main.forget_usage();
         assert_eq!(main.usage().files, 1500);
+        // A symlinked assets folder (e.g. kept elsewhere) is measured too.
+        #[cfg(unix)]
+        {
+            let elsewhere = root.join("elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::write(elsewhere.join("c.bin"), vec![0u8; 700]).unwrap();
+            std::fs::rename(root.join("assets"), root.join("old-assets")).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, root.join("assets")).unwrap();
+            main.forget_usage();
+            assert_eq!(main.usage().files, 700);
+        }
         drop((main, reg));
         std::fs::remove_dir_all(root).unwrap();
     }
