@@ -9,6 +9,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags};
@@ -44,10 +45,14 @@ pub fn snapshot(conn: &Connection, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Snapshot from a database file without opening it for writing (CLI).
+/// Copies `db` using a connection of its own, so the server's writer lock
+/// stays free while the file is copied. Opened read-write because `VACUUM INTO`
+/// cannot read a WAL database through a read-only connection. The copy does
+/// not change the live database. A busy timeout lets a short save finish
+/// instead of failing the snapshot.
 pub fn snapshot_file(db: &Path, to: &Path) -> Result<()> {
-    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("opening {}", db.display()))?;
+    let conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
+    conn.busy_timeout(Duration::from_secs(5))?;
     snapshot(&conn, to)
 }
 
@@ -417,7 +422,8 @@ mod tests {
         let cfg = Config { encryption: None, ..Config::default() };
         cfg.save(&tmp.join("config.json"))?;
         let copy = tmp.join("copy.db");
-        snapshot(&conn, &copy)?;
+        // The writer stays open, as it does during an export.
+        snapshot_file(&src.join(DB_FILE), &copy)?;
         let zip = tmp.join("b.zip");
         write_zip("src", &src, &copy, &tmp.join("config.json"), &zip)?;
 

@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -20,7 +21,8 @@ CREATE TABLE IF NOT EXISTS pages (
     version     INTEGER NOT NULL,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
-    favorite    INTEGER NOT NULL DEFAULT 0
+    favorite    INTEGER NOT NULL DEFAULT 0,
+    words       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS pages_journal ON pages(journal_day);
 
@@ -59,10 +61,18 @@ CREATE TABLE IF NOT EXISTS page_history (
     blocks     TEXT NOT NULL   -- JSON array of blocks, as stored (ciphertext for #Encrypted)
 );
 CREATE INDEX IF NOT EXISTS page_history_page ON page_history(name_lower, saved_at);
+
+-- Block text for search. unicode61 folds case and accents, so a query for
+-- "e" matches "É" without scanning every block on each keystroke.
+CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
+    block_id UNINDEXED,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
 "#;
 
 /// Current schema version, stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
@@ -196,6 +206,7 @@ pub fn now_ms() -> i64 {
 
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;",
     )?;
@@ -209,6 +220,16 @@ pub fn open(path: &Path) -> Result<Connection> {
     for name in missing {
         ensure_page(&conn, &name, now_ms())?;
     }
+    Ok(conn)
+}
+
+/// A second connection for reads. WAL lets it run beside a save, so a search
+/// does not queue behind the writer. `query_only` keeps it from migrating or
+/// writing. The writer must already have opened the file (so the WAL index exists).
+pub fn open_read(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.pragma_update(None, "query_only", true)?;
     Ok(conn)
 }
 
@@ -230,7 +251,43 @@ fn migrate(conn: &Connection) -> Result<()> {
         migrate_v2(conn)?;
     }
     // v3: the page_history table (created by SCHEMA above; nothing to convert).
+    if version < 4 {
+        migrate_v4(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    Ok(())
+}
+
+/// v4: a word count on each page, and a full-text index of block text.
+fn migrate_v4(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "pages", "words")? {
+        conn.execute_batch("ALTER TABLE pages ADD COLUMN words INTEGER NOT NULL DEFAULT 0")?;
+    }
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
+            block_id UNINDEXED,
+            content,
+            tokenize = 'unicode61 remove_diacritics 2'
+        )",
+    )?;
+    // One pass over the blocks that already exist. Saves after this keep both in step.
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT page_id, content FROM blocks")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut words: HashMap<String, i64> = HashMap::new();
+    for (page, content) in &rows {
+        *words.entry(page.clone()).or_default() += word_count(content);
+    }
+    let mut set = conn.prepare("UPDATE pages SET words = ?1 WHERE id = ?2")?;
+    for (page, n) in words {
+        set.execute(params![n, page])?;
+    }
+    let already: i64 = conn.query_row("SELECT count(*) FROM blocks_fts", [], |r| r.get(0))?;
+    if already == 0 {
+        let mut ins = conn.prepare("INSERT INTO blocks_fts(block_id, content) SELECT id, content FROM blocks")?;
+        ins.execute([])?;
+    }
     Ok(())
 }
 
@@ -723,6 +780,17 @@ fn save_page_inner(
     }
 
     tx.execute("DELETE FROM blocks WHERE page_id = ?1", [&page.id])?;
+    // Drop search rows for the blocks this save replaces, including ones that
+    // moved here from another page (their id is reused).
+    {
+        let mut del_fts = tx.prepare("DELETE FROM blocks_fts WHERE block_id = ?1")?;
+        for id in old.keys() {
+            del_fts.execute([id])?;
+        }
+        for b in blocks {
+            del_fts.execute([&b.id])?;
+        }
+    }
     let mut linked: HashMap<String, String> = HashMap::new();
     {
         let mut insert = tx.prepare(
@@ -734,6 +802,7 @@ fn save_page_inner(
         let mut insert_ref = tx.prepare(
             "INSERT INTO refs (block_id, target_lower, target_name, tag) VALUES (?1, ?2, ?3, ?4)",
         )?;
+        let mut insert_fts = tx.prepare("INSERT INTO blocks_fts(block_id, content) VALUES (?1, ?2)")?;
         for (pos, b) in blocks.iter().enumerate() {
             let pos = i64::try_from(pos)?;
             let (created, updated) = match old.get(&b.id) {
@@ -758,6 +827,7 @@ fn save_page_inner(
                 insert_ref.execute(params![b.id, lower, name, tags.contains(&lower)])?;
                 linked.entry(lower).or_insert(name);
             }
+            insert_fts.execute(params![b.id, b.content])?;
         }
     }
 
@@ -767,9 +837,10 @@ fn save_page_inner(
     }
 
     let version = page.version + 1;
+    let words: i64 = blocks.iter().map(|b| word_count(&b.content)).sum();
     tx.execute(
-        "UPDATE pages SET version = ?1, updated_at = ?2 WHERE id = ?3",
-        params![version, now, page.id],
+        "UPDATE pages SET version = ?1, updated_at = ?2, words = ?3 WHERE id = ?4",
+        params![version, now, words, page.id],
     )?;
     sp.commit()?;
     Ok(SaveOutcome::Saved(PageMeta {
@@ -786,6 +857,10 @@ pub fn delete_page(conn: &Connection, name: &str) -> Result<Option<PageMeta>> {
     let page = get_page(conn, name)?;
     if let Some(p) = &page {
         snapshot(conn, p, &get_blocks(conn, &p.id)?, "before it was deleted", now_ms())?;
+        conn.execute(
+            "DELETE FROM blocks_fts WHERE block_id IN (SELECT id FROM blocks WHERE page_id = ?1)",
+            [&p.id],
+        )?;
         conn.execute("DELETE FROM pages WHERE id = ?1", [&p.id])?;
     }
     sp.commit()?;
@@ -991,24 +1066,15 @@ pub fn list_pages(conn: &Connection) -> Result<Vec<PageSummary>> {
             tags.entry(page).or_default().push(tag);
         }
     }
-    let mut words: HashMap<String, i64> = HashMap::new();
-    {
-        let mut stmt = conn.prepare("SELECT page_id, content FROM blocks")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        for row in rows {
-            let (page, content) = row?;
-            *words.entry(page).or_default() += word_count(&content);
-        }
-    }
     let mut stmt = conn.prepare(
         "SELECT p.id, p.name, p.journal_day, p.created_at, p.updated_at,
-                (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id), p.favorite
+                (SELECT COUNT(*) FROM blocks b WHERE b.page_id = p.id), p.favorite, p.words
          FROM pages p ORDER BY p.updated_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(0)?;
         Ok(PageSummary {
-            words: words.get(&id).copied().unwrap_or(0),
+            words: r.get(7)?,
             tags: tags.remove(&id).unwrap_or_default(),
             name: r.get(1)?,
             journal_day: r.get(2)?,
@@ -1031,8 +1097,8 @@ pub struct Sidebar {
     pub newest: i64,
 }
 
-/// What the sidebar needs after every save. Cheap (indexes only), unlike
-/// `list_pages`, which reads every block to count words.
+/// What the sidebar needs after every save. Cheap (indexes only). Word counts
+/// live on the page row, so the all-pages list does not read every block.
 pub fn sidebar(conn: &Connection) -> Result<Sidebar> {
     let journal_days = conn
         .prepare("SELECT journal_day FROM pages p WHERE journal_day IS NOT NULL AND EXISTS (SELECT 1 FROM blocks b WHERE b.page_id = p.id)")?
@@ -1134,27 +1200,39 @@ pub fn search(conn: &Connection, q: &str, limit: i64) -> Result<SearchResults> {
         .query_map(params![pat, q.to_lowercase(), limit], |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<String>>>()?;
 
-    // Every word must appear somewhere in the block (any order).
-    let words: Vec<String> = q.split_whitespace().map(|w| like_pattern(&w.to_lowercase())).collect();
-    let conditions = (1..=words.len())
-        .map(|i| format!("lower(b.content) LIKE ?{i} ESCAPE '\\'"))
-        .collect::<Vec<_>>()
-        .join(" AND ");
-    let sql = format!(
-        "SELECT b.id, b.content, p.name FROM blocks b JOIN pages p ON p.id = b.page_id
-         WHERE {conditions} ORDER BY b.updated_at DESC LIMIT {limit}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let blocks = stmt
-        .query_map(rusqlite::params_from_iter(words.iter()), |r| {
-            Ok(BlockHit {
-                id: r.get(0)?,
-                content: r.get(1)?,
-                page_name: r.get(2)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Every word must appear as a token (any order). The index folds case and
+    // accents. A prefix matches, so "hel" finds "hello"; a fragment in the
+    // middle of a word does not.
+    let blocks = match fts_query(q) {
+        None => vec![],
+        Some(match_q) => {
+            let mut stmt = conn.prepare(
+                "SELECT b.id, b.content, p.name FROM blocks_fts f
+                 JOIN blocks b ON b.id = f.block_id
+                 JOIN pages p ON p.id = b.page_id
+                 WHERE f.content MATCH ?1
+                 ORDER BY b.updated_at DESC LIMIT ?2",
+            )?;
+            stmt.query_map(params![match_q, limit], |r| {
+                Ok(BlockHit { id: r.get(0)?, content: r.get(1)?, page_name: r.get(2)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        }
+    };
     Ok(SearchResults { pages, blocks })
+}
+
+/// FTS5 query: each word as a quoted prefix, combined with AND.
+/// Letters and digits only, so the query cannot change the match syntax.
+fn fts_query(q: &str) -> Option<String> {
+    let parts: Vec<String> = q
+        .split_whitespace()
+        .filter_map(|w| {
+            let bare: String = w.chars().filter(|c| c.is_alphanumeric()).collect();
+            if bare.is_empty() { None } else { Some(format!("\"{bare}\"*")) }
+        })
+        .collect();
+    if parts.is_empty() { None } else { Some(parts.join(" AND ")) }
 }
 
 pub fn get_block(conn: &Connection, id: &str) -> Result<Option<BlockHit>> {

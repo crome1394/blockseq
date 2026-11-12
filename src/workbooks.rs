@@ -24,6 +24,8 @@ pub struct Workbook {
     pub id: String,
     pub dir: PathBuf,
     pub db: Mutex<Connection>,
+    /// Reads run here, beside `db`, so a long query does not block a save.
+    reads: Mutex<Connection>,
     /// Set when the workbook's folder was renamed: requests still holding
     /// this handle keep using the database (same file), but must not write
     /// Markdown under the old folder name.
@@ -121,6 +123,11 @@ impl Workbook {
         self.retired.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// The read connection. Held only for the query that uses it.
+    pub fn read(&self) -> parking_lot::MutexGuard<'_, Connection> {
+        self.reads.lock()
+    }
+
     pub fn assets_dir(&self) -> PathBuf {
         self.dir.join("assets")
     }
@@ -150,16 +157,26 @@ impl Workbook {
     }
 
     /// Rewrites every Markdown mirror file from the database.
+    /// The writer lock is taken one page at a time, so a save is not stuck
+    /// behind the whole graph.
     pub fn rebuild_mirror(&self) -> Result<usize> {
-        let conn = self.db.lock();
-        let pages = db::list_pages(&conn)?;
-        for summary in &pages {
-            if let Some(page) = db::get_page(&conn, &summary.name)? {
+        let names: Vec<String> = {
+            let conn = self.db.lock();
+            db::list_pages(&conn)?.into_iter().map(|p| p.name).collect()
+        };
+        let mut n = 0;
+        for name in &names {
+            if self.is_retired() {
+                break;
+            }
+            let conn = self.db.lock();
+            if let Some(page) = db::get_page(&conn, name)? {
                 let blocks = db::get_blocks(&conn, &page.id)?;
                 self.write_mirror(&page, &blocks);
+                n += 1;
             }
         }
-        Ok(pages.len())
+        Ok(n)
     }
 }
 
@@ -377,7 +394,9 @@ impl Registry {
             return Ok(None);
         }
         let import = Self::kind(&dir) == "logseq";
-        let conn = db::open(&dir.join(DB_FILE)).with_context(|| format!("opening workbook {id}"))?;
+        let db_path = dir.join(DB_FILE);
+        let conn = db::open(&db_path).with_context(|| format!("opening workbook {id}"))?;
+        let reads = db::open_read(&db_path).with_context(|| format!("opening workbook {id} for reading"))?;
         let integrity = db::quick_check(&conn);
         if integrity == "ok" {
             tracing::info!("workbook {id}: database check ok");
@@ -389,14 +408,25 @@ impl Registry {
         if pruned > 0 {
             tracing::info!("workbook {id}: removed {pruned} empty, unlinked pages");
         }
-        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: std::sync::atomic::AtomicBool::default(), integrity, usage_cache: Mutex::new(None) });
+        let wb = std::sync::Arc::new(Workbook {
+            id: id.to_string(),
+            dir,
+            db: Mutex::new(conn),
+            reads: Mutex::new(reads),
+            retired: std::sync::atomic::AtomicBool::default(),
+            integrity,
+            usage_cache: Mutex::new(None),
+        });
         if import {
             let report = import_logseq(&wb, task_words)?;
             tracing::info!("workbook {id}: imported Logseq graph ({report})");
         }
+        // Publish before the mirror rewrite so other requests are not stuck
+        // on this gate for the whole graph. The lock is dropped first.
+        self.open.lock().insert(id.to_string(), wb.clone());
+        drop(_opening);
         let count = wb.rebuild_mirror()?;
         tracing::info!("workbook {id}: {count} pages in {}", wb.dir.display());
-        self.open.lock().insert(id.to_string(), wb.clone());
         Ok(Some(wb))
     }
 

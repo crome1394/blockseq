@@ -190,7 +190,7 @@ pub struct NameQuery {
 
 pub async fn get_page(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
     blocking(move || {
-        let conn = wb.db.lock();
+        let conn = wb.read();
         let page = db::get_page(&conn, &q.name)?;
         let blocks = match &page {
             Some(p) => db::get_blocks(&conn, &p.id)?,
@@ -376,7 +376,7 @@ async fn read_json<T: serde::Serialize + Send + 'static>(
     wb: Arc<Workbook>,
     f: impl FnOnce(&rusqlite::Connection) -> anyhow::Result<T> + Send + 'static,
 ) -> ApiResult {
-    blocking(move || Ok(Json(f(&wb.db.lock())?).into_response())).await
+    blocking(move || Ok(Json(f(&wb.read())?).into_response())).await
 }
 
 pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
@@ -386,7 +386,7 @@ pub async fn list_pages(Wb(wb): Wb) -> ApiResult {
 /// Calendar days, favourites, last change, and the workbook's disk usage.
 pub async fn sidebar(Wb(wb): Wb) -> ApiResult {
     blocking(move || {
-        let side = db::sidebar(&wb.db.lock())?;
+        let side = db::sidebar(&wb.read())?;
         let mut usage = serde_json::to_value(wb.usage())?;
         usage["folder"] = json!(std::path::absolute(&wb.dir).unwrap_or_else(|_| wb.dir.clone()).display().to_string());
         Ok(Json(json!({
@@ -433,7 +433,7 @@ pub struct IdQuery {
 
 pub async fn get_block(Wb(wb): Wb, Query(q): Query<IdQuery>) -> ApiResult {
     blocking(move || {
-        Ok(match db::get_block(&wb.db.lock(), &q.id)? {
+        Ok(match db::get_block(&wb.read(), &q.id)? {
             Some(b) => Json(b).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
         })
@@ -502,7 +502,7 @@ pub async fn history(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
 
 pub async fn history_version(Wb(wb): Wb, Query(q): Query<HistoryId>) -> ApiResult {
     blocking(move || {
-        Ok(match db::history_version(&wb.db.lock(), q.id)? {
+        Ok(match db::history_version(&wb.read(), q.id)? {
             Some(v) => Json(v).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
         })
@@ -707,7 +707,7 @@ pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap)
 /// mention each one.
 pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
     let dir = std::path::absolute(wb.assets_dir()).unwrap_or_else(|_| wb.assets_dir());
-    let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.db.lock())?, assets::list(&wb.assets_dir())))).await?;
+    let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.read())?, assets::list(&wb.assets_dir())))).await?;
     let out: Vec<_> = list
         .into_iter()
         .map(|a| {
@@ -958,11 +958,13 @@ pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
     let tmp_db = s.root.join(format!(".export-{id}.db"));
     let tmp_zip = s.root.join(format!(".export-{id}.zip"));
     let config = s.root.join("config.json");
+    let db_path = wb.dir.join("blockseq.db");
     let (wb2, zip_path) = (wb.clone(), tmp_zip.clone());
     let made = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        // Hold the database only for the snapshot, not while zipping assets.
-        let snap = backup::snapshot(&wb2.db.lock(), &tmp_db);
-        let result = snap.and_then(|()| backup::write_zip(&wb2.id, &wb2.dir, &tmp_db, &config, &zip_path));
+        // A separate connection copies the database, so a save is not stuck
+        // behind the whole file. The zip is built after that copy finishes.
+        let result = backup::snapshot_file(&db_path, &tmp_db)
+            .and_then(|()| backup::write_zip(&wb2.id, &wb2.dir, &tmp_db, &config, &zip_path));
         let _ = std::fs::remove_file(&tmp_db);
         result
     })
@@ -1091,7 +1093,7 @@ fn health_report(s: &AppState) -> Response {
         .open_workbooks()
         .iter()
         .map(|wb| {
-            let answers = wb.db.lock().query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).is_ok();
+            let answers = wb.read().query_row("SELECT 1", [], |r| r.get::<_, i64>(0)).is_ok();
             ok &= answers && wb.integrity == "ok";
             json!({ "id": wb.id, "database": if answers { "ok" } else { "not answering" }, "integrity": wb.integrity })
         })
