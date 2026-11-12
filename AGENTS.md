@@ -15,7 +15,7 @@ features**.
 
 ## Layout
 
-- `src/` Rust server: `main.rs` (startup, router), `api.rs` (handlers),
+- `src/` Rust server: `main.rs` (startup, router), `api/` (handlers),
   `db.rs` (all SQL, schema, migrations), `md.rs` (Markdown import/export,
   link and tag parsing), `workbooks.rs` (workbook folders, Logseq import),
   `assets.rs` (uploads), `config.rs` (shared settings), `backup.rs`

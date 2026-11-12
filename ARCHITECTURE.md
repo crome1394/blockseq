@@ -10,7 +10,7 @@ in sync through autosave, versioned page saves and a live event stream.
 ┌───────────────────────────┐          ┌──────────────────────────────────┐
 │  web/  (ES modules)       │  HTTPS   │  blockseq (one Rust binary)      │
 │  app.js    router, views  │◄────────►│  axum router                     │
-│  editor.js outliner       │  Caddy   │   ├─ /api/*   JSON API (api.rs)  │
+│  editor.js outliner       │  Caddy   │   ├─ /api/*   JSON API (api/)    │
 │  render.js markdown→HTML  │ (reverse │   ├─ /api/events  SSE stream     │
 │  api.js    fetch wrapper  │  proxy)  │   └─ /*       embedded web/ files│
 └───────────────────────────┘          │  db.rs ── SQLite (blockseq.db)   │
@@ -23,7 +23,11 @@ in sync through autosave, versioned page saves and a live event stream.
 | Path | Purpose |
 |------|---------|
 | `src/main.rs` | Config from env, app state, router, optional password, static files, shutdown |
-| `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
+| `src/api/mod.rs` | JSON API: error codes (`ApiError`), the `Wb` workbook extractor, pages, blocks, search, history, health |
+| `src/api/events.rs` | Live updates (SSE), capped at 32 streams |
+| `src/api/files.rs` | Uploads (free-space reservation), serving assets, the full-path rules |
+| `src/api/settings.rs` | Workbooks and the shared settings (task statuses, encryption key) |
+| `src/api/backups.rs` | Download backup, restore (new workbook or into Main), before-restore zips |
 | `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import, rename (checkpoints and holds the open database while the folder moves; old handles are marked `retired` so they stop writing Markdown under the old name). Main's display name is `main_name` in `config.json` |
 | `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key). `load` errors on a damaged file (falls back to `config.json.bak`), `save` keeps the previous version as `.bak` and writes durably (`write_durable`: unique temp file, fsync, rename, fsync folder). All API changes go through `api::update_config` under the settings lock |
 | `src/auth.rs` | Optional password: browser sign-in page and sign-out, basic auth for other clients (SHA-256 compare) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; the full map drops the oldest client; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
