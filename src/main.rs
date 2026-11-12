@@ -7,6 +7,9 @@
 //!                      other workbooks in workbooks/<name>/, and config.json
 //!   BLOCKSEQ_PASSWORD  require this password via HTTP basic auth (optional)
 //!   BLOCKSEQ_MAX_UPLOAD_MB  largest file upload in MB (default 2048)
+//!   BLOCKSEQ_HOSTS     host names to serve, comma-separated (optional; IP
+//!                      addresses and localhost always work). Protects
+//!                      against DNS rebinding when no password is set.
 
 mod api;
 mod assets;
@@ -14,6 +17,7 @@ mod backup;
 mod config;
 mod crypto;
 mod db;
+mod guard;
 mod md;
 mod workbooks;
 
@@ -44,6 +48,8 @@ pub struct AppState {
     pub password: Option<String>,
     /// Largest upload accepted, in bytes (BLOCKSEQ_MAX_UPLOAD_MB).
     pub max_upload: u64,
+    /// Host names served (BLOCKSEQ_HOSTS); empty = any.
+    pub allowed_hosts: Vec<String>,
 }
 
 impl AppState {
@@ -186,6 +192,7 @@ async fn main() -> Result<()> {
         events: broadcast::channel(256).0,
         password,
         max_upload: max_upload_mb * 1024 * 1024,
+        allowed_hosts: guard::parse_hosts(&std::env::var("BLOCKSEQ_HOSTS").unwrap_or_default()),
     });
     // Open Main now, so a broken database is reported at startup.
     state
@@ -225,6 +232,8 @@ async fn main() -> Result<()> {
         .fallback(static_file)
         .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), require_password))
+        // Outermost: refuse cross-site writes and unknown host names first.
+        .layer(middleware::from_fn_with_state(state.clone(), guard::check))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&addr)
