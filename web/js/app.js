@@ -3,31 +3,34 @@
 import { el } from './dom.js';
 import { api, clientId, explain, invalidatePageNames, getPageNames, signingOut } from './api.js';
 import { signOut, showSignOut } from './signin.js';
+import { allPagesView } from './allpages.js';
+import { focusEditor, refreshTasks, toggleTasks } from './tasks-pane.js';
+import { loadWorkbooks, openWorkbookDialog, showWorkbookName, workbooksChanged } from './workbooks-ui.js';
 import { journalName, journalDay, formatTime } from './dates.js';
-import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
+import { esc, renderContent, COPY_ICON, CHECK_ICON } from './render.js';
 import { PageEditor, editors, activeEditor } from './editor.js';
 import { hydrateRefs, clearRefCache } from './refs.js';
-import { showMenu, showStatusPicker } from './menus.js';
-import { toast, updateStatus, setConnected, setLivePaused, openModal, closeModal, copyText, noteSaved, resetSaved } from './ui.js';
+import { showMenu } from './menus.js';
+import { toast, updateStatus, setConnected, setLivePaused, openModal, closeModal, copyText, noteSaved } from './ui.js';
 import { decorateCode } from './code.js';
 import { onSettingChange, getSetting, setSetting } from './settings.js';
 import { settingsForm } from './settings-ui.js';
-import { importDialog } from './backup-ui.js';
-import { historyDialog, deletedPagesDialog } from './history-ui.js';
+
+import { historyDialog } from './history-ui.js';
 import { Calendar } from './calendar.js';
-import { workbook, setWorkbook, withWb } from './workbook.js';
-import { loadStatuses, statusOf, withStatus, badgeHtml, taskTitle, nextStatus } from './tasks.js';
-import { ACTIONS, keyFor, comboOf, prettyKey, matches } from './keys.js';
-import { openPane, closePane, isPaneShowing, paneKind } from './pane.js';
+import { workbook, withWb } from './workbook.js';
+import { loadStatuses } from './tasks.js';
+import { ACTIONS, keyFor, comboOf, prettyKey } from './keys.js';
+import { closePane, paneKind } from './pane.js';
 import { openFilePane } from './pdfview.js';
 import { downloadImage } from './images.js';
 import { isUnlocked as cryptoIsUnlocked, lock as cryptoLock } from './crypto.js';
 import { unlockDialog } from './secure-ui.js';
 
-const main = document.getElementById('main');
+export const main = document.getElementById('main');
 
 // Sidebar calendar: picking a day opens that journal, creating it if needed.
-const calendar = new Calendar(document.getElementById('calendar'), async (date) => {
+export const calendar = new Calendar(document.getElementById('calendar'), async (date) => {
   const name = journalName(date);
   try { await api.ensurePage(name); } catch { /* offline: it's created on first save */ }
   invalidatePageNames();
@@ -39,22 +42,22 @@ function refreshCalendar() {
   calendarTimer = setTimeout(() => { calendar.refresh(); refreshFavorites(); }, 1000);
 }
 let view = null; // { refresh?() }
-let routeSeq = 0;
+export let routeSeq = 0;
 
-function pageHref(name) {
+export function pageHref(name) {
   return `#/page/${encodeURIComponent(name)}`;
 }
 
 // ---- routing ---------------------------------------------------------------
 
-async function settleSaves() {
+export async function settleSaves() {
   const until = Date.now() + 3000;
   while (Date.now() < until && [...editors].some((e) => e.saving || (e.dirty && !e.offline && !e.conflict))) {
     await new Promise((r) => setTimeout(r, 50));
   }
 }
 
-async function route() {
+export async function route() {
   const seq = ++routeSeq;
   for (const ed of [...editors]) if (!ed.disposed) ed.dispose();
   // Let pending saves land before loading pages they might belong to.
@@ -286,12 +289,11 @@ function journalNameDay(name) {
   return /^[A-Z][a-z]{2} \d{1,2}(st|nd|rd|th), \d{4}$/.test(name);
 }
 
-
 // ---- favorites ---------------------------------------------------------------
 
 const favBox = document.getElementById('favorites');
 let favTimer = null;
-function refreshFavorites(now = false) {
+export function refreshFavorites(now = false) {
   clearTimeout(favTimer);
   favTimer = setTimeout(async () => {
     if (!getSetting('favorites')) return;
@@ -327,131 +329,6 @@ function markActiveFavorite() {
   const hash = location.hash.slice(1);
   const name = hash.startsWith('/page/') ? decodeURIComponent(hash.slice(6).split('?')[0]).toLowerCase() : null;
   favBox.querySelectorAll('.fav').forEach((a) => a.classList.toggle('active', a.dataset.name === name));
-}
-
-// ---- all pages ---------------------------------------------------------------
-
-async function allPagesView(seq) {
-  const pages = await api.pages();
-  if (seq !== routeSeq) return;
-  const header = el('div', 'page-header');
-  header.append(el('h1', 'page-title', 'All pages'));
-  const deletedBtn = el('button', 'link-button', 'Recently deleted…');
-  deletedBtn.type = 'button';
-  deletedBtn.addEventListener('click', () => deletedPagesDialog());
-  header.append(deletedBtn);
-  const controls = el('div', 'list-controls');
-  const filter = el('input', 'filter');
-  filter.type = 'search';
-  filter.placeholder = 'Filter pages';
-  // Which pages to list; remembered per browser.
-  const SHOW = [['pages', 'Pages', 'Hide journals'], ['journals', 'Journals', 'Only journals'], ['starred', 'Starred', 'Only starred pages'], ['all', 'All', 'Everything']];
-  let show = getSetting('allPagesShow') || 'pages';
-  const showGroup = el('div', 'seg');
-  showGroup.setAttribute('role', 'group');
-  for (const [value, label, title] of SHOW) {
-    const b = el('button', 'seg-btn', label);
-    b.type = 'button';
-    b.title = title;
-    b.dataset.value = value;
-    b.addEventListener('click', () => { show = value; setSetting('allPagesShow', value); draw(); });
-    showGroup.append(b);
-  }
-  const keep = (p) => (show === 'pages' ? p.journal_day == null
-    : show === 'journals' ? p.journal_day != null
-      : show === 'starred' ? p.favorite : true);
-  const newBtn = el('button', 'primary', 'New page');
-  newBtn.addEventListener('click', () => {
-    const n = prompt('Page name');
-    if (n?.trim()) location.hash = pageHref(n.trim());
-  });
-  controls.append(filter, showGroup, newBtn);
-  const wrap = el('div', 'table-wrap');
-  const table = el('table', 'page-table');
-  const COLS = [['favorite', '★'], ['name', 'Page name'], ['tags', 'Tags'], ['words', 'Words'], ['created_at', 'Created at'], ['updated_at', 'Updated at']];
-  let sortKey = 'updated_at';
-  let sortDir = -1;
-  const thead = el('thead');
-  const headRow = el('tr');
-  for (const [key, label] of COLS) {
-    const th = el('th', `col-${key}`, label);
-    if (key !== 'tags') {
-      th.classList.add('sortable');
-      th.title = 'Sort';
-      th.addEventListener('click', () => {
-        if (sortKey === key) sortDir = -sortDir;
-        else { sortKey = key; sortDir = key === 'name' ? 1 : -1; }
-        if (key === 'favorite') th.title = 'Sort by favorites';
-        draw();
-      });
-    }
-    th.dataset.key = key;
-    headRow.append(th);
-  }
-  thead.append(headRow);
-  const tbody = el('tbody');
-  table.append(thead, tbody);
-  wrap.append(table);
-  const empty = el('p', 'muted');
-  main.replaceChildren(header, controls, wrap, empty);
-
-  const fullTime = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-  const draw = () => {
-    const q = filter.value.trim().toLowerCase();
-    showGroup.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.value === show));
-    const rows = pages.filter((p) => keep(p)
-      && (p.name.toLowerCase().includes(q) || p.tags.some((t) => t.toLowerCase().includes(q))));
-    rows.sort((a, b) => {
-      const x = a[sortKey];
-      const y = b[sortKey];
-      return (typeof x === 'string' ? x.localeCompare(y, undefined, { sensitivity: 'base' }) : Number(x) - Number(y)) * sortDir;
-    });
-    headRow.querySelectorAll('th').forEach((th) => {
-      th.classList.toggle('sorted', th.dataset.key === sortKey);
-      th.dataset.dir = th.dataset.key === sortKey ? (sortDir > 0 ? '▲' : '▼') : '';
-    });
-    tbody.replaceChildren(...rows.map((p) => {
-      const tr = el('tr');
-      const starCell = el('td', 'col-favorite');
-      const star = el('button', 'star-cell' + (p.favorite ? ' on' : ''), p.favorite ? '★' : '☆');
-      star.type = 'button';
-      star.title = p.favorite ? 'Remove from favorites' : 'Add to favorites';
-      star.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        p.favorite = !p.favorite;
-        const r = await api.setFavorite(p.name, p.favorite);
-        if (!r.ok) { p.favorite = !p.favorite; toast('Could not update favorites'); }
-        draw();
-        refreshFavorites(true);
-      });
-      starCell.append(star);
-      const name = el('td', 'col-name');
-      const link = el('a', '', p.name);
-      link.href = pageHref(p.name);
-      name.append(link);
-      const tags = el('td', 'col-tags');
-      for (const t of p.tags) {
-        const a = el('a', 'page-ref tag', `#${t}`);
-        a.href = pageHref(t);
-        a.style.setProperty('--tag-h', tagHue(t));
-        tags.append(a);
-      }
-      const created = el('td', 'col-created_at', formatTime(p.created_at));
-      created.title = fullTime(p.created_at);
-      const updated = el('td', 'col-updated_at', formatTime(p.updated_at));
-      updated.title = fullTime(p.updated_at);
-      const words = el('td', 'col-words', (p.words || 0).toLocaleString());
-      tr.append(starCell, name, tags, words, created, updated);
-      tr.addEventListener('click', (e) => { if (!e.target.closest('a')) location.hash = pageHref(p.name); });
-      return tr;
-    }));
-    empty.textContent = rows.length ? '' : q ? 'No matching pages.'
-      : show === 'starred' ? 'No starred pages yet. Click a ☆ to star one.'
-        : show === 'journals' ? 'No journals yet.' : 'No pages yet.';
-  };
-  filter.addEventListener('input', draw);
-  draw();
-  filter.focus();
 }
 
 // ---- search ------------------------------------------------------------------
@@ -535,7 +412,7 @@ function refreshView() {
   refreshTimer = setTimeout(() => view?.refresh?.(), 300);
 }
 
-function resyncAll() {
+export function resyncAll() {
   refreshCalendar();
   clearRefCache();
   invalidatePageNames();
@@ -736,271 +613,9 @@ signOutButton.addEventListener('click', () => signOut());
 showSignOut(signOutButton);
 document.getElementById('tasks-toggle').addEventListener('click', () => toggleTasks());
 
-// ---- workbooks ----------------------------------------------------------------
-
-const wbButton = document.getElementById('workbook-switch');
-let workbookList = [];
-
-function workbookName(id) {
-  return workbookList.find((w) => w.id === id)?.name || (id === 'main' ? 'Main' : id);
-}
-
-function showWorkbookName() {
-  wbButton.querySelector('.wb-name').textContent = workbookName(workbook());
-  document.title = workbook() === 'main' ? 'Blockseq' : `${workbookName(workbook())} · Blockseq`;
-}
-
-async function loadWorkbooks() {
-  try { workbookList = await api.workbooks(); } catch { /* offline */ }
-  // A workbook removed from the server: fall back to Main.
-  if (workbookList.length && !workbookList.some((w) => w.id === workbook())) setWorkbook('main');
-  showWorkbookName();
-  return workbookList;
-}
-
-async function switchWorkbook(id) {
-  closeModal();
-  if (id === workbook()) return;
-  for (const ed of [...editors]) if (!ed.disposed) ed.dispose();
-  await settleSaves(); // finish saving into the old workbook first
-  setWorkbook(id);
-  resetSaved();
-  clearRefCache();
-  invalidatePageNames();
-  showWorkbookName();
-  calendar.refresh();
-  refreshFavorites(true);
-  closePane();
-  toast(`Opened workbook ${workbookName(id)}`);
-  if (location.hash === '#/journals') route(); else location.hash = '#/journals';
-}
-
-function newWorkbookDialog() {
-  const body = el('div', 'dialog-form');
-  const label = el('label', 'field');
-  label.append(el('span', '', 'Name'));
-  const input = el('input');
-  input.placeholder = 'e.g. Home Lab';
-  input.maxLength = 64;
-  label.append(input);
-  const err = el('p', 'error small');
-  body.append(label, el('p', 'muted small', 'A workbook is a separate set of pages, journals and assets, stored in its own folder on the server.'), err);
-  const create = async () => {
-    const name = input.value.trim();
-    if (!name) return false;
-    const r = await api.createWorkbook(name);
-    if (!r.ok) { err.textContent = explain(r.data, 'Could not create it'); return false; }
-    await loadWorkbooks();
-    switchWorkbook(r.data.id);
-  };
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
-  openModal('New workbook', body, [['Cancel'], ['Create', () => { create(); return false; }, 'primary']]);
-  input.focus();
-}
-
-// Icons for the workbook menu's buttons.
-const wbIcon = (d) => `<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-const WB_ICONS = {
-  rename: wbIcon('M12.5 4.5l3 3L7 16H4v-3zM11 6l3 3'),
-  delete: wbIcon('M4 6h12M8 6V4h4v2M6 6l.8 10h6.4L14 6M8.5 9v4.5M11.5 9v4.5'),
-  import: wbIcon('M10 3v9M6.5 8.5L10 12l3.5-3.5M4 13v3h12v-3'),
-  create: wbIcon('M10 4v12M4 10h12'),
-  open: wbIcon('M3 6.5V15a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-6L8.5 5H4a1 1 0 0 0-1 1.5z'),
-  close: wbIcon('M5.5 5.5l9 9M14.5 5.5l-9 9'),
-};
-
-// The workbook menu: pick a workbook, then Open or Rename it.
-async function openWorkbookDialog(selectId = workbook()) {
-  const body = el('div', 'dialog-form');
-  const list = el('div', 'journal-pick');
-  list.setAttribute('role', 'listbox');
-  list.tabIndex = 0;
-  body.append(list, el('p', 'muted small',
-    'To add a workbook from another place, copy its folder into workbooks/ in the server\'s data folder (e.g. /var/lib/blockseq/workbooks/My Notes), or use Import backup. A Logseq graph folder (with pages/ and journals/) is imported the first time you open it; its original files are kept in logseq-original/.'));
-  let selected = selectId;
-  const open = () => switchWorkbook(selected);
-  openModal('Workbooks', body, [
-    ['Rename…', () => { renameWorkbookDialog(selected); return false; }, '', WB_ICONS.rename],
-    ['Delete…', () => { deleteWorkbookDialog(selected); return false; }, 'danger', WB_ICONS.delete],
-    ['Import backup…', () => { importDialog(); return false; }, '', WB_ICONS.import],
-    ['New workbook…', () => { newWorkbookDialog(); return false; }, '', WB_ICONS.create],
-    ['Open', () => { open(); return false; }, 'primary', WB_ICONS.open],
-    ['Close', undefined, '', WB_ICONS.close],
-  ]);
-  list.append(el('p', 'muted', 'Loading…'));
-  await loadWorkbooks();
-  if (!workbookList.some((w) => w.id === selected)) selected = workbook();
-  const paint = () => list.querySelectorAll('.pick-row').forEach((r) => {
-    const on = r.dataset.id === selected;
-    r.classList.toggle('selected', on);
-    r.setAttribute('aria-selected', on);
-  });
-  list.replaceChildren(...workbookList.map((w) => {
-    const row = el('button', 'pick-row' + (w.id === workbook() ? ' active' : ''));
-    row.type = 'button';
-    row.dataset.id = w.id;
-    row.setAttribute('role', 'option');
-    const note = w.id === workbook() ? 'open now' : w.kind === 'logseq' ? 'Logseq graph · imports on open' : w.kind === 'empty' ? 'new' : '';
-    const label = el('span', 'wb-label-col');
-    const where = w.absolute || (w.path === '.' ? 'data folder' : w.path);
-    label.append(el('span', 'wb-row-name', w.name), el('span', 'wb-path', where));
-    label.lastChild.title = w.absolute
-      ? 'Where this workbook is stored on the server'
-      : 'Where this workbook is stored, relative to the data folder';
-    row.append(label, el('span', 'muted small', note));
-    // Click selects, double-click (or Enter) opens. The server opens (and,
-    // for a Logseq graph, imports) it on first use.
-    row.addEventListener('click', () => { selected = w.id; paint(); });
-    row.addEventListener('dblclick', open);
-    return row;
-  }));
-  paint();
-  list.addEventListener('keydown', (e) => {
-    const i = workbookList.findIndex((w) => w.id === selected);
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const next = workbookList[Math.max(0, Math.min(workbookList.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
-      selected = next.id;
-      paint();
-      list.querySelector(`.pick-row[data-id="${CSS.escape(selected)}"]`)?.focus();
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      open();
-    } else if (e.key === 'F2') {
-      e.preventDefault();
-      renameWorkbookDialog(selected);
-    }
-  });
-  list.querySelector('.pick-row.selected')?.focus();
-}
-
-function deleteWorkbookDialog(id) {
-  const w = workbookList.find((x) => x.id === id);
-  if (!w) return;
-  if (id === 'main') {
-    toast("Main can't be deleted: it is the server's data folder itself");
-    return;
-  }
-  const body = el('div', 'dialog-form');
-  body.append(el('p', '', `Delete the workbook “${w.name}”: its pages, journals and files.`));
-  const parent = w.absolute
-    ? `${w.absolute.replace(/[/\\][^/\\]*$/, '')}/.trash/`
-    : `${w.path.includes('/') ? w.path.replace(/[/\\][^/\\]*$/, '') : 'workbooks'}/.trash/ inside the data folder`;
-  body.append(el('p', 'muted small', `Nothing is erased: the folder is moved to ${parent}, where it can be moved back (or removed for good). Consider downloading a backup first (Settings → Backup).`));
-  const label = el('label', 'field');
-  label.append(el('span', '', `Type the name to confirm: ${w.name}`));
-  const input = el('input');
-  input.autocomplete = 'off';
-  label.append(input);
-  const err = el('p', 'error small');
-  body.append(label, err);
-  const go = async () => {
-    if (input.value.trim() !== w.name) { err.textContent = 'The name doesn’t match'; return; }
-    const r = await api.deleteWorkbook(id);
-    if (!r.ok) { err.textContent = explain(r.data, 'Could not delete it'); return; }
-    toast(`Deleted ${w.name} (moved to the server's trash folder)`);
-    await workbookGone(id);
-    openWorkbookDialog();
-  };
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
-  const box = openModal(`Delete ${w.name}?`, body, [['Cancel', () => { openWorkbookDialog(id); return false; }], ['Delete workbook', () => { go(); return false; }, 'danger']]);
-  box.classList.add('no-overlay-close');
-  input.focus();
-}
-
-// A workbook was deleted (here or on another device): leave it if open.
-async function workbookGone(id) {
-  if (workbook() === id) {
-    await switchWorkbook('main');
-  }
-  await loadWorkbooks();
-}
-
-function renameWorkbookDialog(id) {
-  const w = workbookList.find((x) => x.id === id);
-  if (!w) return;
-  const body = el('div', 'dialog-form');
-  const label = el('label', 'field');
-  label.append(el('span', '', 'New name'));
-  const input = el('input');
-  input.value = w.name;
-  input.maxLength = 64;
-  label.append(input);
-  const err = el('p', 'error small');
-  body.append(label, el('p', 'muted small', id === 'main'
-    ? 'Main is the server\'s data folder itself, so only the name shown here changes.'
-    : `Renames the folder workbooks/${id} on the server. Other devices that have it open follow the new name.`), err);
-  const save = async () => {
-    const to = input.value.trim();
-    if (!to || to === w.name) { openWorkbookDialog(id); return; }
-    const r = await api.renameWorkbook(id, to);
-    if (!r.ok) { err.textContent = explain(r.data, 'Could not rename it'); return; }
-    renamed(id, r.data.id);
-    toast(`Renamed to ${r.data.name}`);
-    openWorkbookDialog(r.data.id);
-  };
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
-  openModal(`Rename ${w.name}`, body, [['Cancel', () => { openWorkbookDialog(id); return false; }], ['Rename', () => { save(); return false; }, 'primary']]);
-  input.select();
-}
-
-// A workbook's id changed (renamed here or on another device).
-async function renamed(from, to) {
-  if (workbook() === from) setWorkbook(to);
-  await loadWorkbooks();
-}
-
-async function workbooksChanged(ev) {
-  if (ev.renamed) await renamed(ev.renamed.from, ev.renamed.to);
-  else if (ev.deleted) await workbookGone(ev.deleted);
-  else await loadWorkbooks();
-}
-
-wbButton.addEventListener('click', () => openWorkbookDialog());
-// A backup was just restored (backup-ui.js).
-document.addEventListener('blockseq:open-workbook', async (e) => {
-  await loadWorkbooks();
-  switchWorkbook(e.detail.id);
-});
-// Pages were rewritten by this tab outside an editor (re-encryption).
-document.addEventListener('blockseq:resync', () => resyncAll());
-// The calendar loads every page; the newest change is the "last saved" time.
-document.addEventListener('blockseq:last-change', (e) => {
-  noteSaved(e.detail.at);
-  showUsage(e.detail.usage);
-});
-
-// Header: how much space the workbook takes on the server.
-function showUsage(u) {
-  const box = document.getElementById('usage');
-  if (!box || !u) return;
-  box.hidden = false;
-  box.querySelector('.usage-value').textContent = formatSize(u.total);
-  const where = u.absolute || (u.folder && u.folder !== '.' ? u.folder : '');
-  box.title = `${workbookName(workbook())} uses ${formatSize(u.total)} on the server`
-    + `${where ? ` (${where})` : ''}:\n`
-    + `• assets/ (uploaded files): ${formatSize(u.files)}\n`
-    + `• database, with page history: ${formatSize(u.database)}\n`
-    + `• Markdown copies and other: ${formatSize(u.other)}`;
-}
-
-// Embedded X posts report their height from inside their frame.
-window.addEventListener('message', (e) => {
-  if (e.origin !== 'https://platform.twitter.com') return;
-  let data = e.data;
-  if (typeof data === 'string') { try { data = JSON.parse(data); } catch { return; } }
-  const msg = data?.['twttr.embed'];
-  if (msg?.method !== 'twttr.private.resize') return;
-  const height = Number(msg.params?.[0]?.height);
-  if (!(height > 0)) return;
-  for (const frame of document.querySelectorAll('iframe.tweet-frame')) {
-    if (frame.contentWindow === e.source) frame.style.height = `${Math.ceil(height)}px`;
-  }
-});
-
 // ---- assets --------------------------------------------------------------------
 
-function formatSize(n) {
+export function formatSize(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -1102,177 +717,6 @@ async function assetsView(seq) {
   unusedBox.addEventListener('change', draw);
   draw();
   view = { refresh: () => { if (location.hash === '#/assets') route(); } };
-}
-
-// ---- tasks pane ------------------------------------------------------------------
-
-let tasksTimer = null;
-function refreshTasks() {
-  if (!isPaneShowing('tasks')) return;
-  clearTimeout(tasksTimer);
-  tasksTimer = setTimeout(renderTasks, 300);
-}
-
-// The shortcut (t) opens the list with the keyboard in it; if the list is
-// already open but you're elsewhere, it moves the keyboard there instead.
-function toggleTasks({ fromKey = false } = {}) {
-  if (isPaneShowing('tasks')) {
-    const body = document.querySelector('.tasks-pane');
-    if (fromKey && body && !body.contains(document.activeElement)) { focusTasks(); return; }
-    closePane();
-    return;
-  }
-  const body = el('div', 'tasks-pane');
-  openPane({ kind: 'tasks', title: 'Tasks', body });
-  renderTasks({ focus: true });
-}
-
-let taskFocusId = null; // the task row the keyboard is on
-let taskFocusIndex = 0; // its position, for when that task leaves the list
-let lastTaskOrder = []; // task ids as last shown (to keep a lingering task in place)
-
-function focusTasks() {
-  const list = document.querySelector('.tasks-pane .task-list');
-  if (!list) return;
-  const rows = [...list.querySelectorAll('.task-row')];
-  const row = rows.find((r) => r.dataset.id === taskFocusId) || rows[Math.min(taskFocusIndex, rows.length - 1)] || list;
-  row.focus();
-}
-
-// "Go to the editor": the page or journal you were working in.
-function focusEditor() {
-  const live = [...editors].filter((ed) => !ed.disposed && ed.container.isConnected);
-  const ed = live.includes(activeEditor()) ? activeEditor() : live[0];
-  if (ed) ed.focusForKeyboard();
-  else toast('No page open to edit');
-}
-
-// A task changed from the list stays visible for a few seconds even if it no
-// longer matches (no status, or done while completed ones are hidden), so
-// cycling with Space / Ctrl+Enter can carry on: … → Cancelled → no status →
-// Backlog → …. Every change restarts the delay.
-const LINGER_MS = 6000;
-const lingering = new Map(); // task id → { task, until }
-let lingerTimer = null;
-
-async function setTaskStatus(t, word) {
-  const content = withStatus(t.content, word);
-  taskFocusId = t.id;
-  lingering.set(t.id, { task: { ...t, content, st: statusOf(content) }, until: Date.now() + LINGER_MS });
-  clearTimeout(lingerTimer);
-  lingerTimer = setTimeout(() => renderTasks(), LINGER_MS + 100);
-  const r = await api.putBlock(t.id, content, t.content);
-  if (!r.ok) lingering.delete(t.id);
-  // The server tags the change as this tab's own, so the live-update stream
-  // won't tell this tab's editor; tell it here, or its next save would
-  // conflict with the change just made.
-  if (r.ok) {
-    for (const ed of editors) if (ed.lower === t.page_name.toLowerCase()) ed.remoteChanged(r.data.page.version);
-  }
-  if (r.status === 409) toast('That task was changed elsewhere; the list is refreshed, try again');
-  else if (!r.ok) toast(explain(r.data, 'Could not change the status'));
-  await renderTasks({ focus: true });
-}
-
-async function renderTasks({ focus = false } = {}) {
-  const body = document.querySelector('.tasks-pane');
-  if (!body) return;
-  const keepFocus = focus || body.contains(document.activeElement);
-  let tasks;
-  try { tasks = await api.tasks(); } catch (e) { body.replaceChildren(el('p', 'error', e.message)); return; }
-  const showDone = !!getSetting('tasksShowDone');
-  const controls = el('div', 'tasks-controls');
-  const label = el('label', 'check');
-  const box = el('input');
-  box.type = 'checkbox';
-  box.checked = showDone;
-  box.addEventListener('change', () => { setSetting('tasksShowDone', box.checked); renderTasks(); });
-  label.append(box, ' Show completed');
-  const items = tasks.map((t) => ({ ...t, st: statusOf(t.content) })).filter((t) => t.st);
-  const open = items.filter((t) => !t.st.done).length;
-  // Recently changed tasks: shown even if filtered out; a task that lost its
-  // status (so the server no longer lists it) goes back where it was.
-  const now = Date.now();
-  for (const [id, l] of lingering) if (l.until < now) lingering.delete(id);
-  for (const [id, l] of lingering) {
-    const at = items.findIndex((t) => t.id === id);
-    if (at !== -1) { items[at].keep = true; continue; }
-    const before = lastTaskOrder.slice(0, Math.max(0, lastTaskOrder.indexOf(id))).reverse().find((x) => items.some((t) => t.id === x));
-    const pos = before ? items.findIndex((t) => t.id === before) + 1 : items.findIndex((t) => t.page_name === l.task.page_name);
-    items.splice(pos < 0 ? items.length : pos, 0, { ...l.task, keep: true });
-  }
-  controls.append(el('span', 'muted small', `${open} open`), label);
-  const list = el('div', 'task-list');
-  list.tabIndex = -1;
-  list.setAttribute('role', 'listbox');
-  list.setAttribute('aria-label', 'Tasks');
-  const byId = new Map();
-  let lastPage = null;
-  const shown = [];
-  for (const t of items) {
-    if (t.st?.done && !showDone && !t.keep) continue;
-    shown.push(t.id);
-    if (t.page_name !== lastPage) {
-      const h = el('a', 'task-page', t.page_name);
-      h.href = pageHref(t.page_name);
-      list.append(h);
-      lastPage = t.page_name;
-    }
-    const row = el('div', 'task-row' + (t.st?.done ? ' done' : '') + (t.keep && (!t.st || (t.st.done && !showDone)) ? ' lingering' : ''));
-    const badge = t.st ? badgeHtml(t.st) : '<button type="button" class="status-badge no-status" title="Change status">No status</button>';
-    row.innerHTML = `${badge}<span class="task-text">${inline(taskTitle(t.content))}</span>`;
-    row.tabIndex = -1;
-    row.dataset.id = t.id;
-    row.setAttribute('role', 'option');
-    byId.set(t.id, t);
-    row.addEventListener('focus', () => {
-      taskFocusId = t.id;
-      taskFocusIndex = [...list.querySelectorAll('.task-row')].indexOf(row);
-    });
-    row.querySelector('.status-badge').addEventListener('click', (e) => {
-      e.stopPropagation();
-      taskFocusId = t.id;
-      showStatusPicker(e.clientX, e.clientY, t.st?.word, (word) => setTaskStatus(t, word));
-    });
-    row.addEventListener('click', (e) => {
-      if (e.target.closest('a')) return;
-      location.hash = `${pageHref(t.page_name)}?b=${t.id}`;
-    });
-    list.append(row);
-  }
-  if (!list.children.length) list.append(el('p', 'muted', items.length ? 'No open tasks.' : 'No tasks yet. Start a block with TODO (or press Ctrl+Enter in a block).'));
-
-  // Keyboard: ↑/↓ (j/k) move, Space or Ctrl+Enter next status, s or
-  // Ctrl+Shift+Enter choose one, Enter opens the task in the editor.
-  list.addEventListener('keydown', (e) => {
-    const rows = [...list.querySelectorAll('.task-row')];
-    const i = rows.indexOf(document.activeElement);
-    if (!rows.length) return;
-    const go = (j) => { e.preventDefault(); rows[Math.max(0, Math.min(rows.length - 1, j))].focus(); };
-    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
-    if ((e.key === 'ArrowDown' || (plain && e.key === 'j'))) return go(i + 1);
-    if ((e.key === 'ArrowUp' || (plain && e.key === 'k'))) return go(i < 0 ? 0 : i - 1);
-    if (e.key === 'Home') return go(0);
-    if (e.key === 'End') return go(rows.length - 1);
-    if (i < 0) return;
-    const t = byId.get(rows[i].dataset.id);
-    if (matches(e, 'statusPicker') || (plain && e.key === 's')) {
-      e.preventDefault();
-      const r = rows[i].querySelector('.status-badge').getBoundingClientRect();
-      showStatusPicker(r.left, r.bottom, t.st?.word, (word) => setTaskStatus(t, word));
-    } else if (matches(e, 'cycleStatus') || (plain && e.key === ' ')) {
-      e.preventDefault();
-      setTaskStatus(t, nextStatus(t.st?.word));
-    } else if (plain && e.key === 'Enter') {
-      e.preventDefault();
-      location.hash = `${pageHref(t.page_name)}?b=${t.id}&edit=1`;
-    }
-  });
-  const hint = el('div', 'tasks-keys muted small');
-  hint.textContent = `↑ ↓ move · Space next status · s choose · Enter edit · ${prettyKey(keyFor('focusEditor'))} editor · Esc close`;
-  body.replaceChildren(controls, list, hint);
-  lastTaskOrder = shown;
-  if (keepFocus) focusTasks();
 }
 
 // ---- statuses --------------------------------------------------------------------

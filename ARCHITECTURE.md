@@ -43,6 +43,9 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/assets.rs` | Image and PDF uploads: type detection from file bytes, safe names, saving, listing |
 | `web/index.html`, `web/app.css` | Page shell and styles (light/dark via `prefers-color-scheme`) |
 | `web/js/app.js` | Hash router, views (journals, page, all pages), search box, live updates, unload handling |
+| `web/js/workbooks-ui.js` | Workbook menu and dialogs, the disk-usage figure |
+| `web/js/tasks-pane.js` | The tasks pane and its keyboard control |
+| `web/js/allpages.js` | The All pages table |
 | `web/js/editor.js` | `PageEditor` outliner: the block tree, rendering, editing keys, selection, undo |
 | `web/js/secrets.js` | `#Encrypted` blocks in the editor (sealing, opening, locked display), installed on `PageEditor` |
 | `web/js/codeblocks.js` | Editing a code block in place, installed on `PageEditor` |
