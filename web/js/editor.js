@@ -6,7 +6,7 @@
 import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
 import {
   renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
-  isVideoUrl,
+  isVideoUrl, mathSpans,
 } from './render.js';
 import {
   imageFiles, uploadImage, pickImages, imageAt, withAlign, withMeta, withoutImage, withoutFileLink,
@@ -18,6 +18,7 @@ import { openPdfPane, openFilePane } from './pdfview.js';
 import { ENCRYPTED_TAG, isUnlocked, available as cryptoAvailable, encryptText, decryptText } from './crypto.js';
 import { unlockDialog } from './secure-ui.js';
 import { rekeyDialog } from './backup-ui.js';
+import { openMathBuilder } from './mathbuilder.js';
 import { journalName } from './dates.js';
 import { toast, copyText, updateStatus, openModal } from './ui.js';
 import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
@@ -28,6 +29,18 @@ export const editors = new Set();
 const pad2 = (n) => String(n).padStart(2, '0');
 const timeNow = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const timestamp = () => `[[${journalName(new Date())}]] ${timeNow()}`;
+
+// Wraps LaTeX from the builder in delimiters, keeping the style an edited
+// formula already used (\[ \] or $$ $$).
+function mathSource(tex, display, old) {
+  if (display) {
+    const multi = tex.includes('\n');
+    if (old?.delim === 'tex') return multi ? `\\[\n${tex}\n\\]` : `\\[${tex}\\]`;
+    return multi ? `$$\n${tex}\n$$` : `$$${tex}$$`;
+  }
+  const one = tex.replace(/\s*\n\s*/g, ' ');
+  return old?.delim === 'tex' ? `\\(${one}\\)` : `$${one}$`;
+}
 
 const SAVE_DELAY = 600;
 const HISTORY_LIMIT = 200;
@@ -686,6 +699,17 @@ export class PageEditor {
     }
     if (this.sel) this.clearSelection();
     if (t.closest('.code-editor')) return; // the code editor handles its own clicks
+    // Clicking a formula opens it in the maths builder.
+    const math = t.closest('math.math');
+    if (math && this.editing !== node && !math.closest('.block-ref')) {
+      const own = [...e.currentTarget.querySelectorAll('math.math')].filter((x) => !x.closest('.block-ref'));
+      const spans = mathSpans(node.content);
+      if (spans.length === own.length) {
+        e.preventDefault();
+        this.openMath(node, spans[own.indexOf(math)]);
+        return;
+      }
+    }
     if (t.closest('a') || t.closest('.code-copy')) return; // links navigate (hash router / new tab)
     const pre = t.closest('pre.code');
     if (pre && this.editing !== node) {
@@ -1383,6 +1407,28 @@ export class PageEditor {
     }
   }
 
+  // Opens the maths builder for an existing formula (span from mathSpans),
+  // or for a new one at `at` (then editing resumes after it).
+  openMath(node, span, at = null) {
+    openMathBuilder({
+      tex: span ? span.tex.trim() : '',
+      display: span ? span.display : true,
+      editing: !!span,
+      onInsert: (tex, display) => {
+        const text = mathSource(tex, display, span);
+        const pos = at ?? node.content.length;
+        const [start, end] = span ? [span.start, span.end] : [pos, pos];
+        this.beginOp();
+        const value = node.content.slice(0, start) + text + node.content.slice(end);
+        if (this.editing === node) this.applyValue(node, value, start + text.length);
+        else {
+          this.applyValue(node, value);
+          if (at !== null) this.edit(node, start + text.length);
+        }
+      },
+    });
+  }
+
   // Adds "[[Nov 11th, 2026]] 14:32": at the cursor while editing, otherwise at
   // the end of the first line (before any tags, so they stay on the right).
   addTimestamp(node) {
@@ -1991,7 +2037,11 @@ function runSlash(editor, node, ta, cmd, at) {
     case 'today': return editor.replaceText(node, ta, at, at, day(0));
     case 'time': return editor.replaceText(node, ta, at, at, timeNow());
     case 'timestamp': return editor.replaceText(node, ta, at, at, timestamp());
-    case 'math': return editor.replaceText(node, ta, at, at, '$$$$', 2);
+    case 'math': {
+      // Inside an existing formula: edit it; otherwise build a new one here.
+      const span = mathSpans(ta.value).find((m) => m.start < at && at < m.end);
+      return editor.openMath(node, span || null, span ? null : at);
+    }
     case 'tomorrow': return editor.replaceText(node, ta, at, at, day(1));
     case 'yesterday': return editor.replaceText(node, ta, at, at, day(-1));
     default:

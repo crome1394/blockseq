@@ -1514,3 +1514,53 @@ math.math { font-family: 'STIX Two Math', 'Latin Modern Math', 'Cambria Math', m
 math.math[display="block"] { margin: 6px 0; padding: 2px 0; overflow-x: auto; overflow-y: hidden; max-width: 100%; }
 .math-display { overflow-x: auto; }
 math.math merror { color: var(--danger); background: none; border: 0; }
+
+/* Maths builder (mathbuilder.js) */
+.modal.mb-modal { width: min(1040px, 100%); }
+.mb-palette { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+.mb-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 4px; border-bottom: 1px solid var(--border); }
+.mb-tabs button { border: none; background: none; color: var(--muted); padding: 4px 10px; border-radius: 6px; font-size: 13px; }
+.mb-tabs button:hover { color: var(--text); }
+.mb-tabs button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.mb-items { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; max-height: 120px; overflow-y: auto; }
+.mb-item { min-width: 44px; min-height: 38px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); display: inline-flex; align-items: center; justify-content: center; }
+.mb-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+.mb-item math.math { font-size: 0.95em; pointer-events: none; }
+.mb-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.mb-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.mb-examples { max-width: 210px; }
+.mb-input { position: relative; }
+.mb-backdrop, .mb-code { font: 14px/1.5 var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); padding: 10px; margin: 0; border: 1px solid transparent; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; box-sizing: border-box; width: 100%; }
+.mb-backdrop { position: absolute; inset: 0; color: transparent; overflow: hidden; pointer-events: none; }
+.mb-code { position: relative; display: block; min-height: 150px; resize: vertical; background: transparent; color: var(--text); border-color: var(--border); }
+.mb-code:focus { outline: none; border-color: var(--accent); }
+.mb-input { background: var(--code-bg, var(--bg)); border-radius: 8px; }
+.mb-backdrop .mb-hl { background: color-mix(in srgb, var(--accent) 28%, transparent); border-radius: 3px; }
+.mb-backdrop .mb-err { text-decoration: wavy underline var(--danger); text-decoration-skip-ink: none; text-underline-offset: 3px; }
+.mb-backdrop .mb-tip { text-decoration: dotted underline var(--muted); text-underline-offset: 3px; }
+.mb-hint { margin: 4px 0 8px; }
+.mb-problems { display: flex; flex-direction: column; gap: 6px; }
+.mb-problem { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; border-radius: 6px; font-size: 13px; background: var(--hover, rgba(127,127,127,0.08)); }
+.mb-problem.error { border-left: 3px solid var(--danger); }
+.mb-problem.tip { border-left: 3px solid var(--accent); }
+.mb-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; flex: none; }
+.mb-problem.error .mb-badge { color: var(--danger); }
+.mb-problem.tip .mb-badge { color: var(--accent); }
+.mb-msg { flex: 1; cursor: pointer; }
+.mb-fix { flex: none; font-size: 12px; padding: 2px 8px; font-family: var(--mono, monospace); }
+.mb-preview { min-height: 120px; display: flex; align-items: center; justify-content: center; padding: 14px; border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; font-size: 1.35em; }
+.mb-preview.inline-mode { justify-content: flex-start; }
+.mb-preview [data-s] { cursor: pointer; border-radius: 3px; }
+.mb-preview .mb-hl { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.mb-explain { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13.5px; }
+.mb-explain-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.mb-explain-head code { font-size: 12.5px; }
+.mb-explain p { margin: 6px 0 0; }
+.mb-used { margin-top: 10px; }
+.mb-used-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.mb-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.mb-chip { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.mb-chip:hover { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 720px) {
+  .mb-main { grid-template-columns: 1fr; }
+}

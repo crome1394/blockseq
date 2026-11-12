@@ -324,8 +324,7 @@ the side pane, grouped by page. Tick *Show completed* to include finished ones.
 Click a task to jump to it, or its badge to change its status.
 
 **Maths (LaTeX):** `\[ … \]` or `$$ … $$` for a centred formula (it may span
-several lines), `\( … \)` or `$ … $` inside a sentence; `/math` inserts
-`$$$$`. Example:
+several lines), `\( … \)` or `$ … $` inside a sentence. Example:
 `\[\text{Percentage Change} = \frac{\text{New Value} - \text{Old Value}}{\text{Old Value}} \times 100\]`.
 It is drawn by the browser's built-in MathML, converted by Blockseq's own
 `math.js`: fractions, roots, sub/superscripts, Greek letters, operators and
@@ -333,6 +332,26 @@ arrows, `\text`, `\sum`/`\int`/`\lim` with limits, `\left…\right`,
 accents, `\mathbb` and friends, and `matrix`/`pmatrix`/`bmatrix`/`cases`/
 `aligned` environments. Unknown commands show in red. A single `$` needs text
 right inside it, so prices like "$5 and $10" stay plain text.
+
+**Maths builder:** `/math` (or clicking any drawn formula) opens a builder that
+writes LaTeX and teaches it as you go:
+
+- A palette (structures, operators, relations, Greek, layouts, letters). Each
+  button shows the LaTeX it inserts; empty `{}` slots are filled in order with
+  Tab. Select some code first and it goes into the first slot (select `a+b`,
+  click the fraction: `\frac{a+b}{}`).
+- A live preview. Point at any part of the drawn formula to highlight the code
+  that made it and get a plain-words explanation; moving the cursor in the
+  code highlights the matching part of the drawing. "In this formula" lists
+  each construct used, with its explanation.
+- Mistakes explained, with one-click fixes: misspelt commands (`\alpah` → did
+  you mean `\alpha`?), unbalanced braces, `\left` without `\right`,
+  unclosed or mismatched environments, a missing argument, `x^10` (only the 1
+  is raised), `e^ix`, `*` for multiplication, `%` (starts a comment), and `&`
+  outside a table.
+- Centred or in-a-sentence, and a few example formulas to start from.
+  `/math` with the cursor inside a formula edits it. Editing keeps the
+  delimiters the formula already used. Ctrl+Enter inserts.
 
 **Admonitions:** `/tip`, `/note`, `/important`, `/caution`, `/warning` and
 `/pinned` insert a box like Logseq's (stored as `#+BEGIN_TIP … #+END_TIP`).

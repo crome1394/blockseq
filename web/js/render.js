@@ -155,6 +155,44 @@ const INLINE = [
   '(?<![^\\s(])#(?<tag>[^\\s#,.!?;:()\\[\\]"\'`+][^\\s#,.!?;:()\\[\\]"\'`]*)',
 ].join('|');
 
+// Where the maths is in a block's raw text, in the order it is drawn:
+// [{start, end, tex, display, delim: 'dollar' | 'tex'}]. Skips code; looks
+// inside bold, italics, highlights and link text, like inline() does.
+export function mathSpans(src) {
+  const out = [];
+  const fences = [];
+  let m;
+  const fence = new RegExp(FENCE_SRC, 'gm');
+  while ((m = fence.exec(src))) fences.push([m.index, m.index + m[0].length]);
+  const inFence = (i) => fences.some(([a, b]) => i >= a && i < b);
+  const delim = (s) => (s.startsWith('\\') ? 'tex' : 'dollar');
+  const multi = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g;
+  while ((m = multi.exec(src))) {
+    if (m[0].includes('\n') && !inFence(m.index)) {
+      out.push({ start: m.index, end: m.index + m[0].length, tex: m[1] ?? m[2], display: true, delim: delim(m[0]) });
+    }
+  }
+  const covered = (i) => inFence(i) || out.some((x) => i >= x.start && i < x.end);
+  const scan = (text, offset) => {
+    const re = new RegExp(INLINE, 'g');
+    let k;
+    while ((k = re.exec(text))) {
+      const at = offset + k.index;
+      if (covered(at)) continue;
+      const g = k.groups;
+      const tex = g.mathD ?? g.mathD2 ?? g.mathI ?? g.mathI2;
+      if (tex !== undefined) {
+        out.push({ start: at, end: at + k[0].length, tex, display: g.mathD !== undefined || g.mathD2 !== undefined, delim: delim(k[0]) });
+        continue;
+      }
+      const inner = g.bold ?? g.strike ?? g.hl ?? g.it1 ?? g.it2 ?? g.linkText;
+      if (inner) scan(inner, at + k[0].indexOf(inner));
+    }
+  };
+  scan(src, 0);
+  return out.sort((a, b) => a.start - b.start);
+}
+
 // Hues that stay distinct from each other in light and dark themes.
 const TAG_HUES = [355, 22, 42, 95, 145, 172, 195, 215, 240, 265, 290, 322];
 
