@@ -73,7 +73,7 @@ pub struct WorkbookInfo {
     pub name: String,
     /// "blockseq" (ready), "logseq" (will be imported on open) or "empty".
     pub kind: &'static str,
-    /// The workbook's folder on the server.
+    /// The workbook's folder, relative to the data directory. Main is `.`.
     pub path: String,
 }
 
@@ -194,9 +194,18 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// A folder as shown in the workbook list (absolute when possible).
-fn shown(dir: &Path) -> String {
-    std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()).display().to_string()
+/// A folder relative to the data directory, with `/` separators. Main is `.`.
+/// An absolute path is not returned: the data directory stays off the API.
+pub fn relative_path(root: &Path, dir: &Path) -> String {
+    let Ok(rel) = dir.strip_prefix(root) else { return ".".into() };
+    let parts: Vec<String> = rel
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() { ".".into() } else { parts.join("/") }
 }
 
 /// Folder names allowed for workbooks: letters, digits, spaces, `-_.`,
@@ -250,7 +259,7 @@ impl Registry {
 
     /// Main first, then every folder in workbooks/, sorted by name.
     pub fn list(&self) -> Vec<WorkbookInfo> {
-        let mut out = vec![WorkbookInfo { id: MAIN.into(), name: "Main".into(), kind: "blockseq", path: shown(&self.root) }];
+        let mut out = vec![WorkbookInfo { id: MAIN.into(), name: "Main".into(), kind: "blockseq", path: relative_path(&self.root, &self.root) }];
         let mut others: Vec<WorkbookInfo> = std::fs::read_dir(self.root.join("workbooks"))
             .into_iter()
             .flatten()
@@ -258,7 +267,7 @@ impl Registry {
             .filter(|e| e.path().is_dir())
             .filter_map(|e| {
                 let id = e.file_name().to_str()?.to_string();
-                valid_id(&id).then(|| WorkbookInfo { name: id.clone(), kind: Self::kind(&e.path()), path: shown(&e.path()), id })
+                valid_id(&id).then(|| WorkbookInfo { name: id.clone(), kind: Self::kind(&e.path()), path: relative_path(&self.root, &e.path()), id })
             })
             .collect();
         others.sort_by_key(|w| w.name.to_lowercase());
@@ -277,7 +286,7 @@ impl Registry {
             bail!("a workbook called {name} already exists");
         }
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        Ok(WorkbookInfo { id: name.into(), name: name.into(), kind: "empty", path: shown(&dir) })
+        Ok(WorkbookInfo { id: name.into(), name: name.into(), kind: "empty", path: relative_path(&self.root, &dir) })
     }
 
     /// Renames a workbook's folder (not Main). An open workbook is closed
@@ -300,7 +309,7 @@ impl Registry {
             bail!("a workbook called {to} already exists");
         }
         self.move_closed(from, &src, &dst)?;
-        Ok(WorkbookInfo { id: to.into(), name: to.into(), kind: Self::kind(&dst), path: shown(&dst) })
+        Ok(WorkbookInfo { id: to.into(), name: to.into(), kind: Self::kind(&dst), path: relative_path(&self.root, &dst) })
     }
 
     /// Deletes a workbook (not Main) by moving its folder to
@@ -387,7 +396,7 @@ impl Registry {
             let _ = std::fs::remove_dir_all(&tmp);
         }
         let (report, adopt) = result?;
-        let info = WorkbookInfo { id: name.into(), name: name.into(), kind: Self::kind(&dir), path: shown(&dir) };
+        let info = WorkbookInfo { id: name.into(), name: name.into(), kind: Self::kind(&dir), path: relative_path(&self.root, &dir) };
         Ok((info, report, adopt))
     }
 
@@ -822,6 +831,24 @@ mod tests {
         assert!(!std::sync::Arc::ptr_eq(&stay, &later));
         assert!(db::get_page(&later.db.lock(), "Kept").unwrap().is_some());
         drop((stay, again, other, later, reg));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workbook_paths_stay_inside_the_data_folder() {
+        let root = std::env::temp_dir().join(format!("bq-rel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = Registry::new(root.clone());
+        reg.create("Other").unwrap();
+        let list = reg.list();
+        assert_eq!(list[0].path, ".");
+        assert_eq!(list.iter().find(|w| w.id == "Other").unwrap().path, "workbooks/Other");
+        assert!(list.iter().all(|w| !w.path.starts_with('/') && !w.path.contains(':')));
+        let trash = reg.delete("Other").unwrap();
+        let rel = relative_path(&root, &trash);
+        assert!(rel.starts_with("workbooks/.trash/"), "{rel}");
+        assert!(!rel.starts_with('/'));
+        drop(reg);
         std::fs::remove_dir_all(root).unwrap();
     }
 

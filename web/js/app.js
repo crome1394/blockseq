@@ -809,8 +809,9 @@ async function openWorkbookDialog(selectId = workbook()) {
     row.setAttribute('role', 'option');
     const note = w.id === workbook() ? 'open now' : w.kind === 'logseq' ? 'Logseq graph · imports on open' : w.kind === 'empty' ? 'new' : '';
     const label = el('span', 'wb-label-col');
-    label.append(el('span', 'wb-row-name', w.name), el('span', 'wb-path', w.path));
-    label.lastChild.title = 'Where this workbook is stored on the server';
+    const where = w.path === '.' ? 'data folder' : w.path;
+    label.append(el('span', 'wb-row-name', w.name), el('span', 'wb-path', where));
+    label.lastChild.title = 'Where this workbook is stored, relative to the data folder';
     row.append(label, el('span', 'muted small', note));
     // Click selects, double-click (or Enter) opens. The server opens (and,
     // for a Logseq graph, imports) it on first use.
@@ -847,7 +848,8 @@ function deleteWorkbookDialog(id) {
   }
   const body = el('div', 'dialog-form');
   body.append(el('p', '', `Delete the workbook “${w.name}”: its pages, journals and files.`));
-  body.append(el('p', 'muted small', `Nothing is erased: the folder is moved to ${w.path.replace(/[/\\][^/\\]*$/, '')}/.trash/ on the server, where it can be moved back (or removed for good). Consider downloading a backup first (Settings → Backup).`));
+  const parent = w.path.includes('/') ? w.path.replace(/[/\\][^/\\]*$/, '') : 'workbooks';
+  body.append(el('p', 'muted small', `Nothing is erased: the folder is moved to ${parent}/.trash/ inside the data folder, where it can be moved back (or removed for good). Consider downloading a backup first (Settings → Backup).`));
   const label = el('label', 'field');
   label.append(el('span', '', `Type the name to confirm: ${w.name}`));
   const input = el('input');
@@ -938,7 +940,7 @@ function showUsage(u) {
   box.hidden = false;
   box.querySelector('.usage-value').textContent = formatSize(u.total);
   box.title = `${workbookName(workbook())} uses ${formatSize(u.total)} on the server`
-    + `${u.folder ? ` (${u.folder})` : ''}:\n`
+    + `${u.folder && u.folder !== '.' ? ` (${u.folder})` : ''}:\n`
     + `• assets/ (uploaded files): ${formatSize(u.files)}\n`
     + `• database, with page history: ${formatSize(u.database)}\n`
     + `• Markdown copies and other: ${formatSize(u.other)}`;
@@ -985,7 +987,7 @@ async function assetsView(seq) {
   controls.append(filter, unused, total);
   const wrap = el('div', 'table-wrap');
   const table = el('table', 'page-table asset-table');
-  table.innerHTML = '<thead><tr><th></th><th>File</th><th>Server path</th><th>Used on</th><th>Size</th><th>Added</th><th></th></tr></thead>';
+  table.innerHTML = '<thead><tr><th></th><th>File</th><th>Path</th><th>Used on</th><th>Size</th><th>Added</th><th></th></tr></thead>';
   const tbody = el('tbody');
   table.append(tbody);
   wrap.append(table);
@@ -1016,13 +1018,16 @@ async function assetsView(seq) {
       }
       const name = el('td', 'col-name asset-name', a.name);
       const pathCell = el('td', 'asset-path');
-      const pathText = el('code', '', a.path);
+      // absolute is set only for a direct localhost connection, so the copy
+      // button can paste a path a file manager on this machine understands.
+      const shown = a.absolute || a.path;
+      const pathText = el('code', '', shown);
       const copy = el('button', 'inline-copy', '');
       copy.type = 'button';
       copy.innerHTML = COPY_ICON;
-      copy.dataset.copy = a.path; // handled by the page-wide copy-button listener
+      copy.dataset.copy = shown; // handled by the page-wide copy-button listener
       copy.title = 'Copy the path';
-      copy.setAttribute('aria-label', `Copy the server path of ${a.name}`);
+      copy.setAttribute('aria-label', `Copy the path of ${a.name}`);
       pathCell.append(pathText, copy);
       const used = el('td', 'asset-used');
       if (a.pages.length) {

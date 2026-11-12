@@ -265,7 +265,7 @@ CRDTs (conflict-free merge structures):
   | `DELETE /api/page?name=` | `delete_page` | 204 / 404 |
   | `POST /api/page/ensure?name=` | `ensure_page` | create an empty page if missing (calendar) |
   | `POST /api/assets` | `upload_asset` | raw bytes of any file, streamed to disk (cap `BLOCKSEQ_MAX_UPLOAD_MB`); `X-Filename` optional; returns path and kind |
-  | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them |
+  | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them; `path` is `assets/<file>` |
   | `DELETE /api/assets?name=` | `delete_asset` | removes the file |
   | `GET /assets/<name>` | `get_asset` | streamed, `Range` support (video seeking), cached forever, `nosniff`; `assets::serve_policy` decides type and inline vs download (HTML/SVG/unknown always download, with `sandbox` CSP) |
   | `PUT /api/block?id=` | `put_block` | change one block's text (task list status changes); saves the page |
@@ -523,7 +523,11 @@ deleted. API failures sent to browsers are a short code (`invalid`,
 `storage`, `error`, and so on) plus, sometimes, a short phrase. That phrase
 has the data folder replaced with "the data folder" (`api::redact`). The
 error chain stays in the log. `GET /api/health` reports `ok` or `error` for
-the settings file and each database, with no filesystem paths.
+the settings file and each database, with no filesystem paths. Workbook
+folders, the sidebar usage folder, asset paths and the trash location are
+relative to the data folder (`assets/<file>`, `workbooks/<name>`). An
+asset's absolute path is added only for a direct localhost connection with
+no forwarded-host headers, so the copy button on that machine still works.
 
 ## Known limits and extension points
 

@@ -4,11 +4,12 @@
 //! "main"). Change events go to all clients and carry the workbook id.
 
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::body::{Body, Bytes};
-use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -479,7 +480,9 @@ pub async fn sidebar(Wb(wb): Wb) -> ApiResult {
     blocking(move || {
         let side = db::sidebar(&wb.read())?;
         let mut usage = serde_json::to_value(wb.usage())?;
-        usage["folder"] = json!(std::path::absolute(&wb.dir).unwrap_or_else(|_| wb.dir.clone()).display().to_string());
+        // Relative to the data folder. Main is the folder itself.
+        let folder = if wb.id == MAIN { ".".to_string() } else { format!("workbooks/{}", wb.id) };
+        usage["folder"] = json!(folder);
         Ok(Json(json!({
             "journal_days": side.journal_days,
             "favorites": side.favorites,
@@ -822,10 +825,21 @@ pub async fn get_asset(Wb(wb): Wb, Path(name): Path<String>, headers: HeaderMap)
     res
 }
 
+/// True for a browser on this machine, with no reverse proxy in front.
+/// That is the only case that may see an absolute file path.
+fn local_admin(peer: std::net::IpAddr, headers: &HeaderMap) -> bool {
+    peer.is_loopback()
+        && headers.get("x-forwarded-for").is_none()
+        && headers.get("x-forwarded-host").is_none()
+        && headers.get("forwarded").is_none()
+}
+
 /// Files in the workbook's assets folder, newest first, with the pages that
-/// mention each one.
-pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
-    let dir = std::path::absolute(wb.assets_dir()).unwrap_or_else(|_| wb.assets_dir());
+/// mention each one. `path` is relative to the workbook. A direct localhost
+/// connection also gets `absolute`, for the copy button.
+pub async fn list_assets(Wb(wb): Wb, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> ApiResult {
+    let local = local_admin(peer.ip(), &headers);
+    let dir = if local { Some(std::path::absolute(wb.assets_dir()).unwrap_or_else(|_| wb.assets_dir())) } else { None };
     let (usage, list) = blocking(move || Ok((db::asset_usage(&wb.read())?, assets::list(&wb.assets_dir())))).await?;
     let out: Vec<_> = list
         .into_iter()
@@ -838,9 +852,18 @@ pub async fn list_assets(Wb(wb): Wb) -> ApiResult {
                 .collect();
             pages.sort_unstable();
             pages.dedup();
-            // Where the file is on the server (shown with a copy button).
-            let path = dir.join(&a.name).display().to_string();
-            json!({ "name": a.name, "path": path, "size": a.size, "modified": a.modified, "kind": a.kind, "pages": pages })
+            let mut item = json!({
+                "name": a.name,
+                "path": format!("assets/{}", a.name),
+                "size": a.size,
+                "modified": a.modified,
+                "kind": a.kind,
+                "pages": pages,
+            });
+            if let Some(dir) = &dir {
+                item["absolute"] = json!(dir.join(&a.name).display().to_string());
+            }
+            item
         })
         .collect();
     Ok(Json(out).into_response())
@@ -917,10 +940,14 @@ pub struct IdOnly {
 pub async fn delete_workbook(State(s): Shared, Query(q): Query<IdOnly>) -> ApiResult {
     let state = s.clone();
     let id = q.id.clone();
+    let root = s.root.clone();
     let trash = tokio::task::spawn_blocking(move || state.workbooks.delete(&id)).await??;
+    let rel = crate::workbooks::relative_path(&root, &trash);
     tracing::info!("deleted workbook {}: moved to {}", q.id, trash.display());
     s.notify_all(&json!({ "type": "workbooks", "deleted": q.id }));
-    Ok(Json(json!({ "trash": trash.display().to_string() })).into_response())
+    // Relative to the data folder. The absolute path stays in the log.
+    let trash = if rel == "." { "workbooks/.trash".to_string() } else { rel };
+    Ok(Json(json!({ "trash": trash })).into_response())
 }
 
 pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
@@ -1327,6 +1354,19 @@ mod tests {
 
         let locked = classify(&anyhow::anyhow!("sqlite_busy"));
         assert_eq!(locked.code, "storage");
+    }
+
+    #[test]
+    fn absolute_paths_only_for_a_direct_localhost_connection() {
+        let mut headers = HeaderMap::new();
+        assert!(local_admin("127.0.0.1".parse().unwrap(), &headers));
+        assert!(local_admin("::1".parse().unwrap(), &headers));
+        assert!(!local_admin("10.0.0.5".parse().unwrap(), &headers));
+        headers.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
+        assert!(!local_admin("127.0.0.1".parse().unwrap(), &headers));
+        headers.remove("x-forwarded-for");
+        headers.insert("x-forwarded-host", "notes.example.com".parse().unwrap());
+        assert!(!local_admin("127.0.0.1".parse().unwrap(), &headers));
     }
 
     #[test]
