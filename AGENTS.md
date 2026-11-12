@@ -20,7 +20,8 @@ features**.
   link and tag parsing), `workbooks.rs` (workbook folders, Logseq import),
   `assets.rs` (uploads), `config.rs` (shared settings), `backup.rs`
   (backup zips, restore), `crypto.rs` (terminal password reset), `guard.rs`
-  (cross-site / host checks, security headers).
+  (cross-site / host checks, security headers), `auth.rs` (password and
+  guess limit).
 - `tests/e2e/` browser tests and their runner.
 - `web/` UI: `index.html`, `app.css`, and ES modules in `web/js/`. No build
   step, no bundler, no npm.
@@ -63,6 +64,11 @@ cargo build --release              # release build embeds web/ in the binary
   `api::update_config` / `Config::save`, and never fall back to defaults when
   it can't be read.
 - Write the Markdown mirror while holding the workbook's database lock.
+- Workbooks are separate: never read or write another workbook's folder or
+  database from a request for one workbook. Deleting moves to
+  `workbooks/.trash/`; never erase a workbook outright.
+- Do database and file work in handlers through `blocking(...)` (never on the
+  async threads directly).
 - Never delete user files (pages, assets, workbook folders) without an
   explicit user action and a confirmation in the UI.
 - Imports never overwrite: a restored backup always becomes a new workbook.
@@ -98,6 +104,8 @@ cargo build --release              # release build embeds web/ in the binary
   third-party JavaScript: the syntax highlighter, Markdown renderer and editor
   are written in-house on purpose. Rust crates must be permissively licensed
   (MIT / Apache-2.0 / BSD / similar), compatible with the MIT license.
+- Shared browser helpers live in small modules (e.g. `dom.js`'s `el()`);
+  import them rather than copying.
 - No inline scripts or `on…=` attributes: the Content-Security-Policy only
   allows Blockseq's own script files. New embeds need their host added to
   `frame-src` in `guard.rs`.

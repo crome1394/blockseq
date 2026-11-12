@@ -26,6 +26,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
 | `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import, rename (checkpoints and holds the open database while the folder moves; old handles are marked `retired` so they stop writing Markdown under the old name). Main's display name is `main_name` in `config.json` |
 | `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key). `load` errors on a damaged file (falls back to `config.json.bak`), `save` keeps the previous version as `.bak` and writes durably (`write_durable`: unique temp file, fsync, rename, fsync folder). All API changes go through `api::update_config` under the settings lock |
+| `src/auth.rs` | Optional password (basic auth) and the wrong-password limit (10 distinct wrong passwords per client per 15 minutes; client address from `X-Forwarded-For` only for `BLOCKSEQ_TRUSTED_PROXIES`) |
 | `src/guard.rs` | Outermost middleware: refuses cross-site non-GET requests (`Sec-Fetch-Site`, else `Origin` vs `Host`/`X-Forwarded-Host`) and host names outside `BLOCKSEQ_HOSTS`; adds the CSP (HTML only), `X-Frame-Options`, `Referrer-Policy`, `nosniff` |
 | `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
@@ -44,6 +45,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/dates.js` | Journal page names (`Nov 11th, 2026`) and day numbers |
 | `web/js/code.js` | Built-in syntax highlighter, code block decoration (line numbers, copy), live-edit backdrop |
 | `web/js/settings.js` | Per-browser preferences (localStorage), setting categories |
+| `web/js/dom.js` | `el()` helper shared by the UI modules |
 | `web/js/backup-ui.js` | Settings → Backup: download, import, re-encrypting restored blocks |
 | `web/js/settings-ui.js` | Settings screen: categories, task-status editor, key-binding editor |
 | `web/js/keys.js` | Configurable shortcuts: defaults, matching key events, display |
@@ -470,6 +472,15 @@ save in progress) and runs `PRAGMA optimize` and `wal_checkpoint(TRUNCATE)`
 before the forced exit. Locks are `parking_lot` (no poisoning: a panic can't
 jam a workbook). `rename_page` and `save_page` use a `Savepoint` guard that
 rolls back unless committed, so a rename is all or nothing.
+
+Handlers do their database and file work on Tokio's blocking pool
+(`api::blocking`, `read_json`, async `update_config` / `read_config`). The
+workbook registry has one gate per workbook id for opening and moving
+folders, so a slow open (a big Logseq import) only delays that workbook.
+Deleting a workbook moves its folder to `workbooks/.trash/<name> <date>/`
+(hidden from the list, skipped by the startup clean-up); Main can't be
+deleted. Error messages sent to browsers replace the data folder's path with
+"the data folder" (`api::redact`); logs keep the full text.
 
 ## Known limits and extension points
 
