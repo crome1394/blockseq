@@ -46,10 +46,23 @@ CREATE TABLE IF NOT EXISTS refs (
 );
 CREATE INDEX IF NOT EXISTS refs_target ON refs(target_lower);
 CREATE INDEX IF NOT EXISTS refs_block ON refs(block_id);
+
+-- Earlier versions of pages (see "page history" below). Keyed by name, not
+-- page id, so the history of a deleted page stays and can bring it back.
+CREATE TABLE IF NOT EXISTS page_history (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_name  TEXT NOT NULL,
+    name_lower TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    saved_at   INTEGER NOT NULL,
+    reason     TEXT NOT NULL,
+    blocks     TEXT NOT NULL   -- JSON array of blocks, as stored (ciphertext for #Encrypted)
+);
+CREATE INDEX IF NOT EXISTS page_history_page ON page_history(name_lower, saved_at);
 "#;
 
 /// Current schema version, stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
@@ -209,7 +222,16 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version >= SCHEMA_VERSION {
         return Ok(());
     }
-    // v2: favourite pages, and tags told apart from plain links.
+    if version < 2 {
+        migrate_v2(conn)?;
+    }
+    // v3: the page_history table (created by SCHEMA above; nothing to convert).
+    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    Ok(())
+}
+
+/// v2: favourite pages, and tags told apart from plain links.
+fn migrate_v2(conn: &Connection) -> Result<()> {
     if !has_column(conn, "pages", "favorite")? {
         conn.execute_batch("ALTER TABLE pages ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")?;
     }
@@ -229,7 +251,6 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
-    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     Ok(())
 }
 
@@ -296,7 +317,8 @@ fn rename_page_inner(conn: &Connection, from: &str, to: &str, task_words: &[Stri
             // Merge: move this page's blocks to the end of the other page.
             let mut blocks = get_blocks(conn, &target.id)?;
             blocks.extend(get_blocks(conn, &old.id)?);
-            let saved = match save_page_inner(conn, &target.name, target.version, &blocks, task_words, true)? {
+            snapshot(conn, &old, &get_blocks(conn, &old.id)?, &format!("before it was merged into {}", target.name), now)?;
+            let saved = match save_page_inner(conn, &target.name, target.version, &blocks, task_words, true, Some(&format!("before {} was merged in", old.name)))? {
                 SaveOutcome::Saved(p) => p,
                 _ => bail!("{} changed during the rename", target.name),
             };
@@ -316,6 +338,11 @@ fn rename_page_inner(conn: &Connection, from: &str, to: &str, task_words: &[Stri
             get_page(conn, to)?.context("the renamed page disappeared")?
         }
     };
+    // The page's history follows it to the new name.
+    conn.execute(
+        "UPDATE page_history SET page_name = ?1, name_lower = ?2 WHERE name_lower = ?3",
+        params![page.name, page.name_lower(), old.name_lower()],
+    )?;
     // Rewrite links and tags everywhere they appear.
     let pages: Vec<String> = conn
         .prepare(
@@ -588,7 +615,20 @@ pub fn save_page(
     blocks: &[Block],
     task_words: &[String],
 ) -> Result<SaveOutcome> {
-    save_page_inner(conn, name, base_version, blocks, task_words, false)
+    save_page_inner(conn, name, base_version, blocks, task_words, false, None)
+}
+
+/// Like save_page, but always keeps the replaced version in the history,
+/// with `reason` (e.g. "replaced by Keep mine").
+pub fn save_page_noting(
+    conn: &Connection,
+    name: &str,
+    base_version: i64,
+    blocks: &[Block],
+    task_words: &[String],
+    reason: &str,
+) -> Result<SaveOutcome> {
+    save_page_inner(conn, name, base_version, blocks, task_words, false, Some(reason))
 }
 
 /// `allow_moves`: block ids that belong to another page are moved here
@@ -601,6 +641,7 @@ fn save_page_inner(
     blocks: &[Block],
     task_words: &[String],
     allow_moves: bool,
+    history_reason: Option<&str>,
 ) -> Result<SaveOutcome> {
     validate_blocks(blocks)?;
     let name = name.trim();
@@ -650,6 +691,10 @@ fn save_page_inner(
             return Ok(SaveOutcome::ForeignIds(foreign)); // rolls back
         }
     }
+
+    // Keep the version being replaced, when the history policy says so.
+    let previous = get_blocks(tx, &page.id)?;
+    maybe_snapshot(tx, &page, &previous, blocks, history_reason, now)?;
 
     // Keep timestamps of blocks whose text did not change.
     let mut old: HashMap<String, (String, i64, i64)> = HashMap::new();
@@ -722,12 +767,202 @@ fn save_page_inner(
     }))
 }
 
+/// Deletes a page; its last version stays in the history, so it can be
+/// restored from All pages → Recently deleted.
 pub fn delete_page(conn: &Connection, name: &str) -> Result<Option<PageMeta>> {
+    let sp = Savepoint::begin(conn, "delete_page")?;
     let page = get_page(conn, name)?;
     if let Some(p) = &page {
+        snapshot(conn, p, &get_blocks(conn, &p.id)?, "before it was deleted", now_ms())?;
         conn.execute("DELETE FROM pages WHERE id = ?1", [&p.id])?;
     }
+    sp.commit()?;
     Ok(page)
+}
+
+// ---- page history ------------------------------------------------------------
+//
+// Before a save replaces a page, the old version is kept when:
+// - the newest kept version is more than 10 minutes old (so while you edit,
+//   there's a version from at most ~10 minutes back), or
+// - the save removes a lot (5+ blocks, or more than 30% and 200+ characters
+//   of text), or
+// - the caller gives a reason (Keep mine, restore, merge, delete).
+// Up to HISTORY_KEEP versions per page; a version equal to the newest kept
+// one isn't stored twice.
+
+const HISTORY_EVERY_MS: i64 = 10 * 60 * 1000;
+pub const HISTORY_KEEP: i64 = 100;
+
+#[derive(Debug, Serialize)]
+pub struct HistoryEntry {
+    pub id: i64,
+    pub version: i64,
+    pub saved_at: i64,
+    pub reason: String,
+    pub blocks: usize,
+    pub words: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryVersion {
+    pub id: i64,
+    pub page_name: String,
+    pub version: i64,
+    pub saved_at: i64,
+    pub reason: String,
+    pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeletedPage {
+    pub name: String,
+    pub deleted_at: i64,
+}
+
+fn text_size(blocks: &[Block]) -> usize {
+    blocks.iter().map(|b| b.content.len()).sum()
+}
+
+fn maybe_snapshot(conn: &Connection, page: &PageMeta, old: &[Block], new: &[Block], forced: Option<&str>, now: i64) -> Result<()> {
+    if old.iter().all(|b| b.content.trim().is_empty()) {
+        return Ok(()); // nothing worth keeping
+    }
+    let reason = match forced {
+        Some(r) => r,
+        None => {
+            let (before, after) = (text_size(old), text_size(new));
+            let kept: HashSet<&str> = new.iter().map(|b| b.id.as_str()).collect();
+            let removed = old.iter().filter(|b| !kept.contains(b.id.as_str())).count();
+            if removed >= 5 || (before > after + 200 && after * 10 < before * 7) {
+                "before a large change"
+            } else {
+                let last: Option<i64> = conn.query_row(
+                    "SELECT MAX(saved_at) FROM page_history WHERE name_lower = ?1",
+                    [page.name_lower()],
+                    |r| r.get(0),
+                )?;
+                match last {
+                    Some(t) if now - t < HISTORY_EVERY_MS => return Ok(()),
+                    _ => "autosave",
+                }
+            }
+        }
+    };
+    snapshot(conn, page, old, reason, now)
+}
+
+/// Keeps `blocks` as a version of `page` (unless equal to the newest one).
+pub fn snapshot(conn: &Connection, page: &PageMeta, blocks: &[Block], reason: &str, now: i64) -> Result<()> {
+    if blocks.iter().all(|b| b.content.trim().is_empty()) {
+        return Ok(());
+    }
+    let json = serde_json::to_string(blocks)?;
+    let lower = page.name_lower();
+    let newest: Option<String> = conn
+        .query_row(
+            "SELECT blocks FROM page_history WHERE name_lower = ?1 ORDER BY saved_at DESC, id DESC LIMIT 1",
+            [&lower],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if newest.as_deref() == Some(json.as_str()) {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO page_history (page_name, name_lower, version, saved_at, reason, blocks) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![page.name, lower, page.version, now, reason, json],
+    )?;
+    conn.execute(
+        "DELETE FROM page_history WHERE name_lower = ?1 AND id NOT IN
+           (SELECT id FROM page_history WHERE name_lower = ?1 ORDER BY saved_at DESC, id DESC LIMIT ?2)",
+        params![lower, HISTORY_KEEP],
+    )?;
+    Ok(())
+}
+
+/// Kept versions of a page, newest first.
+pub fn history(conn: &Connection, name: &str) -> Result<Vec<HistoryEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, version, saved_at, reason, blocks FROM page_history WHERE name_lower = ?1 ORDER BY saved_at DESC, id DESC",
+    )?;
+    let rows = stmt.query_map([name.trim().to_lowercase()], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, version, saved_at, reason, json) = row?;
+        let blocks: Vec<Block> = serde_json::from_str(&json).unwrap_or_default();
+        let words = blocks.iter().map(|b| word_count(&b.content)).sum();
+        out.push(HistoryEntry { id, version, saved_at, reason, blocks: blocks.len(), words });
+    }
+    Ok(out)
+}
+
+pub fn history_version(conn: &Connection, id: i64) -> Result<Option<HistoryVersion>> {
+    let row = conn
+        .query_row(
+            "SELECT id, page_name, version, saved_at, reason, blocks FROM page_history WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, String>(5)?)),
+        )
+        .optional()?;
+    let Some((id, page_name, version, saved_at, reason, json)) = row else { return Ok(None) };
+    let blocks = serde_json::from_str(&json).context("a kept version is damaged")?;
+    Ok(Some(HistoryVersion { id, page_name, version, saved_at, reason, blocks }))
+}
+
+/// Pages that were deleted but have kept versions, most recent first.
+pub fn deleted_pages(conn: &Connection) -> Result<Vec<DeletedPage>> {
+    let mut stmt = conn.prepare(
+        "SELECT page_name, MAX(saved_at) FROM page_history
+         WHERE name_lower NOT IN (SELECT name_lower FROM pages)
+         GROUP BY name_lower ORDER BY MAX(saved_at) DESC LIMIT 500",
+    )?;
+    let rows = stmt.query_map([], |r| Ok(DeletedPage { name: r.get(0)?, deleted_at: r.get(1)? }))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Makes a kept version the page's current content (recreating the page if
+/// it was deleted). The version it replaces is kept first. Blocks whose ids
+/// now belong to another page get new ids, so nothing is taken from there.
+pub fn restore_version(conn: &Connection, id: i64, task_words: &[String]) -> Result<Option<(PageMeta, Vec<Block>)>> {
+    let Some(h) = history_version(conn, id)? else { return Ok(None) };
+    let sp = Savepoint::begin(conn, "restore_version")?;
+    let current = get_page(conn, &h.page_name)?;
+    let (base, current_id) = current.as_ref().map_or((0, String::new()), |p| (p.version, p.id.clone()));
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    {
+        let mut elsewhere = conn.prepare("SELECT 1 FROM blocks WHERE id = ?1 AND page_id <> ?2")?;
+        for b in &h.blocks {
+            if elsewhere.exists(params![b.id, current_id])? {
+                renamed.insert(b.id.clone(), uuid::Uuid::new_v4().to_string());
+            }
+        }
+    }
+    let blocks: Vec<Block> = h
+        .blocks
+        .into_iter()
+        .map(|mut b| {
+            if let Some(n) = renamed.get(&b.id) {
+                b.id = n.clone();
+            }
+            if let Some(n) = b.parent_id.as_ref().and_then(|p| renamed.get(p)) {
+                b.parent_id = Some(n.clone());
+            }
+            b
+        })
+        .collect();
+    let reason = format!("before restoring the version from {}", chrono::DateTime::from_timestamp_millis(h.saved_at)
+        .map(|t| t.with_timezone(&chrono::Local).format("%b %-d, %Y %H:%M").to_string())
+        .unwrap_or_default());
+    match save_page_inner(conn, &h.page_name, base, &blocks, task_words, false, Some(&reason))? {
+        SaveOutcome::Saved(page) => {
+            sp.commit()?;
+            Ok(Some((page, blocks)))
+        }
+        _ => bail!("the page changed while restoring; try again"),
+    }
 }
 
 pub fn list_pages(conn: &Connection) -> Result<Vec<PageSummary>> {
@@ -1082,6 +1317,77 @@ mod tests {
         // The connection is usable afterwards (no transaction left open).
         c.execute_batch("DROP TRIGGER no_linker").unwrap();
         assert!(rename_page(&c, "Old", "New", &[]).is_ok());
+    }
+
+    #[test]
+    fn history_keeps_older_versions() {
+        let c = mem();
+        let v = |t: &str| vec![block("a", None, t)];
+        let save = |text: &str| {
+            let version = get_page(&c, "P").unwrap().map_or(0, |p| p.version);
+            assert!(matches!(save_page(&c, "P", version, &v(text), &[]).unwrap(), SaveOutcome::Saved(_)));
+        };
+        save("one");
+        assert!(history(&c, "P").unwrap().is_empty()); // a new page has nothing to keep
+        save("two"); // first save over existing text: kept ("one")
+        save("three"); // within 10 minutes: not kept
+        let h = history(&c, "P").unwrap();
+        assert_eq!(h.len(), 1);
+        assert_eq!(history_version(&c, h[0].id).unwrap().unwrap().blocks[0].content, "one");
+        // Ten minutes later the next save keeps a version again.
+        c.execute("UPDATE page_history SET saved_at = saved_at - 11 * 60 * 1000", []).unwrap();
+        save("four");
+        assert_eq!(history(&c, "P").unwrap().len(), 2);
+
+        // A large removal is always kept.
+        let many: Vec<Block> = (0..8).map(|i| block(&format!("m{i}"), None, "a line of text")).collect();
+        let version = get_page(&c, "P").unwrap().unwrap().version;
+        save_page(&c, "P", version, &many, &[]).unwrap();
+        let version = get_page(&c, "P").unwrap().unwrap().version;
+        save_page(&c, "P", version, &[block("m0", None, "a line of text")], &[]).unwrap();
+        assert_eq!(history(&c, "P").unwrap()[0].reason, "before a large change");
+        assert_eq!(history(&c, "P").unwrap()[0].blocks, 8);
+    }
+
+    #[test]
+    fn deleted_pages_can_be_restored() {
+        let c = mem();
+        save_page(&c, "Gone", 0, &[block("g", None, "important note")], &[]).unwrap();
+        save_page(&c, "Other", 0, &[block("o", None, "x")], &[]).unwrap();
+        delete_page(&c, "Gone").unwrap();
+        assert!(get_page(&c, "Gone").unwrap().is_none());
+        let deleted = deleted_pages(&c).unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].name, "Gone");
+        let id = history(&c, "Gone").unwrap()[0].id;
+        // Meanwhile its block id was reused on another page: restoring
+        // gives it a new id instead of taking it from there.
+        let other = get_page(&c, "Other").unwrap().unwrap();
+        save_page(&c, "Other", other.version, &[block("o", None, "x"), block("g", None, "moved here")], &[]).unwrap();
+        let (page, blocks) = restore_version(&c, id, &[]).unwrap().unwrap();
+        assert_eq!(page.name, "Gone");
+        assert_eq!(blocks[0].content, "important note");
+        assert_ne!(blocks[0].id, "g");
+        let other = get_page(&c, "Other").unwrap().unwrap();
+        assert_eq!(get_blocks(&c, &other.id).unwrap().len(), 2);
+        assert!(deleted_pages(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn restoring_keeps_the_replaced_version_and_history_follows_renames() {
+        let c = mem();
+        save_page(&c, "Doc", 0, &[block("d", None, "first draft")], &[]).unwrap();
+        save_page_noting(&c, "Doc", 1, &[block("d", None, "second draft")], &[], "replaced by Keep mine").unwrap();
+        let h = history(&c, "Doc").unwrap();
+        assert_eq!((h.len(), h[0].reason.as_str()), (1, "replaced by Keep mine"));
+        let (_, blocks) = restore_version(&c, h[0].id, &[]).unwrap().unwrap();
+        assert_eq!(blocks[0].content, "first draft");
+        let h = history(&c, "Doc").unwrap();
+        assert!(h[0].reason.starts_with("before restoring"));
+        assert_eq!(history_version(&c, h[0].id).unwrap().unwrap().blocks[0].content, "second draft");
+        rename_page(&c, "Doc", "Renamed doc", &[]).unwrap();
+        assert!(history(&c, "Doc").unwrap().is_empty());
+        assert_eq!(history(&c, "Renamed doc").unwrap().len(), h.len());
     }
 
     #[test]

@@ -208,6 +208,10 @@ pub async fn get_page(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
 pub struct SaveBody {
     base_version: i64,
     blocks: Vec<Block>,
+    /// Set by "Keep mine" after a conflict: the other device's version is
+    /// kept in the page history before it is replaced.
+    #[serde(default)]
+    overwrite: bool,
 }
 
 pub async fn put_page(
@@ -224,8 +228,12 @@ pub async fn put_page(
             // The Markdown file is written under the same lock as the
             // database, so two quick saves can't leave the older text in it.
             let conn = wb.db.lock();
-            let outcome = db::save_page(&conn, &q.name, body.base_version, &body.blocks, &words)
-                .map_err(|e| bad(format!("{e:#}")))?;
+            let outcome = if body.overwrite {
+                db::save_page_noting(&conn, &q.name, body.base_version, &body.blocks, &words, "replaced by Keep mine")
+            } else {
+                db::save_page(&conn, &q.name, body.base_version, &body.blocks, &words)
+            }
+            .map_err(|e| bad(format!("{e:#}")))?;
             if let SaveOutcome::Saved(page) = &outcome {
                 wb.write_mirror(page, &body.blocks);
             }
@@ -463,6 +471,52 @@ pub async fn encryption_pending(Wb(wb): Wb) -> ApiResult {
 /// Every block with a task status (the client filters open / finished).
 pub async fn tasks(Wb(wb): Wb) -> ApiResult {
     read_json(wb, db::tasks).await
+}
+
+#[derive(Deserialize)]
+pub struct HistoryId {
+    id: i64,
+}
+
+/// Kept versions of a page, newest first.
+pub async fn history(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
+    read_json(wb, move |c| db::history(c, &q.name)).await
+}
+
+pub async fn history_version(Wb(wb): Wb, Query(q): Query<HistoryId>) -> ApiResult {
+    blocking(move || {
+        Ok(match db::history_version(&wb.db.lock(), q.id)? {
+            Some(v) => Json(v).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        })
+    })
+    .await
+}
+
+/// Deleted pages that can be restored from their history.
+pub async fn deleted_pages(Wb(wb): Wb) -> ApiResult {
+    read_json(wb, db::deleted_pages).await
+}
+
+/// Makes a kept version the page's content again (keeping the replaced one).
+pub async fn restore_version(State(s): Shared, Wb(wb): Wb, Query(q): Query<HistoryId>) -> ApiResult {
+    blocking(move || {
+        let words = s.task_words();
+        let restored = {
+            let conn = wb.db.lock();
+            let restored = db::restore_version(&conn, q.id, &words).map_err(|e| bad(format!("{e:#}")))?;
+            if let Some((page, blocks)) = &restored {
+                wb.write_mirror(page, blocks);
+            }
+            restored
+        };
+        let Some((page, _)) = restored else {
+            return Ok(StatusCode::NOT_FOUND.into_response());
+        };
+        s.notify(&wb, json!({ "type": "page", "name": page.name, "version": page.version, "client": "" }));
+        Ok(Json(json!({ "page": page })).into_response())
+    })
+    .await
 }
 
 /// Server-sent events: tells other open tabs/devices when something changes.
