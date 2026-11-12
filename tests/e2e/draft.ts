@@ -1,0 +1,34 @@
+// Edits made while the server is down survive a tab crash and can be restored.
+import puppeteer from "npm:puppeteer-core@23.11.1";
+const S = Deno.args[0];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const BASE = "http://127.0.0.1:3939";
+const name = "Draft " + Date.now();
+const sh = (cmd: string) => new Deno.Command("bash", { args: ["-c", cmd] }).outputSync();
+const start = () => { sh(`(BLOCKSEQ_DATA=${S}/data BLOCKSEQ_ADDR=127.0.0.1:3939 nohup ${Deno.env.get("BLOCKSEQ_BIN") ?? "./target/debug/blockseq"} > ${S}/server.log 2>&1 &)`); };
+const stop = () => sh("kill $(ss -ltnp | grep ':3939 ' | grep -o 'pid=[0-9]*' | cut -d= -f2)");
+await fetch(`${BASE}/api/page?name=${encodeURIComponent(name)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ base_version: 0, blocks: [{ id: `d${Date.now()}`, parent_id: null, content: "saved text", collapsed: false }] }) });
+const browser = await puppeteer.launch({ executablePath: Deno.env.get("CHROME") ?? "/usr/bin/google-chrome-stable", headless: true, args: ["--no-sandbox"] });
+let p = await browser.newPage();
+p.on("pageerror", (e) => console.log("PAGEERROR:", e.message));
+await p.goto(`${BASE}/#/page/${encodeURIComponent(name)}`, { waitUntil: "load" });
+await p.waitForSelector(".outline .content"); await sleep(300);
+stop(); await sleep(500);
+await p.click(".outline .content"); await p.keyboard.press("End"); await p.keyboard.type(" plus offline typing");
+await sleep(2000);
+console.log("status while down:", await p.$eval("#status", (e: any) => e.innerText));
+// The tab dies (no chance to save), then the server comes back
+await p.close({ runBeforeUnload: false });
+start(); await sleep(7000);
+const server = (await (await fetch(`${BASE}/api/page?name=${encodeURIComponent(name)}`)).json()).blocks[0].content;
+console.log("server has:", JSON.stringify(server));
+p = await browser.newPage();
+await p.goto(`${BASE}/#/page/${encodeURIComponent(name)}`, { waitUntil: "load" });
+await p.waitForSelector(".outline .content"); await sleep(400);
+console.log("draft bar:", await p.$eval(".draft-bar", (e: any) => e.innerText.replace(/\s+/g, " ").slice(0, 110)).catch(() => "none"));
+await p.evaluate(() => ([...document.querySelectorAll(".draft-bar button")].find((b) => b.textContent === "Restore them") as HTMLElement).click());
+await sleep(1500);
+console.log("after restore, server has:", JSON.stringify((await (await fetch(`${BASE}/api/page?name=${encodeURIComponent(name)}`)).json()).blocks[0].content));
+await p.reload({ waitUntil: "load" }); await sleep(800);
+console.log("bar gone after saving:", !(await p.$(".draft-bar")));
+await browser.close();

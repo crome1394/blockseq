@@ -1,0 +1,20 @@
+import puppeteer from "npm:puppeteer-core@23.11.1";
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const BASE = "http://127.0.0.1:3939";
+const browser = await puppeteer.launch({ executablePath: Deno.env.get("CHROME") ?? "/usr/bin/google-chrome-stable", headless: true, args: ["--no-sandbox"] });
+const p = await browser.newPage();
+p.on("pageerror", (e) => console.log("PAGEERROR:", e.message));
+const calls: string[] = [];
+p.on("request", (r) => { const u = new URL(r.url()); if (u.pathname.startsWith("/api/")) calls.push(u.pathname); });
+await p.setViewport({ width: 1100, height: 800 });
+await p.goto(`${BASE}/#/journals`, { waitUntil: "load" });
+await p.waitForSelector(".outline .content"); await sleep(1500);
+console.log("favorites:", await p.$$eval(".fav-list .fav", (x: any[]) => x.map((a) => a.textContent)));
+console.log("status:", await p.$eval("#status", (e: any) => e.innerText.replace(/\n/g, " | ")));
+// Type into today's journal: the dot appears and only /api/sidebar is fetched afterwards
+calls.length = 0;
+await p.click(".outline .content"); await p.keyboard.type("sidebar check"); await p.keyboard.press("Escape"); await p.keyboard.press("Escape");
+await sleep(2500);
+console.log("today has a dot:", await p.$eval(".cal-day.today", (e: any) => e.classList.contains("has-journal")));
+console.log("requests after the save:", [...new Set(calls)].join(", "));
+await browser.close();
