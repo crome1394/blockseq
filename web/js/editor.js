@@ -51,8 +51,10 @@ const SAVE_DELAY = 600;
 // Every save attempt first keeps a copy of what is being sent in this
 // browser's storage, and removes it once the server has it. If the tab dies
 // while the server is unreachable (crash, killed tab, flat battery), the page
-// offers that copy the next time it opens. Copies are taken after #Encrypted
-// blocks are sealed, so they hold only ciphertext, like the server.
+// offers that copy the next time it opens, whenever it differs from the server.
+// Copies are taken after #Encrypted blocks are sealed, so they hold only
+// ciphertext, like the server. A keepalive save on close is sent only when the
+// body fits in 64 KB; a larger page stays in this copy.
 const DRAFT_PREFIX = 'blockseq.draft:';
 const DRAFT_MAX_AGE = 30 * 24 * 3600 * 1000;
 const draftKey = (name) => `${DRAFT_PREFIX}${workbook()}:${name.toLowerCase()}`;
@@ -86,6 +88,12 @@ try {
 
 const sameBlocks = (a, b) => JSON.stringify(a.map((x) => [x.id, x.parent_id, x.content, !!x.collapsed]))
   === JSON.stringify(b.map((x) => [x.id, x.parent_id, x.content, !!x.collapsed]));
+// Browsers discard a keepalive request whose body is larger than this.
+const KEEPALIVE_LIMIT = 64 * 1024;
+function keepaliveFits(baseVersion, blocks, extra) {
+  const json = JSON.stringify({ base_version: baseVersion, blocks, ...extra });
+  return new TextEncoder().encode(json).length <= KEEPALIVE_LIMIT;
+}
 const HISTORY_LIMIT = 200;
 // A #quote tag on a block shows it and its children as a quotation.
 const QUOTE_TAG = /(^|\s)#quote(?=\s|$)/i;
@@ -304,8 +312,8 @@ export class PageEditor {
     this.draft = null;
     const draft = readDraft(this.name);
     const serverBlocks = data.blocks || [];
-    // Another tab may be saving this page right now: only older copies count.
-    if (draft && Date.now() - draft.at > 5000) {
+    // Any copy that differs from the server never arrived, however recent.
+    if (draft) {
       if (sameBlocks(draft.blocks, serverBlocks)) dropDraft(this.name);
       else this.draft = draft;
     }
@@ -2088,9 +2096,55 @@ export class PageEditor {
     this.saveTimer = setTimeout(() => this.save(), SAVE_DELAY);
   }
 
+  // What to store before sealing finishes. Children of a #Encrypted block are
+  // left out, so their plaintext never sits in localStorage.
+  blocksForDraft() {
+    const hidden = new Set();
+    const mark = (n) => n.children.forEach((c) => { hidden.add(c.id); mark(c); });
+    const walk = (n) => n.children.forEach((c) => {
+      if (ENCRYPTED_TAG.test(c.content)) mark(c);
+      walk(c);
+    });
+    walk(this.root);
+    return this.flatten({ forSave: true }).filter((b) => !hidden.has(b.id));
+  }
+
+  // After sealing, replace the draft with the ciphertext the server would store.
+  async rememberDraft() {
+    try { await this.sealSecrets(); } catch { /* the copy already stored stays */ }
+    const sending = this.flatten({ forSave: true });
+    saveDraft(this.name, this.version, sending);
+    return sending;
+  }
+
+  // One last save as the page goes away, when the body is small enough for
+  // the browser to actually send it.
+  sendKeepalive(blocks) {
+    const extra = this.overwriteNext ? { overwrite: true } : {};
+    if (!keepaliveFits(this.version, blocks, extra)) return;
+    api.savePage(this.name, this.version, blocks, { keepalive: true }, extra).catch(() => {});
+  }
+
   async save(opts) {
-    if (this.conflict || !this.dirty) return;
-    if (this.saving) { this.saveAgain = true; return; }
+    const unloading = !!opts?.keepalive;
+    // localStorage is synchronous. Write before any await, so a closing tab
+    // keeps the latest text even when a save is already running.
+    if (unloading && this.dirty) saveDraft(this.name, this.version, this.blocksForDraft());
+    if (this.conflict || !this.dirty) {
+      if (unloading && this.dirty) await this.rememberDraft();
+      return;
+    }
+    if (this.saving) {
+      if (unloading) {
+        // The request already running is cancelled with the page. Keep the
+        // keystrokes typed since it started, and send them when they fit.
+        const sending = await this.rememberDraft();
+        this.sendKeepalive(sending);
+      } else {
+        this.saveAgain = true;
+      }
+      return;
+    }
     clearTimeout(this.saveTimer);
     this.saving = true;
     updateStatus();
@@ -2105,6 +2159,11 @@ export class PageEditor {
       const sending = this.flatten({ forSave: true });
       saveDraft(this.name, this.version, sending);
       const extra = this.overwriteNext ? { overwrite: true } : {};
+      if (unloading && !keepaliveFits(this.version, sending, extra)) {
+        // The draft holds it. A normal save runs if the user stays on the page.
+        schedule = 0;
+        return;
+      }
       const r = await api.savePage(this.name, this.version, sending, opts, extra);
       if (r.status === 200) {
         this.idWaits = 0;

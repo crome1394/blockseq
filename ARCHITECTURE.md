@@ -195,10 +195,12 @@ CRDTs (conflict-free merge structures):
 - **Local drafts.** Each attempt first stores the payload (`flatten({forSave})`,
   after `sealSecrets`, so ciphertext only) in `localStorage` under
   `blockseq.draft:<wb>:<page>`, removed once saved. `load()` offers a draft
-  older than 5 s that differs from the server copy (*Restore them* replaces the
+  whose blocks differ from the server copy (*Restore them* replaces the
   page and saves). Drafts expire after 30 days.
-- On unload with unsaved changes, the client sends a final `fetch` with
-  `keepalive` and the browser shows its leave-page warning.
+- On unload with unsaved changes, the latest text is written to that draft,
+  including when a save is already in flight. A final `fetch` with `keepalive`
+  is sent only when the body is within 64 KB (browsers drop a larger one).
+  The browser shows its leave-page warning.
 - Before switching views, the router waits up to 3 seconds for pending saves,
   so the next view doesn't load a stale copy.
 
