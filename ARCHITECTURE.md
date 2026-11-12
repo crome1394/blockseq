@@ -36,6 +36,8 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/index.html`, `web/app.css` | Page shell and styles (light/dark via `prefers-color-scheme`) |
 | `web/js/app.js` | Hash router, views (journals, page, all pages), search box, live updates, unload handling |
 | `web/js/editor.js` | `PageEditor` outliner, `[[`/`((` autocomplete, block-ref loading, popup menu |
+| `web/js/sync.js` | Saving and sync, installed on `PageEditor`: autosave with version check, retry policy, conflicts and the diff, keepalive on close |
+| `web/js/drafts.js` | Local drafts in `localStorage` (one per tab, Web Lock liveness) and the keepalive size limit |
 | `web/js/math.js` | LaTeX → MathML converter (tokenizer + recursive parser; no third-party code). `analyzeTex` adds source positions (`data-s`, `data-k`) and problems with fixes for the builder |
 | `web/js/mathhelp.js` | Plain-words explanations per kind of LaTeX construct, the builder's palette and examples |
 | `web/js/mathbuilder.js` | Maths builder dialog: palette, code with highlight backdrop, live preview with two-way mapping, problems |
@@ -570,7 +572,7 @@ client. The relative `path` field stays.
 | Free image resizing | Sizes are presets today (`:size` in the `{...}` image metadata); a drag handle in `.img-box` could store a width |
 | Bulk unused-file cleanup | The Assets page already filters unused files (`asset_usage`); a "delete all unused" action would go there |
 | Better search | FTS5 virtual table kept in step with `blocks` inside `save_page` |
-| Diffs in page history | `page_history` keeps whole versions; the conflict diff (`diffLines` in editor.js) could compare two of them |
+| Diffs in page history | `page_history` keeps whole versions; the conflict diff (`diffLines` in sync.js) could compare two of them |
 | Schema changes | Add a step to `db::migrate` and bump `SCHEMA_VERSION` |
 
 ## Testing
