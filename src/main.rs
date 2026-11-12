@@ -138,6 +138,24 @@ async fn shutdown_signal(state: Arc<AppState>) {
     });
 }
 
+/// Data folder for the terminal commands. BLOCKSEQ_DATA if set; otherwise
+/// the installed service's folder (/var/lib/blockseq) when it exists and
+/// ./data doesn't, so `blockseq reset-encryption-password` works on the
+/// server without extra setup. Says which folder it uses.
+fn cli_data_dir() -> String {
+    if let Ok(dir) = std::env::var("BLOCKSEQ_DATA") {
+        return dir;
+    }
+    let installed = "/var/lib/blockseq";
+    let dir = if !std::path::Path::new("data").exists() && std::path::Path::new(installed).join("blockseq.db").exists() {
+        installed
+    } else {
+        "data"
+    };
+    eprintln!("Using the data folder {dir} (set BLOCKSEQ_DATA to choose another).");
+    dir.into()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -152,7 +170,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let data_env = std::env::var("BLOCKSEQ_DATA").unwrap_or_else(|_| "data".into());
+    let data_env = cli_data_dir();
     if std::env::args().nth(1).as_deref() == Some("reset-encryption-password") {
         if let Err(e) = crypto::reset_command(std::path::Path::new(&data_env)) {
             eprintln!("error: {e:#}");

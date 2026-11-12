@@ -473,6 +473,8 @@ password or unlock, including on pages you don't have open.
 
   ```sh
   ssh -t blockseq 'BLOCKSEQ_DATA=/var/lib/blockseq blockseq reset-encryption-password'
+  # (on the server itself, plain `blockseq reset-encryption-password` finds
+  # /var/lib/blockseq on its own)
   ```
 
   It asks for the recovery key and a new password (typing is hidden). Existing

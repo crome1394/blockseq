@@ -133,7 +133,10 @@ pub fn reset_command(data_dir: &Path) -> Result<()> {
     let path = data_dir.join("config.json");
     let mut cfg = Config::load(&path)?;
     let Some(enc) = cfg.encryption.clone() else {
-        bail!("no encryption password has been set up in {}", path.display());
+        bail!(
+            "no encryption password has been set up in {}. If that's not where Blockseq keeps its data, run it as: BLOCKSEQ_DATA=/var/lib/blockseq blockseq reset-encryption-password",
+            path.display()
+        );
     };
     eprintln!("Reset the password for #Encrypted blocks ({}).", path.display());
     eprintln!("You need the recovery key that was shown when the password was first set.");
