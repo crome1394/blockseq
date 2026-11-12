@@ -48,14 +48,22 @@ export async function historyDialog(name, { deleted = false, pageId = '' } = {})
     tree.innerHTML = renderOutline(v.blocks);
     preview.replaceChildren(head, tree);
   };
-  entries.forEach((entry, i) => {
+  let opened = false;
+  entries.forEach((entry) => {
     const row = el('button', 'history-row');
     row.type = 'button';
+    const detail = entry.damaged
+      ? "Damaged version, can't be opened"
+      : `${entry.blocks} block${entry.blocks === 1 ? '' : 's'} · ${entry.words} words`;
     row.append(el('span', 'history-when', when(entry.saved_at)), el('span', 'history-why', reasonText(entry.reason)),
-      el('span', 'muted small', `${entry.blocks} block${entry.blocks === 1 ? '' : 's'} · ${entry.words} words`));
-    row.addEventListener('click', () => show(entry, row));
+      el('span', 'muted small', detail));
+    if (entry.damaged) {
+      row.disabled = true;
+    } else {
+      row.addEventListener('click', () => show(entry, row));
+      if (!opened) { opened = true; show(entry, row); }
+    }
     list.append(row);
-    if (i === 0) show(entry, row);
   });
 
   async function restore() {

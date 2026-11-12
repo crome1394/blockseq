@@ -190,7 +190,8 @@ CRDTs (conflict-free merge structures):
   old, the save removes 5+ blocks or >30%/200+ chars, or a reason is given
   (`save_page_noting`: Keep mine via `overwrite: true`; restore; merge;
   `delete_page`). Identical consecutive versions are skipped; 100 per page.
-  `restore_version` saves a kept version through `save_page_inner` (keeping
+  A version whose stored JSON does not parse is flagged and is not listed as
+  an empty page. `restore_version` saves a kept version through `save_page_inner` (keeping
   the replaced one) after giving blocks whose ids now live elsewhere new ids.
 - **Local drafts.** Each attempt first stores the payload (`flatten({forSave})`,
   after `sealSecrets`, so ciphertext only) in `localStorage` under

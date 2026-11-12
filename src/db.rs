@@ -311,6 +311,10 @@ fn migrate_v6(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// `block_count` for a kept version whose JSON does not parse. Zero would
+/// look like a real empty page. The list flags these rows.
+const DAMAGED_BLOCK_COUNT: i64 = -2;
+
 /// v5: block and word counts on each kept version, so the history list does
 /// not parse every snapshot.
 fn migrate_v5(conn: &Connection) -> Result<()> {
@@ -320,16 +324,23 @@ fn migrate_v5(conn: &Connection) -> Result<()> {
     if !has_column(conn, "page_history", "word_count")? {
         conn.execute_batch("ALTER TABLE page_history ADD COLUMN word_count INTEGER NOT NULL DEFAULT 0")?;
     }
-    // -1 marks rows from before this column existed. A damaged snapshot counts as empty.
+    // -1 marks rows from before this column existed.
     let rows: Vec<(i64, String)> = conn
         .prepare("SELECT id, blocks FROM page_history WHERE block_count < 0")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut set = conn.prepare("UPDATE page_history SET block_count = ?1, word_count = ?2 WHERE id = ?3")?;
     for (id, json) in rows {
-        let blocks: Vec<Block> = serde_json::from_str(&json).unwrap_or_default();
-        let words: i64 = blocks.iter().map(|b| word_count(&b.content)).sum();
-        set.execute(params![i64::try_from(blocks.len()).unwrap_or(i64::MAX), words, id])?;
+        match serde_json::from_str::<Vec<Block>>(&json) {
+            Ok(blocks) => {
+                let words: i64 = blocks.iter().map(|b| word_count(&b.content)).sum();
+                let n = i64::try_from(blocks.len()).unwrap_or(i64::MAX);
+                set.execute(params![n, words, id])?;
+            }
+            Err(_) => {
+                set.execute(params![DAMAGED_BLOCK_COUNT, 0_i64, id])?;
+            }
+        }
     }
     Ok(())
 }
@@ -985,6 +996,8 @@ pub struct HistoryEntry {
     pub reason: String,
     pub blocks: usize,
     pub words: i64,
+    /// The stored JSON does not parse. This row is not an empty version.
+    pub damaged: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1072,25 +1085,43 @@ fn trim_history(conn: &Connection, page_id: &str) -> Result<()> {
 }
 
 fn load_history(conn: &Connection, filter: &str, param: &str) -> Result<Vec<HistoryEntry>> {
+    // Healthy rows store a positive block_count, taken when the version was
+    // saved, so their JSON stays unread. A non-positive count is either a
+    // real empty snapshot or damage (a failed parse used to be stored as 0).
+    // Only those rows are parsed, and a failed parse is flagged.
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, version, saved_at, reason, block_count, word_count
+        "SELECT id, version, saved_at, reason, block_count, word_count,
+                CASE WHEN block_count > 0 THEN NULL ELSE blocks END
          FROM page_history WHERE {filter} ORDER BY saved_at DESC, id DESC"
     ))?;
     let rows = stmt.query_map([param], |r| {
+        let count: i64 = r.get(4)?;
+        let stored_words: i64 = r.get(5)?;
+        let json: Option<String> = r.get(6)?;
+        let (blocks, words, damaged) = match json {
+            None => (usize::try_from(count).unwrap_or(0), stored_words, false),
+            Some(json) => match serde_json::from_str::<Vec<Block>>(&json) {
+                Ok(parsed) => {
+                    let words = parsed.iter().map(|b| word_count(&b.content)).sum();
+                    (parsed.len(), words, false)
+                }
+                Err(_) => (0, 0, true),
+            },
+        };
         Ok(HistoryEntry {
             id: r.get(0)?,
             version: r.get(1)?,
             saved_at: r.get(2)?,
             reason: r.get(3)?,
-            blocks: usize::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
-            words: r.get(5)?,
+            blocks,
+            words,
+            damaged,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Kept versions of the live page with this name, newest first. Counts come
-/// from the row, so this does not read the stored block JSON. When no live
+/// Kept versions of the live page with this name, newest first. When no live
 /// page has the name, these are the versions left by deleted pages of that name.
 pub fn history(conn: &Connection, name: &str) -> Result<Vec<HistoryEntry>> {
     if let Some(page) = get_page(conn, name)? {
@@ -1708,8 +1739,56 @@ mod tests {
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].blocks, 1);
         assert_eq!(h[0].words, 2);
+        assert!(!h[0].damaged);
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_damaged_history_row_is_flagged() {
+        let c = mem();
+        save_page(&c, "P", 0, &[block("a", None, "kept")], &[]).unwrap();
+        let page = get_page(&c, "P").unwrap().unwrap();
+        // Already migrated: a failed parse was stored as zero blocks, and the
+        // JSON is still the unreadable text.
+        c.execute(
+            "INSERT INTO page_history (page_id, page_name, name_lower, version, saved_at, reason, blocks, block_count, word_count)
+             VALUES (?1, 'P', 'p', 1, 1, 'autosave', ?2, 0, 0)",
+            params![page.id, "{not json"],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO page_history (page_id, page_name, name_lower, version, saved_at, reason, blocks, block_count, word_count)
+             VALUES (?1, 'P', 'p', 1, 2, 'autosave', '[]', 0, 0)",
+            [page.id],
+        )
+        .unwrap();
+        let h = history(&c, "P").unwrap();
+        let damaged = h.iter().find(|e| e.reason == "autosave" && e.saved_at == 1).unwrap();
+        assert!(damaged.damaged);
+        assert_eq!(damaged.blocks, 0);
+        assert!(history_version(&c, damaged.id).is_err());
+        let empty = h.iter().find(|e| e.saved_at == 2).unwrap();
+        assert!(!empty.damaged);
+        assert_eq!(empty.blocks, 0);
+
+        // The migration itself must not turn a bad snapshot into a zero count.
+        c.execute_batch(
+            "CREATE TABLE page_history_old AS
+               SELECT id, page_name, name_lower, version, saved_at, reason, blocks FROM page_history;
+             DROP TABLE page_history;
+             ALTER TABLE page_history_old RENAME TO page_history;
+             PRAGMA user_version = 4",
+        )
+        .unwrap();
+        migrate(&c).unwrap();
+        let count: i64 = c
+            .query_row("SELECT block_count FROM page_history WHERE saved_at = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, DAMAGED_BLOCK_COUNT);
+        let again = history(&c, "P").unwrap();
+        assert!(again.iter().any(|e| e.saved_at == 1 && e.damaged));
+        assert!(again.iter().any(|e| e.saved_at == 2 && !e.damaged));
     }
 
     #[test]
