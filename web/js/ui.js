@@ -70,6 +70,23 @@ document.addEventListener('keydown', (e) => {
 });
 
 let connected = true;
+let lastSaved = null; // ms: newest save in this workbook (ours or another device's)
+
+// Records a save; `at` defaults to now. Only ever moves forward.
+export function noteSaved(at = Date.now()) {
+  if (at && (!lastSaved || at > lastSaved)) {
+    lastSaved = at;
+    updateStatus();
+  }
+}
+
+// For a workbook switch: the next noteSaved() sets it again.
+export function resetSaved() {
+  lastSaved = null;
+  updateStatus();
+}
+
+const savedFormat = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
 export function setConnected(value) {
   connected = value;
   updateStatus();
@@ -85,6 +102,13 @@ export function updateStatus() {
   else if (all.some((e) => e.offline)) { text = 'Offline: changes not saved yet'; cls = 'bad'; }
   else if (all.some((e) => e.dirty || e.saving)) { text = 'Saving…'; cls = 'busy'; }
   else if (!connected) { text = 'Reconnecting…'; cls = 'busy'; }
-  el.textContent = text;
   el.className = `status ${cls}`;
+  if (cls === 'ok' && lastSaved) {
+    const when = new Date(lastSaved).toLocaleString([], savedFormat);
+    el.replaceChildren(document.createTextNode(text), Object.assign(document.createElement('span'), { className: 'status-time', textContent: when }));
+    el.title = `Last saved ${when}`;
+  } else {
+    el.textContent = text;
+    el.title = '';
+  }
 }

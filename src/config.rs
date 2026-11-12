@@ -48,6 +48,10 @@ pub struct Config {
     pub statuses: Vec<Status>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption: Option<Encryption>,
+    /// Display name of the Main workbook (its folder is the data folder
+    /// itself, so it is renamed by name only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_name: Option<String>,
 }
 
 impl Default for Config {
@@ -60,6 +64,7 @@ impl Default for Config {
         };
         Config {
             encryption: None,
+            main_name: None,
             statuses: vec![
                 s("BACKLOG", "Backlog", "gray", false),
                 s("TODO", "Todo", "blue", false),

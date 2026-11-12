@@ -84,6 +84,16 @@ export function youtubeId(url) {
     || /^([\w-]{11})$/.exec(url);
   return m ? m[1] : null;
 }
+// Post id from an x.com / twitter.com status link.
+export function tweetId(url) {
+  return /^(?:https?:\/\/)?(?:www\.|mobile\.)?(?:x|twitter)\.com\/(?:[\w]+|i\/web)\/status(?:es)?\/(\d+)/i.exec(url)?.[1] || null;
+}
+
+function isDarkTheme() {
+  const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(getComputedStyle(document.body).backgroundColor);
+  return m ? (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) < 128 : false;
+}
+
 export function vimeoId(url) {
   return /^(?:https?:\/\/)?(?:www\.|player\.)?vimeo\.com\/(?:video\/)?(\d+)/i.exec(url)?.[1] || null;
 }
@@ -102,6 +112,15 @@ function embedHtml(url) {
   }
   const vm = vimeoId(url);
   if (vm) return frame(`https://player.vimeo.com/video/${vm}`, 'Vimeo video');
+  const tw = tweetId(url);
+  if (tw) {
+    // X's own embed page in a frame (no X script runs in Blockseq itself).
+    // It reports its height by postMessage; see the listener in app.js.
+    const theme = isDarkTheme() ? 'dark' : 'light';
+    return `<span class="embed-wrap embed-tweet"><iframe class="tweet-frame" src="https://platform.twitter.com/embed/Tweet.html?id=${tw}&amp;dnt=true&amp;theme=${theme}" `
+      + 'title="Post on X" loading="lazy" scrolling="no" referrerpolicy="strict-origin-when-cross-origin"></iframe>'
+      + `<a class="ext tweet-link" href="${esc(safeUrl(url))}"${linkTarget()}>Open on X</a></span>`;
+  }
   if (/^https?:\/\//i.test(url) && fileKind(url) === 'video') {
     return `<span class="embed-wrap embed-file"><video src="${esc(url)}" controls preload="metadata"></video></span>`;
   }
@@ -140,7 +159,7 @@ const INLINE = [
   '\\\\\\[(?<mathD2>.+?)\\\\\\]',
   '\\\\\\((?<mathI>.+?)\\\\\\)',
   '(?<![\\\\\\w$])\\$(?<mathI2>[^\\s$](?:[^$\\n]*?[^\\s$\\\\])?)\\$(?![\\w$])',
-  '\\{\\{(?:video|youtube|vimeo)\\s+(?<embed>[^}\\s]+)\\s*\\}\\}',
+  '\\{\\{(?:video|youtube|vimeo|tweet|twitter)\\s+(?<embed>[^}\\s]+)\\s*\\}\\}',
   '!\\[(?<imgAlt>[^\\]\\n]*)\\]\\((?<imgUrl>[^)\\s]+)\\)(?:\\{(?<imgMeta>[^}\\n]*)\\})?',
   '\\[(?<linkText>[^\\]]+)\\]\\((?<linkUrl>[^)\\s]+)\\)',
   '#\\[\\[(?<tagb>[^\\]\\n]+)\\]\\]',

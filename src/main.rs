@@ -197,6 +197,7 @@ async fn main() -> Result<()> {
         .route("/tasks", get(api::tasks))
         .route("/assets", get(api::list_assets).post(api::upload_asset).delete(api::delete_asset))
         .route("/workbooks", get(api::list_workbooks).post(api::create_workbook))
+        .route("/workbooks/rename", post(api::rename_workbook))
         .route("/config", get(api::get_config).put(api::put_config))
         .route("/encryption", get(api::get_encryption).put(api::put_encryption))
         .route("/encryption/pending", get(api::encryption_pending))

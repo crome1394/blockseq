@@ -550,7 +550,42 @@ pub async fn delete_asset(
 // ---- workbooks and shared settings --------------------------------------------
 
 pub async fn list_workbooks(State(s): Shared) -> ApiResult {
-    Ok(Json(s.workbooks.list()).into_response())
+    let mut list = s.workbooks.list();
+    if let Some(name) = Config::load(&s.root.join("config.json")).main_name {
+        list[0].name = name;
+    }
+    Ok(Json(list).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct RenameWorkbook {
+    id: String,
+    to: String,
+}
+
+/// Renames a workbook: its folder, or for Main its display name.
+pub async fn rename_workbook(State(s): Shared, Query(q): Query<RenameWorkbook>) -> ApiResult {
+    let to = q.to.trim().to_string();
+    let info = if q.id == MAIN {
+        if to.is_empty() || to.chars().count() > 64 || to.chars().any(char::is_control) {
+            return Err(bad("use 1 to 64 characters"));
+        }
+        let path = s.root.join("config.json");
+        let mut cfg = Config::load(&path);
+        cfg.main_name = (to != "Main").then(|| to.clone());
+        cfg.save(&path)?;
+        crate::workbooks::WorkbookInfo { id: MAIN.into(), name: to.clone(), kind: "blockseq" }
+    } else {
+        let state = s.clone();
+        let (from, dest) = (q.id.clone(), to.clone());
+        tokio::task::spawn_blocking(move || state.workbooks.rename(&from, &dest))
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?
+            .map_err(|e| bad(format!("{e:#}")))?
+    };
+    tracing::info!("renamed workbook {} to {}", q.id, info.name);
+    s.notify_all(json!({ "type": "workbooks", "renamed": { "from": q.id, "to": info.id } }));
+    Ok(Json(info).into_response())
 }
 
 pub async fn create_workbook(State(s): Shared, Query(q): Query<NameQuery>) -> ApiResult {
@@ -680,7 +715,8 @@ pub async fn export(State(s): Shared, Wb(wb): Wb) -> ApiResult {
     let len = file.metadata().await.map_err(|e| anyhow::anyhow!(e))?.len();
     // The open handle keeps the data readable; the name goes away now.
     let _ = tokio::fs::remove_file(&tmp_zip).await;
-    let label = if wb.id == MAIN { "Main" } else { wb.id.as_str() };
+    let main_name = Config::load(&s.root.join("config.json")).main_name.unwrap_or_else(|| "Main".into());
+    let label = if wb.id == MAIN { main_name.as_str() } else { wb.id.as_str() };
     let mut res = file_body(file).into_response();
     let h = res.headers_mut();
     h.insert(header::CONTENT_TYPE, "application/zip".parse().unwrap());

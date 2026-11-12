@@ -4,7 +4,7 @@ import { api, clientId, invalidatePageNames, getPageNames } from './api.js';
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
 import { PageEditor, editors, hydrateRefs, clearRefCache, showMenu, showStatusPicker, activeEditor } from './editor.js';
-import { toast, updateStatus, setConnected, openModal, closeModal, copyText } from './ui.js';
+import { toast, updateStatus, setConnected, openModal, closeModal, copyText, noteSaved, resetSaved } from './ui.js';
 import { decorateCode } from './code.js';
 import { onSettingChange, getSetting, setSetting } from './settings.js';
 import { settingsForm } from './settings-ui.js';
@@ -530,7 +530,8 @@ function connectEvents() {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     if (ev.type === 'resync') return resyncAll();
-    if (ev.type === 'workbooks' || ev.type === 'encryption') return;
+    if (ev.type === 'workbooks') return workbooksChanged(ev);
+    if (ev.type === 'encryption') return;
     if (!ev.name) return; // everything below is about one page
     if (ev.type === 'config') return reloadStatuses();
     if (ev.wb && ev.wb !== workbook()) return; // another workbook
@@ -539,6 +540,7 @@ function connectEvents() {
     if (ev.type === 'assets') return refreshView();
     if (ev.type === 'favorite') return; // the sidebar list refreshes above
     if (ev.client === clientId) return;
+    noteSaved(); // another device saved into this workbook
     clearRefCache();
     invalidatePageNames();
     for (const ed of editors) {
@@ -700,6 +702,7 @@ async function switchWorkbook(id) {
   for (const ed of [...editors]) if (!ed.disposed) ed.dispose();
   await settleSaves(); // finish saving into the old workbook first
   setWorkbook(id);
+  resetSaved();
   clearRefCache();
   invalidatePageNames();
   showWorkbookName();
@@ -733,23 +736,101 @@ function newWorkbookDialog() {
   input.focus();
 }
 
-async function openWorkbookDialog() {
+// The workbook menu: pick a workbook, then Open or Rename it.
+async function openWorkbookDialog(selectId = workbook()) {
   const body = el('div', 'dialog-form');
   const list = el('div', 'journal-pick');
+  list.setAttribute('role', 'listbox');
+  list.tabIndex = 0;
   body.append(list, el('p', 'muted small',
-    'To add a workbook from another place, copy its folder into workbooks/ in the server\'s data folder (e.g. /var/lib/blockseq/workbooks/My Notes). A Logseq graph folder (with pages/ and journals/) is imported the first time you open it; its original files are kept in logseq-original/.'));
-  openModal('Open workbook', body, [['Import backup…', () => { importDialog(); return false; }], ['New workbook…', () => { newWorkbookDialog(); return false; }], ['Close']]);
+    'To add a workbook from another place, copy its folder into workbooks/ in the server\'s data folder (e.g. /var/lib/blockseq/workbooks/My Notes), or use Import backup. A Logseq graph folder (with pages/ and journals/) is imported the first time you open it; its original files are kept in logseq-original/.'));
+  let selected = selectId;
+  const open = () => switchWorkbook(selected);
+  openModal('Workbooks', body, [
+    ['Rename…', () => { renameWorkbookDialog(selected); return false; }],
+    ['Import backup…', () => { importDialog(); return false; }],
+    ['New workbook…', () => { newWorkbookDialog(); return false; }],
+    ['Open', () => { open(); return false; }, 'primary'],
+    ['Close'],
+  ]);
   list.append(el('p', 'muted', 'Loading…'));
   await loadWorkbooks();
+  if (!workbookList.some((w) => w.id === selected)) selected = workbook();
+  const paint = () => list.querySelectorAll('.pick-row').forEach((r) => {
+    const on = r.dataset.id === selected;
+    r.classList.toggle('selected', on);
+    r.setAttribute('aria-selected', on);
+  });
   list.replaceChildren(...workbookList.map((w) => {
     const row = el('button', 'pick-row' + (w.id === workbook() ? ' active' : ''));
     row.type = 'button';
+    row.dataset.id = w.id;
+    row.setAttribute('role', 'option');
     const note = w.id === workbook() ? 'open now' : w.kind === 'logseq' ? 'Logseq graph · imports on open' : w.kind === 'empty' ? 'new' : '';
     row.append(el('span', '', w.name), el('span', 'muted small', note));
-    // The server opens (and, for a Logseq graph, imports) it on first use.
-    row.addEventListener('click', () => switchWorkbook(w.id));
+    // Click selects, double-click (or Enter) opens. The server opens (and,
+    // for a Logseq graph, imports) it on first use.
+    row.addEventListener('click', () => { selected = w.id; paint(); });
+    row.addEventListener('dblclick', open);
     return row;
   }));
+  paint();
+  list.addEventListener('keydown', (e) => {
+    const i = workbookList.findIndex((w) => w.id === selected);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = workbookList[Math.max(0, Math.min(workbookList.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+      selected = next.id;
+      paint();
+      list.querySelector(`.pick-row[data-id="${CSS.escape(selected)}"]`)?.focus();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      open();
+    } else if (e.key === 'F2') {
+      e.preventDefault();
+      renameWorkbookDialog(selected);
+    }
+  });
+  list.querySelector('.pick-row.selected')?.focus();
+}
+
+function renameWorkbookDialog(id) {
+  const w = workbookList.find((x) => x.id === id);
+  if (!w) return;
+  const body = el('div', 'dialog-form');
+  const label = el('label', 'field');
+  label.append(el('span', '', 'New name'));
+  const input = el('input');
+  input.value = w.name;
+  input.maxLength = 64;
+  label.append(input);
+  const err = el('p', 'error small');
+  body.append(label, el('p', 'muted small', id === 'main'
+    ? 'Main is the server\'s data folder itself, so only the name shown here changes.'
+    : `Renames the folder workbooks/${id} on the server. Other devices that have it open follow the new name.`), err);
+  const save = async () => {
+    const to = input.value.trim();
+    if (!to || to === w.name) { openWorkbookDialog(id); return; }
+    const r = await api.renameWorkbook(id, to);
+    if (!r.ok) { err.textContent = r.data?.error || 'Could not rename it'; return; }
+    renamed(id, r.data.id);
+    toast(`Renamed to ${r.data.name}`);
+    openWorkbookDialog(r.data.id);
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+  openModal(`Rename ${w.name}`, body, [['Cancel', () => { openWorkbookDialog(id); return false; }], ['Rename', () => { save(); return false; }, 'primary']]);
+  input.select();
+}
+
+// A workbook's id changed (renamed here or on another device).
+async function renamed(from, to) {
+  if (workbook() === from) setWorkbook(to);
+  await loadWorkbooks();
+}
+
+async function workbooksChanged(ev) {
+  if (ev.renamed) await renamed(ev.renamed.from, ev.renamed.to);
+  else await loadWorkbooks();
 }
 
 wbButton.addEventListener('click', () => openWorkbookDialog());
@@ -760,8 +841,23 @@ document.addEventListener('blockseq:open-workbook', async (e) => {
 });
 // Pages were rewritten by this tab outside an editor (re-encryption).
 document.addEventListener('blockseq:resync', () => resyncAll());
+// The calendar loads every page; the newest change is the "last saved" time.
+document.addEventListener('blockseq:last-change', (e) => noteSaved(e.detail.at));
+
+// Embedded X posts report their height from inside their frame.
+window.addEventListener('message', (e) => {
+  if (e.origin !== 'https://platform.twitter.com') return;
+  let data = e.data;
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch { return; } }
+  const msg = data?.['twttr.embed'];
+  if (msg?.method !== 'twttr.private.resize') return;
+  const height = Number(msg.params?.[0]?.height);
+  if (!(height > 0)) return;
+  for (const frame of document.querySelectorAll('iframe.tweet-frame')) {
+    if (frame.contentWindow === e.source) frame.style.height = `${Math.ceil(height)}px`;
+  }
+});
 document.getElementById('new-workbook').addEventListener('click', newWorkbookDialog);
-document.getElementById('open-workbook').addEventListener('click', openWorkbookDialog);
 
 // ---- assets --------------------------------------------------------------------
 

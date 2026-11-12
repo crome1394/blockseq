@@ -6,7 +6,7 @@
 import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
 import {
   renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
-  isVideoUrl, mathSpans,
+  isVideoUrl, mathSpans, tweetId,
 } from './render.js';
 import {
   imageFiles, uploadImage, pickImages, imageAt, withAlign, withMeta, withoutImage, withoutFileLink,
@@ -20,7 +20,7 @@ import { unlockDialog } from './secure-ui.js';
 import { rekeyDialog } from './backup-ui.js';
 import { openMathBuilder } from './mathbuilder.js';
 import { journalName } from './dates.js';
-import { toast, copyText, updateStatus, openModal } from './ui.js';
+import { toast, copyText, updateStatus, openModal, noteSaved } from './ui.js';
 import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
 import { getSetting } from './settings.js';
 
@@ -1621,6 +1621,14 @@ export class PageEditor {
       this.replaceText(node, ta, ta.selectionStart, ta.selectionEnd, `{{video ${text.trim()}}}`);
       return;
     }
+    // A pasted X / Twitter post link becomes an embedded post (Logseq's
+    // {{tweet}} macro). Tracking parameters (?s=20&t=…) are dropped.
+    if (text && !text.trim().includes('\n') && tweetId(text.trim()) && !inFence(ta.value, ta.selectionStart)) {
+      e.preventDefault();
+      this.beginOp();
+      this.replaceText(node, ta, ta.selectionStart, ta.selectionEnd, `{{tweet ${text.trim().split(/[?#]/)[0]}}}`);
+      return;
+    }
     if (text && text === lastCopy && /^- [^\n]*$/.test(text)) {
       // One block copied from Blockseq: paste its text, not "- text".
       e.preventDefault();
@@ -1836,6 +1844,7 @@ export class PageEditor {
         this.offline = false;
         if (this.changeSeq === seq) this.dirty = false;
         if (wasNew) invalidatePageNames();
+        noteSaved(r.data.page.updated_at || Date.now());
         this.opts.onSaved?.(this);
       } else if (r.status === 409) {
         this.conflict = r.data.page;

@@ -7,6 +7,9 @@ and you use them from any browser on your LAN or tailnet.
 - Daily journals, `[[page links]]`, `#tags`, `((block refs))`, linked references
 - Workbooks: separate sets of notes, each in its own folder; Logseq graphs
   copied onto the server are imported
+- Workbook menu (click the workbook name): open, rename, import a backup, or
+  create a workbook. Main can be renamed too (display name only)
+- The status at the bottom shows when the workbook was last saved, to the second
 - Task statuses you define (Backlog, Todo, Doing, In Review, Done, Cancelled),
   colour-coded, with a task list in a side pane
 - Markdown formatting, code blocks, tables, numbered lists, admonitions,
@@ -159,7 +162,8 @@ lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
 `/var/lib/blockseq/` (or `./data` locally) contains:
 
 - `config.json` holds settings shared by all devices (task statuses).
-- `workbooks/<name>/` holds every workbook except Main, each with the same
+- `workbooks/<name>/` holds every workbook except Main (renaming a workbook
+  renames its folder), each with the same
   layout as below (its own `blockseq.db`, `pages/`, `journals/`, `assets/`).
 - The rest of the folder is the **Main** workbook:
 - `blockseq.db` is the SQLite database and the source of truth.
@@ -170,7 +174,8 @@ lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
   from a block keeps the file, so undo still works.
 
 **Adding a workbook from elsewhere (side-loading).** Copy a folder into
-`workbooks/` and give it to the service user, then pick it in *Open workbook…*:
+`workbooks/` and give it to the service user, then pick it in the workbook menu
+(click the workbook name at the top of the sidebar):
 
 ```sh
 rsync -avs ~/"Logseq/My Notes/" "blockseq:/var/lib/blockseq/workbooks/My Notes/"
@@ -198,7 +203,7 @@ leaked backup reveals no more than the server does, and after a restore your
 password (or recovery key) opens the blocks again. Keep the recovery key
 somewhere other than next to your backups.
 
-**Import backup…** (Settings → Backup, or *Open workbook…*) restores a zip
+**Import backup…** (Settings → Backup, or the workbook menu) restores a zip
 as a **new** workbook; nothing that exists is changed or overwritten. A zipped
 Logseq graph works too. For encrypted blocks:
 
@@ -308,6 +313,12 @@ shown, so a file can't run code on your Blockseq address.
 **YouTube / Vimeo:** paste a video link on its own and it becomes an embedded
 player (stored as `{{video URL}}`, as in Logseq; `&t=42s` start times are kept).
 `/video` inserts the same thing. Videos are loaded from youtube-nocookie.com.
+
+**X / Twitter posts:** paste a post link (x.com or twitter.com) on its own and it
+becomes an embedded post, stored as `{{tweet URL}}` like Logseq (tracking bits
+such as `?s=20` are dropped). It is X's own embed page in a frame, matching the
+light or dark theme, with an "Open on X" link under it. An embed shows that one
+post (and what it replies to); to keep a whole thread, paste each post you want.
 
 **Assets** (sidebar) lists every file in the workbook's `assets/` folder with
 a thumbnail, size, date and the pages that use it, and buttons to open,

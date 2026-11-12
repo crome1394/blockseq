@@ -69,6 +69,7 @@ export const api = {
   deleteAsset: (name) => request('DELETE', `/api/assets?name=${enc(name)}`),
   workbooks: () => getJson('/api/workbooks', { global: true }),
   createWorkbook: (name) => request('POST', `/api/workbooks?name=${enc(name)}`, undefined, { global: true }),
+  renameWorkbook: (id, to) => request('POST', `/api/workbooks/rename?id=${enc(id)}&to=${enc(to)}`, undefined, { global: true }),
   config: () => getJson('/api/config', { global: true }),
   saveConfig: (cfg) => request('PUT', '/api/config', cfg, { global: true }),
 };

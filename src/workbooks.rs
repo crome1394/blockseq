@@ -24,6 +24,10 @@ pub struct Workbook {
     pub id: String,
     pub dir: PathBuf,
     pub db: Mutex<Connection>,
+    /// Set when the workbook's folder was renamed: requests still holding
+    /// this handle keep using the database (same file), but must not write
+    /// Markdown under the old folder name.
+    pub retired: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +39,10 @@ pub struct WorkbookInfo {
 }
 
 impl Workbook {
+    fn is_retired(&self) -> bool {
+        self.retired.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn assets_dir(&self) -> PathBuf {
         self.dir.join("assets")
     }
@@ -42,6 +50,9 @@ impl Workbook {
     /// Writes the page as a Logseq Markdown file. This is a readable backup;
     /// the database stays the source of truth, so failures are only logged.
     pub fn write_mirror(&self, page: &db::PageMeta, blocks: &[db::Block]) {
+        if self.is_retired() {
+            return;
+        }
         let path = self.dir.join(md::mirror_path(&page.name, page.journal_day));
         // Like Logseq, a page with no text gets no file.
         if blocks.iter().all(|b| b.content.trim().is_empty()) {
@@ -54,6 +65,9 @@ impl Workbook {
     }
 
     pub fn remove_mirror(&self, page: &db::PageMeta) {
+        if self.is_retired() {
+            return;
+        }
         let _ = std::fs::remove_file(self.dir.join(md::mirror_path(&page.name, page.journal_day)));
     }
 
@@ -154,6 +168,49 @@ impl Registry {
         Ok(WorkbookInfo { id: name.into(), name: name.into(), kind: "empty" })
     }
 
+    /// Renames a workbook's folder (not Main). An open workbook is closed
+    /// first: its database is checkpointed and held while the folder moves,
+    /// and it reopens under the new name on next use.
+    pub fn rename(&self, from: &str, to: &str) -> Result<WorkbookInfo> {
+        let to = to.trim();
+        if !valid_id(from) {
+            bail!("no workbook called {from}");
+        }
+        if !valid_id(to) {
+            bail!("use letters, digits, spaces, dashes, dots or underscores (not \"main\")");
+        }
+        let src = self.root.join("workbooks").join(from);
+        let dst = self.root.join("workbooks").join(to);
+        if !src.is_dir() {
+            bail!("no workbook called {from}");
+        }
+        if from != to && dst.exists() {
+            bail!("a workbook called {to} already exists");
+        }
+        let mut open = self.open.lock().unwrap();
+        let wb = open.remove(from);
+        let result = {
+            let guard = wb.as_ref().map(|w| w.db.lock().unwrap());
+            if let Some(conn) = &guard {
+                let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+            }
+            let r = std::fs::rename(&src, &dst).with_context(|| format!("renaming {}", src.display()));
+            if r.is_ok() {
+                if let Some(w) = &wb {
+                    w.retired.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            r
+        };
+        if let Err(e) = result {
+            if let Some(w) = wb {
+                open.insert(from.to_string(), w);
+            }
+            return Err(e);
+        }
+        Ok(WorkbookInfo { id: to.into(), name: to.into(), kind: Self::kind(&dst) })
+    }
+
     /// Restores a backup zip (or a zipped Logseq graph) as a new workbook.
     /// It is unpacked into a hidden folder first and only renamed into place
     /// once complete, so a failed import leaves nothing behind.
@@ -203,7 +260,7 @@ impl Registry {
         if pruned > 0 {
             tracing::info!("workbook {id}: removed {pruned} empty, unlinked pages");
         }
-        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn) });
+        let wb = std::sync::Arc::new(Workbook { id: id.to_string(), dir, db: Mutex::new(conn), retired: Default::default() });
         if import {
             let report = import_logseq(&wb, task_words)?;
             tracing::info!("workbook {id}: imported Logseq graph ({report})");

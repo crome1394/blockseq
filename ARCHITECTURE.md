@@ -24,7 +24,7 @@ in sync through autosave, versioned page saves and a live event stream.
 |------|---------|
 | `src/main.rs` | Config from env, app state, router, optional password, static files, shutdown |
 | `src/api.rs` | HTTP handlers for the JSON API and the server-sent event (SSE) stream; the `Wb` workbook extractor |
-| `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import |
+| `src/workbooks.rs` | Workbook registry (Main + `workbooks/<name>/`), Markdown mirror per workbook, Logseq graph import, rename (checkpoints and holds the open database while the folder moves; old handles are marked `retired` so they stop writing Markdown under the old name). Main's display name is `main_name` in `config.json` |
 | `src/config.rs` | Shared settings in `config.json` (task statuses, wrapped encryption key) |
 | `src/backup.rs` | Backup zips (`GET /api/export`, `blockseq export`) and restoring them as new workbooks (`POST /api/import`) |
 | `src/crypto.rs` | Terminal password reset for encrypted blocks (same formats as `crypto.js`) |
