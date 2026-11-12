@@ -267,7 +267,7 @@ CRDTs (conflict-free merge structures):
   | `POST /api/assets` | `upload_asset` | raw bytes of any file, streamed to disk (cap `BLOCKSEQ_MAX_UPLOAD_MB`, default 256); `X-Filename` optional; returns path and kind |
   | `GET /api/assets` | `list_assets` | files with size, date, kind and the pages that mention them; `path` is `assets/<file>` |
   | `DELETE /api/assets?name=` | `delete_asset` | removes the file |
-  | `GET /assets/<name>` | `get_asset` | streamed, `Range` support (video seeking), cached forever, `nosniff`; `assets::serve_policy` decides type and inline vs download (HTML/SVG/unknown always download, with `sandbox` CSP) |
+  | `GET /assets/<name>` | `get_asset` | streamed, `Range` support (video seeking), cached forever, `nosniff`; `assets::serve_policy` decides type and inline vs download (HTML/SVG/unknown always download, with `sandbox` CSP; PDFs stay inline under that same sandbox) |
   | `PUT /api/block?id=` | `put_block` | change one block's text (task list status changes); saves the page |
   | `GET /api/tasks` | `tasks` | every block linked to `task` |
   | `GET/POST /api/workbooks` | `list_workbooks` / `create_workbook` | not workbook-scoped |

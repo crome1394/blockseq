@@ -108,13 +108,15 @@ pub fn ext_for(head: &[u8], original: &str) -> String {
 
 /// How to serve a stored file: content type, whether the browser may show it
 /// (otherwise it is a download), and an optional Content-Security-Policy.
-/// Only types that can't run scripts on Blockseq's address are shown; HTML,
-/// SVG and anything unknown are always downloads.
+/// Only types that can't run scripts on Blockseq's address are shown. HTML,
+/// SVG and anything unknown are always downloads. A PDF stays inline so the
+/// page preview can show it, and is sandboxed so an old viewer cannot run it
+/// as a script on this origin.
 pub fn serve_policy(name: &str) -> (String, bool, Option<&'static str>) {
     let mime = mime_guess::from_path(name).first_or_octet_stream().essence_str().to_string();
     match kind_of(name) {
         "image" => (mime, true, Some("default-src 'none'")),
-        "pdf" => ("application/pdf".into(), true, None),
+        "pdf" => ("application/pdf".into(), true, Some("sandbox")),
         "video" | "audio" => (mime, true, None),
         "text" => ("text/plain; charset=utf-8".into(), true, Some("sandbox")),
         _ => ("application/octet-stream".into(), false, Some("sandbox")),
@@ -231,6 +233,8 @@ mod tests {
         assert_eq!((ct.as_str(), inline), ("application/octet-stream", false));
         let (ct, inline, csp) = serve_policy("notes.txt");
         assert_eq!((ct.as_str(), inline, csp), ("text/plain; charset=utf-8", true, Some("sandbox")));
+        let (ct, inline, csp) = serve_policy("notes.pdf");
+        assert_eq!((ct.as_str(), inline, csp), ("application/pdf", true, Some("sandbox")));
         assert!(serve_policy("clip.mp4").1);
     }
 }
