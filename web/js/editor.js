@@ -3,6 +3,7 @@
 // structural changes, and autosaves the whole page with optimistic
 // versioning (the server answers 409 if another device saved first).
 
+import { el } from './dom.js';
 import { api, uuid, getPageNames, invalidatePageNames } from './api.js';
 import {
   renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
@@ -242,13 +243,6 @@ function buildTree(blocks) {
     byId.set(b.id, node);
   }
   return root;
-}
-
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
 }
 
 // True if the caret sits inside a ``` code fence (including its first line).

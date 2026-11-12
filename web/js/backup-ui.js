@@ -2,18 +2,12 @@
 // as a new workbook, and re-encrypt restored #Encrypted blocks whose backup
 // used a different password. See src/backup.rs for what a backup holds.
 
+import { el } from './dom.js';
 import { api } from './api.js';
 import * as sec from './crypto.js';
 import { unlockDialog } from './secure-ui.js';
 import { openModal, closeModal, toast } from './ui.js';
 import { workbook, withWb } from './workbook.js';
-
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
 
 function button(label, cls = '') {
   const b = el('button', cls, label);

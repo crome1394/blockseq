@@ -1,5 +1,6 @@
 // App shell: routing, views, search and live updates from the server.
 
+import { el } from './dom.js';
 import { api, clientId, invalidatePageNames, getPageNames } from './api.js';
 import { journalName, journalDay, formatTime } from './dates.js';
 import { esc, renderContent, tagHue, inline, COPY_ICON, CHECK_ICON } from './render.js';
@@ -35,13 +36,6 @@ function refreshCalendar() {
 }
 let view = null; // { refresh?() }
 let routeSeq = 0;
-
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
 
 function pageHref(name) {
   return `#/page/${encodeURIComponent(name)}`;

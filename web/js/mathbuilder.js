@@ -4,16 +4,10 @@
 // with a one-click fix, and nothing is hidden: every palette button shows
 // the LaTeX it inserts. Uses math.js (analyzeTex) and mathhelp.js.
 
+import { el } from './dom.js';
 import { analyzeTex, texToMathML } from './math.js';
 import { explain, kindTitle, PALETTE, EXAMPLES } from './mathhelp.js';
 import { openModal, closeModal } from './ui.js';
-
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
 
 const escHtml = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 

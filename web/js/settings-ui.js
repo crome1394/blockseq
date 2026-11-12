@@ -3,6 +3,7 @@
 // or (when there are none) reverts the last Apply. Task statuses are saved on
 // the server (shared by every device); everything else in this browser.
 
+import { el } from './dom.js';
 import { CATEGORIES, settingRow, getSetting, setSetting } from './settings.js';
 import { ACTIONS, defaultKey, comboOf, prettyKey } from './keys.js';
 import { getStatuses, setStatuses, STATUS_COLORS, statusStyle } from './tasks.js';
@@ -10,13 +11,6 @@ import { api } from './api.js';
 import { toast } from './ui.js';
 import { securityPanel } from './secure-ui.js';
 import { backupPanel } from './backup-ui.js';
-
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
 
 const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);

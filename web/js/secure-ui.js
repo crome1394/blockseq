@@ -1,14 +1,8 @@
 // Dialogs and the Settings → Security panel for #Encrypted blocks.
 
+import { el } from './dom.js';
 import * as sec from './crypto.js';
 import { openModal, closeModal, toast, copyText } from './ui.js';
-
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
 
 function passwordField(label, autocomplete = 'current-password') {
   const wrap = el('label', 'field');
