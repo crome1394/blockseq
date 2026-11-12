@@ -85,7 +85,12 @@ export class Calendar {
     for (let i = 0; i < 42; i++) {
       const date = new Date(this.year, this.month, 1 - ((first.getDay() - start + 7) % 7) + i);
       const day = journalDay(date);
-      const cell = button('cal-day', String(date.getDate()), date.toDateString(), () => this.onPick(date));
+      const cell = button('cal-day', '', date.toDateString(), () => this.onPick(date));
+      // The number sits in a circle: filled for today, a ring for the day shown.
+      const num = document.createElement('span');
+      num.className = 'cal-num';
+      num.textContent = String(date.getDate());
+      cell.append(num);
       if (date.getMonth() !== this.month) cell.classList.add('other-month');
       if (day === today) cell.classList.add('today');
       if (day === this.selected) cell.classList.add('selected');
