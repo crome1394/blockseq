@@ -50,6 +50,7 @@ pub fn snapshot(conn: &Connection, to: &Path) -> Result<()> {
 /// cannot read a WAL database through a read-only connection. The copy does
 /// not change the live database. A busy timeout lets a short save finish
 /// instead of failing the snapshot.
+#[cfg(test)]
 pub fn snapshot_file(db: &Path, to: &Path) -> Result<()> {
     let conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
     crate::db::set_busy_timeout(&conn)?;

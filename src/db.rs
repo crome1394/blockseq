@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS page_history (
     word_count  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS page_history_page ON page_history(name_lower, saved_at);
-CREATE INDEX IF NOT EXISTS page_history_id ON page_history(page_id, saved_at);
+-- page_history_id is created in migrate_v6, after an older table gains page_id.
+-- Creating it here fails open: the existing table has no such column yet.
 
 -- Block text for search. unicode61 folds case and accents, so a query for
 -- "e" matches "É" without scanning every block on each keystroke.
@@ -1623,6 +1624,64 @@ mod tests {
         assert_eq!(history(&c, "P").unwrap()[0].reason, "before a large change");
         assert_eq!(history(&c, "P").unwrap()[0].blocks, 8);
         assert_eq!(history(&c, "P").unwrap()[0].words, 8 * word_count("a line of text"));
+    }
+
+    #[test]
+    fn an_older_database_file_opens() {
+        let dir = std::env::temp_dir().join(format!("bq-open-v5-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blockseq.db");
+        // A v5 file: page_history has no page_id. open() applies SCHEMA before migrating.
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pages (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, name_lower TEXT NOT NULL UNIQUE,
+                journal_day INTEGER, version INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL, favorite INTEGER NOT NULL DEFAULT 0,
+                words INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE blocks (
+                id TEXT PRIMARY KEY, page_id TEXT NOT NULL, parent_id TEXT, position INTEGER NOT NULL,
+                content TEXT NOT NULL, collapsed INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE refs (
+                block_id TEXT NOT NULL, target_lower TEXT NOT NULL, target_name TEXT NOT NULL,
+                tag INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE page_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                page_name TEXT NOT NULL, name_lower TEXT NOT NULL, version INTEGER NOT NULL,
+                saved_at INTEGER NOT NULL, reason TEXT NOT NULL, blocks TEXT NOT NULL,
+                block_count INTEGER NOT NULL DEFAULT 0, word_count INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO pages (id, name, name_lower, version, created_at, updated_at)
+                VALUES ('live', 'Notes', 'notes', 2, 1, 1);
+             INSERT INTO page_history (page_name, name_lower, version, saved_at, reason, blocks, block_count, word_count)
+                VALUES ('Notes', 'notes', 1, 1, 'autosave', '[]', 0, 0),
+                       ('Old', 'old', 1, 2, 'before deleting', '[]', 0, 0);
+             PRAGMA user_version = 5;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let live: String = conn
+            .query_row("SELECT page_id FROM page_history WHERE name_lower = 'notes'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live, "live");
+        let old: String = conn
+            .query_row("SELECT page_id FROM page_history WHERE name_lower = 'old'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!old.is_empty() && old != "live");
+        let indexed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'page_history_id'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(indexed, 1);
+        drop(conn);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
