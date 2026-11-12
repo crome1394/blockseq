@@ -1,41 +1,46 @@
 # Blockseq
 
-A self-hosted, Logseq-style outliner. Your notes live on your server (SQLite),
-and you use them from any browser on your LAN or tailnet.
+A self-hosted, Logseq-style outliner. Your notes live on your own server (in
+SQLite), and you use them from any browser on your network or VPN.
+
+**Inspired by Logseq.** Blockseq owes its ideas to the great work of the
+[Logseq](https://logseq.com) project: blocks, journals, page links and the
+outliner way of writing. It is a **clean-room implementation**, written from
+scratch from observed behaviour and the publicly documented Markdown file
+format, without reading Logseq's source code. It contains no code, styles or assets from Logseq (see the provenance
+note in [AGENTS.md](AGENTS.md)). It is not affiliated with or endorsed by
+Logseq.
 
 - Block outliner: nested bullets, indent and outdent, collapse, move, merge
 - Daily journals, `[[page links]]`, `#tags`, `((block refs))`, linked references
-- Workbooks: separate sets of notes, each in its own folder; Logseq graphs
-  copied onto the server are imported
-- Workbook menu (click the workbook name): open, rename, delete, import a
-  backup, or create a workbook; each row shows the workbook's folder on the
-  server. Main can be renamed too (display name only) but not deleted.
-  Deleting asks you to type the name and moves the folder to
-  `workbooks/.trash/` (move it back to undo, or remove it for good). Every
-  workbook is separate: its own database, Markdown files and assets
-- A header across the top: the save status with when the workbook was last
-  saved (to the second) in the middle; tasks, lock, settings and help on the right
+- Workbooks: separate sets of notes, each with its own database, Markdown
+  files and assets. The workbook menu (click the workbook name) opens,
+  creates, renames, deletes (to a trash folder) and imports them, and shows
+  where each one is stored on the server
+- A header with the save status and last-saved time, the workbook's disk
+  usage, and the tasks, lock, settings and help buttons
 - Task statuses you define (Backlog, Todo, Doing, In Review, Done, Cancelled),
-  colour-coded, with a task list in a side pane
-- Markdown formatting, code blocks, tables, numbered lists, admonitions,
-  LaTeX maths
-  (tip, note, warning…), quote blocks
-- `/` commands, undo/redo, tags at the end of a line shown on the right,
-  `#` tag suggestions as you type
+  colour-coded, with a keyboard-friendly task list in a side pane
+- Markdown formatting, code blocks, tables, numbered lists, admonitions (tip,
+  note, warning…), quote blocks, LaTeX maths with a maths builder
+- `#Encrypted` blocks: their contents are encrypted in your browser; the server
+  only stores scrambled text
+- Page history: earlier versions of every page, with restore; deleted pages
+  can be brought back
+- `/` commands, a floating formatting bar, undo/redo, tags at the end of a line
+  shown on the right, `#` tag suggestions as you type
 - Select whole blocks (keyboard or mouse) to copy, cut, paste, delete or format
   them; Ctrl+B / Ctrl+I for bold and italic
 - Code blocks with syntax colours, line numbers and a copy button, plus an
   in-block code editor (current-line highlight, language picker, auto-indent)
-- Bullet menu with block colours, headings, block links, export; bullet threading
-- Paste or drop images and PDFs; images can be resized and aligned, PDFs shown
-  as a link or a full preview, or opened in a side pane. An Assets page lists
-  every file
-- Sidebar calendar: pick any date to open (or create) that day's journal
-  (first day of the week in Settings → Sidebar)
-- Autosave, live refresh on other devices, and a prompt if two devices edit
-  the same page at once
-- Every page is also written as a Logseq-format `.md` file, so your notes are
-  never locked inside the database
+- Paste or drop images, PDFs, videos and other files; embedded YouTube, Vimeo
+  and X posts. An Assets page lists every file with its path on the server
+- Sidebar calendar and favourites
+- Autosave, live refresh on other devices, and a side-by-side comparison if
+  two devices edit the same page at once
+- Every page is also written as a Markdown file, so your notes are never locked
+  inside the database
+- Backups as one `.zip` per workbook, from the browser or a cron job
 - One binary with the web UI built in. No Node or external database.
 
 ## Run locally
@@ -45,136 +50,145 @@ cargo run --release
 # open http://localhost:3030
 ```
 
-Settings are environment variables:
+Settings are environment variables (on a server: `/etc/blockseq.env`):
 
 | Variable            | Default        | Meaning                                         |
 |---------------------|----------------|-------------------------------------------------|
 | `BLOCKSEQ_ADDR`     | `0.0.0.0:3030` | Listen address                                  |
-| `BLOCKSEQ_DATA`     | `./data`       | Database, Markdown mirror and uploaded images   |
+| `BLOCKSEQ_DATA`     | `./data`       | Where the workbooks are stored                  |
 | `BLOCKSEQ_PASSWORD` | unset          | If set, the browser asks for this password      |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `2048`     | Largest file you can upload, in MB              |
-| `BLOCKSEQ_TRUSTED_PROXIES` | unset   | Reverse proxy addresses (e.g. Caddy's), comma-separated; the wrong-password limit then uses the client address the proxy forwards |
-| `BLOCKSEQ_HOSTS`    | unset          | Host names to answer to, comma-separated (IP addresses and localhost always work). Blocks "DNS rebinding" by other websites; set it to your HTTPS name, e.g. `blockseq.example.com` |
+| `BLOCKSEQ_HOSTS`    | unset          | Host names to answer to, comma-separated (IP addresses and localhost always work). Blocks "DNS rebinding" by other websites; set it to your HTTPS name, e.g. `notes.example.com` |
+| `BLOCKSEQ_TRUSTED_PROXIES` | unset   | Your reverse proxy's IP address(es), comma-separated; the wrong-password limit then sees each real client instead of the proxy |
 
-## Deploy to a Proxmox LXC
+On start, the log shows how these were read, e.g.
+`password: on · host names: notes.example.com · trusted proxies: 10.0.0.1`.
+
+## Deploy on a Linux server or container
+
+Blockseq runs well in a small Proxmox LXC, a VM or any Debian/Ubuntu machine.
 
 ### Container specs
 
 Blockseq needs very little to run (it idles around 10–20 MB of RAM).
 Compiling Rust needs much more, so the size depends on where you build.
 
-| Setting | Build on workstation (recommended) | Build inside the LXC |
+| Setting | Build on workstation (recommended) | Build on the server |
 |---------|------------------------------------|----------------------|
-| Template | Debian 12/13 or Ubuntu 22.04+, unprivileged | same |
+| OS      | Debian 12/13 or Ubuntu 22.04+ (an unprivileged LXC is fine) | same |
 | CPU     | 1 core                             | 2–4 cores            |
 | RAM     | 512 MB, 256–512 MB swap            | 2 GB, 1 GB swap      |
-| Disk    | 4 GB                               | 10 GB                |
+| Disk    | 4 GB plus your notes and files     | 10 GB plus your notes and files |
 
-If you build inside the LXC, you can lower CPU and RAM afterwards.
+If you build on the server, you can lower CPU and RAM afterwards.
 
 ### Option A: build on your workstation (recommended)
 
 The release binary needs glibc 2.34+, so it runs on Debian 12/13 or
-Ubuntu 22.04+ without installing anything else in the container.
+Ubuntu 22.04+ without installing anything else.
 
 ```sh
 # on your workstation
 cargo build --release
-scp target/release/blockseq root@<lxc>:/root/
-scp -r deploy root@<lxc>:/root/
+scp target/release/blockseq root@<server>:/root/
+scp -r deploy root@<server>:/root/
 
-# in the LXC
+# on the server
 cd /root && ./deploy/install.sh ./blockseq
 ```
 
-### Option B: build inside the LXC
+### Option B: build on the server
 
 Install Rust with rustup. Don't use `apt install rustc`: Debian's packaged
 Rust is too old for this project, which needs Rust 1.85+.
 
 ```sh
-# in the LXC, as root
+# on the server, as root
 apt update && apt install -y build-essential pkg-config curl git rsync
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 source ~/.cargo/env
 
 # on your workstation: copy the source, skipping build output and local data
-rsync -av --exclude target --exclude data ~/Projects/blockseq root@<lxc>:/root/
+rsync -av --exclude target --exclude data path/to/blockseq root@<server>:/root/
 
-# in the LXC
+# on the server
 cd /root/blockseq
 cargo build --release
 ./deploy/install.sh target/release/blockseq
 ```
 
+`install.sh` creates a `blockseq` system user, keeps data in
+`/var/lib/blockseq`, installs a hardened systemd unit and writes
+`/etc/blockseq.env` (only the first time). Check it with
+`systemctl status blockseq` and `curl -s http://127.0.0.1:3030/api/health`.
+
 ### Upgrading
 
 Rebuild, copy the new binary (or rsync the source and rebuild), then run
-`install.sh` again. It keeps your data and `/etc/blockseq.env`.
+`install.sh` again. It first backs up every workbook to
+`/var/backups/blockseq/pre-upgrade-<date>/` (the last 10 are kept), then
+replaces the binary and keeps your data and `/etc/blockseq.env`.
 
-## HTTPS with Caddy on your router
+## HTTPS with Caddy
 
-Blockseq works over plain HTTP. Over HTTPS, the browser also allows the
-clipboard API and keeps the page in a secure context. If Caddy runs on your
-your router firewall (`os-caddy` plugin), let it handle HTTPS and proxy to the LXC:
+Blockseq speaks plain HTTP. Put a reverse proxy such as [Caddy](https://caddyserver.com)
+in front for HTTPS; encrypted blocks need it (browsers only allow the
+encryption API on secure pages). Caddy can run on the same machine or anywhere
+that reaches it (a separate container, a router or firewall with a Caddy
+package).
 
-1. **Free port 443 on your router.** In System → Settings → Administration, move
-   the web GUI to another port (e.g. 8443) and turn off the HTTP redirect.
-2. **Allow traffic.** Add a firewall rule on LAN allowing TCP 80/443 to
-   *This Firewall*.
-3. **Add a domain.** In Services → Caddy Web Server → Reverse Proxy → Domains,
-   add `blockseq.example.com`. For a name that only exists inside your network,
-   get the certificate with the **DNS-01 challenge** (set up your DNS
-   provider in Caddy's General Settings). Let's Encrypt can't reach a LAN-only
-   host over HTTP.
-4. **Add a handler** for that domain with upstream = the LXC's IP, port `3030`.
-   No extra options are needed: Caddy passes Blockseq's live-update stream
-   (server-sent events) through without buffering.
-5. **Point the name at your router.** In Services → Unbound DNS → Overrides,
-   resolve `blockseq.example.com` to your router's LAN IP.
-6. Optional: use a Caddy access list to limit the domain to your LAN and
-   tailnet subnets.
+A minimal `Caddyfile`:
 
-**Using it over Tailscale:** a Tailscale subnet router on the LAN (e.g. a
-separate LXC) lets tailnet devices reach Caddy. The Blockseq LXC itself doesn't
-need Tailscale.
+```
+notes.example.com {
+    reverse_proxy 10.0.0.20:3030
+}
+```
 
-- Make sure the subnet router advertises the LAN subnet that your router is on,
-  and that the route is approved in the Tailscale admin console.
-- Add split DNS: in the admin console, go to DNS → Nameservers → Add nameserver →
-  Custom, enter your router's LAN IP, and restrict it to your domain. Tailnet
-  devices then resolve `blockseq.example.com` through Unbound.
-- No extra your router rules are needed. By default, the subnet router translates
-  tailnet traffic to its own LAN IP, so the LAN rules and access lists above
-  already cover it. That only changes if you started the router with
-  `--snat-subnet-routes=false`.
+- Replace `10.0.0.20` with Blockseq's address (or `localhost` if Caddy runs on
+  the same machine). Nothing else is needed: Caddy passes Blockseq's
+  live-update stream (server-sent events) through without buffering.
+- **Certificates.** For a name reachable from the internet, Caddy gets a
+  certificate automatically. For a name that only exists inside your network,
+  use the DNS-01 challenge with your DNS provider's Caddy module (Let's Encrypt
+  can't reach a private host over HTTP), or Caddy's own internal CA
+  (`tls internal`) if your devices trust it.
+- **DNS.** Point the name at Caddy (a local DNS override, or a public record).
+- **Tell Blockseq about the proxy** in `/etc/blockseq.env`, then
+  `systemctl restart blockseq`:
 
-**Lock down the direct port.** Anyone on your LAN can still reach
-`http://<lxc>:3030` directly. To force everything through Caddy, allow
-port 3030 only from your router's IP (Proxmox firewall on the container), and/or
-set `BLOCKSEQ_PASSWORD`. If the HTTPS name can be reached from the internet,
-a password (or Caddy auth in front) is essential.
+  ```
+  BLOCKSEQ_HOSTS=notes.example.com
+  BLOCKSEQ_TRUSTED_PROXIES=<Caddy's IP address as Blockseq sees it>
+  ```
+
+  To find Caddy's address, open the site through Caddy and run
+  `ss -tn state established '( sport = :3030 )'` on the Blockseq server; it's
+  the address in the right-hand column (without the port).
+- **Restrict who can reach it.** If the name is reachable from the internet,
+  set `BLOCKSEQ_PASSWORD` (or add authentication in Caddy). Inside your
+  network, you can also limit the site to your subnets with Caddy's
+  `remote_ip` matcher, and stop clients bypassing Caddy by allowing port 3030
+  only from Caddy's address (e.g. the Proxmox firewall).
+
+**Over a VPN (e.g. Tailscale or WireGuard):** devices on the VPN reach Caddy
+like any other client once the VPN routes to its network and resolves the
+name. With Tailscale you can also skip Caddy: `tailscale serve --bg 3030` on
+the Blockseq machine gives you `https://<machine>.<tailnet>.ts.net`. (An
+unprivileged LXC needs the TUN device for that; add
+`lxc.cgroup2.devices.allow: c 10:200 rwm` and
+`lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file` to
+`/etc/pve/lxc/<CTID>.conf`.)
 
 **Built-in protections.** With a password set, each client may try at most 10
 different wrong passwords per 15 minutes, then it is refused until that time
-is up (repeating the same typo counts once). Locked yourself out? Wait, or
-restart the service. Behind Caddy, set `BLOCKSEQ_TRUSTED_PROXIES` to Caddy's
-address so the limit applies per real client. Blockseq refuses changes coming from other websites
-(a page you visit can't edit your notes through your browser), sends a
+is up (repeating the same typo counts once; locked yourself out? wait, or
+restart the service). Blockseq refuses changes coming from other websites (a
+page you visit can't edit your notes through your browser), sends a
 Content-Security-Policy and no-framing headers, and with `BLOCKSEQ_HOSTS` set
 only answers to the names you list. `GET /api/health` reports whether the
 settings file and databases are healthy (no password needed; it shows no
 notes), e.g. for Uptime Kuma.
-
-**Without your router:** if the LXC is on your tailnet, `tailscale serve --bg 3030`
-gives you `https://<lxc-name>.<tailnet>.ts.net` instead. An unprivileged LXC
-needs the TUN device for that. Add this to `/etc/pve/lxc/<CTID>.conf` on the
-Proxmox host:
-
-```
-lxc.cgroup2.devices.allow: c 10:200 rwm
-lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
-```
 
 ## Your data
 
@@ -186,36 +200,26 @@ lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
   ever damaged, Blockseq uses the `.bak` copy, or refuses to start rather than
   start with empty settings (which would lose the encryption key). Back up
   both, along with your recovery key.
-- `workbooks/<name>/` holds every workbook except Main (renaming a workbook
-  renames its folder), each with the same
-  layout as below (its own `blockseq.db`, `pages/`, `journals/`, `assets/`).
+- `workbooks/<name>/` holds every workbook except Main, each with the same
+  layout as below; `workbooks/.trash/` holds deleted ones.
 - The rest of the folder is the **Main** workbook:
-- `blockseq.db` is the SQLite database and the source of truth.
-- `pages/*.md` and `journals/*.md` are Logseq-format copies, rewritten on every
-  save and on every start. You can point Logseq at this folder to compare the
-  two apps, but **don't edit pages there in Logseq**: Blockseq never reads
-  these files back (only on a workbook's first import), so such edits are
-  overwritten.
-- `assets/` holds pasted and uploaded images, linked from blocks as
-  `![name](../assets/name.png)`, the same layout Logseq uses. Removing an image
-  from a block keeps the file, so undo still works.
+- `blockseq.db` is the SQLite database and the source of truth (including the
+  page history).
+- `pages/*.md` and `journals/*.md` are Markdown copies of every page, in the
+  same outline format Logseq's Markdown graphs use, rewritten on every save
+  and on every start. They are a readable copy, not an input: **edits made to
+  these files are overwritten**.
+- `assets/` holds pasted and uploaded files, linked from blocks as
+  `![name](../assets/name.png)`. Removing an image from a block keeps the
+  file, so undo still works; the Assets page shows which files are unused.
 
-**Adding a workbook from elsewhere (side-loading).** Copy a folder into
-`workbooks/` and give it to the service user, then pick it in the workbook menu
-(click the workbook name at the top of the sidebar):
-
-```sh
-rsync -avs ~/"Logseq/My Notes/" "blockseq:/var/lib/blockseq/workbooks/My Notes/"
-ssh blockseq 'chown -R blockseq:blockseq "/var/lib/blockseq/workbooks/My Notes"'
-```
-
-(`-s` lets rsync handle the space in the folder name.) The folder can be another Blockseq workbook, or a **Logseq graph** (with
-`pages/`, `journals/`, `assets/`, `logseq/config.edn`). A Logseq graph is
-imported the first time it's opened: Markdown pages and journals, block ids,
-collapsed state and favorites. `.org` files are skipped. The original Markdown
-files are copied to `logseq-original/` first, because Blockseq then rewrites
-`pages/` and `journals/` in its own (Logseq-compatible) format. Folder names may
-use letters, digits, spaces, `-`, `_` and `.`.
+**Coming from Logseq?** The simplest way is to copy your notes across (paste
+works: pasted outlines keep their structure). Blockseq can also import a
+Logseq graph stored as Markdown files (a folder with `pages/` and
+`journals/`): copy the folder into `workbooks/`, or zip it and use *Import
+backup…*, and it is imported the first time you open it (the original files
+are kept in `logseq-original/`). Newer Logseq versions that keep the graph in
+a database instead of Markdown files (the "DB version") can't be imported.
 
 ### Keeping data safe over time
 
@@ -228,11 +232,11 @@ use letters, digits, spaces, `-`, `_` and `.`.
   encrypted in the history.
 - **Saves are checked.** Each save carries the page version it started from;
   a page changed on another device shows a conflict instead of being
-  overwritten. **Show differences** in the conflict bar compares their version
-  with yours line by line before you choose. Status changes from the task list are refused if the task
-  changed meanwhile. Pasting copied blocks never takes them away from the page
-  they came from (the copies get new ids). Renaming a page or tag is all or
-  nothing.
+  overwritten, and **Show differences** compares their version with yours
+  line by line before you choose. Status changes from the task list are
+  refused if the task changed meanwhile. Pasting copied blocks never takes
+  them away from the page they came from (the copies get new ids). Renaming a
+  page or tag is all or nothing.
 - **Unsaved changes survive a crash.** While the server can't be reached, the
   browser keeps a copy of your unsaved changes (encrypted blocks stay
   encrypted). If the tab or browser dies, the page offers to restore them the
@@ -241,17 +245,13 @@ use letters, digits, spaces, `-`, `_` and `.`.
   when it opens (shown in the log and by `/api/health`), and temporary files
   left by an interrupted upload, export or import are removed. On shutdown the
   database files are tidied so they're complete on their own.
-- **Upgrades back up first.** `deploy/install.sh` exports every workbook to
-  `/var/backups/blockseq/pre-upgrade-<date>/` before replacing the binary
-  (the last 10 are kept). To roll back, reinstall the previous binary and, if
-  needed, import the backup.
+- **Upgrades back up first** (see Upgrading above).
 
 ### Backup and restore
 
 **Settings → Backup → Download backup** saves the workbook you're in as one
 `.zip`: a consistent copy of `blockseq.db` (safe while Blockseq is running),
-every page and journal as Logseq Markdown, all assets, and `config.json`. The
-zip also opens fine without Blockseq: unzip it and point Logseq at the folder.
+every page and journal as Markdown, all assets, and `config.json`.
 
 **#Encrypted blocks stay encrypted** in the zip. It contains only the
 scrambled text plus the *locked* copies of the key from `config.json`, so a
@@ -260,8 +260,8 @@ password (or recovery key) opens the blocks again. Keep the recovery key
 somewhere other than next to your backups.
 
 **Import backup…** (Settings → Backup, or the workbook menu) restores a zip
-as a **new** workbook; nothing that exists is changed or overwritten. A zipped
-Logseq graph works too. For encrypted blocks:
+as a **new** workbook; nothing that exists is changed or overwritten. For
+encrypted blocks:
 
 - Same server (same password): they just work.
 - A server with no password yet: it starts using the backup's password.
@@ -271,20 +271,22 @@ Logseq graph works too. For encrypted blocks:
   different password"; click that to do it later.
 
 **Automatic backups** from the server, e.g. a nightly cron job that keeps a
-zip of every workbook (works while Blockseq is running):
+zip of every workbook (works while Blockseq is running). Point `--out` at a
+NAS or other machine if you can, so a backup survives losing the server:
 
 ```sh
-BLOCKSEQ_DATA=/var/lib/blockseq blockseq export --all --out /root/blockseq-backups
-# or one workbook:  blockseq export "Home Lab" --out /root/blockseq-backups
+blockseq export --all --out /mnt/backups/blockseq
+# or one workbook:  blockseq export "Home Lab" --out /mnt/backups/blockseq
 ```
 
 Example `/etc/cron.d/blockseq-backup` (keeps 30 days):
 
 ```
-15 3 * * * root BLOCKSEQ_DATA=/var/lib/blockseq /usr/local/bin/blockseq export --all --out /root/blockseq-backups && find /root/blockseq-backups -name 'blockseq-*.zip' -mtime +30 -delete
+15 3 * * * root /usr/local/bin/blockseq export --all --out /mnt/backups/blockseq && find /mnt/backups/blockseq -name 'blockseq-*.zip' -mtime +30 -delete
 ```
 
-Proxmox backups of the whole container are a good second layer.
+On the server, the commands find `/var/lib/blockseq` themselves; elsewhere
+set `BLOCKSEQ_DATA`. Container or VM snapshots are a good second layer.
 
 ## Keyboard
 
@@ -578,9 +580,12 @@ their `id::` values, so block refs carry over.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Blockseq is an independent implementation written
-from scratch; it contains no code or assets from Logseq. See the provenance
-note in [AGENTS.md](AGENTS.md).
+MIT. See [LICENSE](LICENSE).
+
+Blockseq is a clean-room implementation inspired by Logseq: written from
+scratch, with no code, styles or assets from Logseq (which is AGPL-3.0). See
+the provenance note in [AGENTS.md](AGENTS.md). Thanks to the Logseq team and
+community for the ideas that made this possible.
 
 ## How it works
 
@@ -589,6 +594,5 @@ sync work, the API, and where future features would go.
 
 ## Not done yet
 
-Zooming into a block, editing inside linked references,
-unlinked references, queries, renaming or deleting workbooks from the UI, and
-full-text ranking.
+Zooming into a block, editing inside linked references, unlinked references,
+running Logseq queries, whiteboards, and full-text ranking.

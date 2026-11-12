@@ -6,12 +6,12 @@ compiled into the binary. Several browsers can have it open at once. They stay
 in sync through autosave, versioned page saves and a live event stream.
 
 ```
- Browser (any device)                     Blockseq LXC
+ Browser (any device)                     Blockseq server
 ┌───────────────────────────┐          ┌──────────────────────────────────┐
 │  web/  (ES modules)       │  HTTPS   │  blockseq (one Rust binary)      │
 │  app.js    router, views  │◄────────►│  axum router                     │
 │  editor.js outliner       │  Caddy   │   ├─ /api/*   JSON API (api.rs)  │
-│  render.js markdown→HTML  │ (your router│   ├─ /api/events  SSE stream     │
+│  render.js markdown→HTML  │ (reverse │   ├─ /api/events  SSE stream     │
 │  api.js    fetch wrapper  │  proxy)  │   └─ /*       embedded web/ files│
 └───────────────────────────┘          │  db.rs ── SQLite (blockseq.db)   │
                                        │  md.rs ── Markdown mirror (*.md) │
@@ -454,16 +454,16 @@ CRDTs (conflict-free merge structures):
 ## Deployment
 
 ```
-device ──tailnet──► Tailscale subnet-router LXC ──LAN──┐
-device ──LAN───────────────────────────────────────────┤
-                                                       ▼
-                           Caddy on your router  (TLS, notes.example.com)
-                                                       │ http :3030
-                                                       ▼
-                          Blockseq LXC: systemd service, user `blockseq`
-                          /usr/local/bin/blockseq
-                          /var/lib/blockseq/{blockseq.db, pages/, journals/}
-                          /etc/blockseq.env (BLOCKSEQ_ADDR, BLOCKSEQ_PASSWORD)
+device ──VPN (e.g. Tailscale)──┐
+device ──LAN───────────────────┤
+                               ▼
+                 Caddy (TLS, e.g. notes.example.com), anywhere on the network
+                               │ http :3030
+                               ▼
+                 Blockseq server/LXC: systemd service, user `blockseq`
+                 /usr/local/bin/blockseq
+                 /var/lib/blockseq/{blockseq.db, pages/, journals/, assets/, workbooks/}
+                 /etc/blockseq.env (BLOCKSEQ_ADDR, _PASSWORD, _HOSTS, _TRUSTED_PROXIES)
 ```
 
 The systemd unit runs as an unprivileged user with `ProtectSystem=strict`
