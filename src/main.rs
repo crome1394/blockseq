@@ -246,6 +246,16 @@ async fn main() -> Result<()> {
              or listen on 127.0.0.1 only (and put a proxy in front)."
         );
     }
+    // BLOCKSEQ_HOSTS stops DNS rebinding, but IP addresses are always
+    // accepted, so without a password anyone who can reach the port by
+    // address can read and change the notes. Allowed (a firewall may already
+    // limit who can reach it), but said out loud.
+    if !listen_is_loopback(&addr) && password.is_none() {
+        tracing::warn!(
+            "listening on {addr} with no BLOCKSEQ_PASSWORD: BLOCKSEQ_HOSTS does not stop anyone \
+             who reaches this port by IP address. Set a password, firewall the port, or listen on 127.0.0.1."
+        );
+    }
     let max_upload_mb: u64 = std::env::var("BLOCKSEQ_MAX_UPLOAD_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_MAX_UPLOAD_MB);
 
     std::fs::create_dir_all(&data_dir)

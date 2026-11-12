@@ -61,7 +61,7 @@ Settings are environment variables (on a server: `/etc/blockseq.env`):
 
 | Variable            | Default        | Meaning                                         |
 |---------------------|----------------|-------------------------------------------------|
-| `BLOCKSEQ_ADDR`     | `127.0.0.1:3030` | Listen address. Leave this on localhost and do not publish port 3030. A non-local address is refused unless `BLOCKSEQ_PASSWORD` or `BLOCKSEQ_HOSTS` is set |
+| `BLOCKSEQ_ADDR`     | `127.0.0.1:3030` | Listen address. Leave this on localhost and do not publish port 3030. A non-local address is refused unless `BLOCKSEQ_PASSWORD` or `BLOCKSEQ_HOSTS` is set, and logs a warning without a password (anyone who reaches the port by IP address gets in) |
 | `BLOCKSEQ_DATA`     | `./data`       | Where the workbooks are stored                  |
 | `BLOCKSEQ_PASSWORD` | unset          | Password for the local port only. The password people type belongs on the TLS proxy (Caddy) |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `256`      | Largest file you can upload, in MB              |
