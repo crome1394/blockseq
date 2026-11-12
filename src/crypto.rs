@@ -44,6 +44,25 @@ pub fn key_check(key: &[u8]) -> String {
     B64.encode(h.finalize())
 }
 
+/// Proof of holding the key: base64(SHA-256("blockseq-key-proof:" || key)).
+/// Never stored; the server keeps only `proof_hash` of it.
+pub fn key_proof(key: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(b"blockseq-key-proof:");
+    h.update(key);
+    B64.encode(h.finalize())
+}
+
+/// What config.json stores: base64(SHA-256(proof as text)).
+pub fn proof_hash(proof: &str) -> String {
+    B64.encode(Sha256::digest(proof.as_bytes()))
+}
+
+/// Compares two secrets without leaking where they differ.
+pub fn same_secret(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 fn unwrap_key(kek: &[u8; 32], iv: &str, data: &str) -> Option<Vec<u8>> {
     let iv = B64.decode(iv).ok()?;
     let data = B64.decode(data).ok()?;
@@ -74,7 +93,14 @@ pub fn reset_with_recovery(enc: &Encryption, recovery: &str, new_password: &str)
     let salt = random::<16>()?;
     let pw_kek = derive(new_password, &salt, PASSWORD_ITERATIONS);
     let (pw_iv, pw_data) = wrap_key(&pw_kek, &key)?;
-    Ok(Encryption { salt: B64.encode(salt), iterations: PASSWORD_ITERATIONS, pw_iv, pw_data, ..enc.clone() })
+    Ok(Encryption {
+        salt: B64.encode(salt),
+        iterations: PASSWORD_ITERATIONS,
+        pw_iv,
+        pw_data,
+        proof_hash: Some(proof_hash(&key_proof(&key))),
+        ..enc.clone()
+    })
 }
 
 fn prompt(label: &str, hidden: bool) -> Result<String> {
@@ -105,7 +131,7 @@ fn prompt(label: &str, hidden: bool) -> Result<String> {
 /// the recovery key. Blocks stay readable because the key itself is kept.
 pub fn reset_command(data_dir: &Path) -> Result<()> {
     let path = data_dir.join("config.json");
-    let mut cfg = Config::load(&path);
+    let mut cfg = Config::load(&path)?;
     let Some(enc) = cfg.encryption.clone() else {
         bail!("no encryption password has been set up in {}", path.display());
     };
@@ -133,7 +159,9 @@ pub fn reset_command(data_dir: &Path) -> Result<()> {
     {
         use std::os::unix::fs::MetadataExt;
         if let Ok(meta) = std::fs::metadata(data_dir) {
-            let _ = std::os::unix::fs::chown(&path, Some(meta.uid()), Some(meta.gid()));
+            for p in [path.clone(), crate::config::backup_path(&path)] {
+                let _ = std::os::unix::fs::chown(&p, Some(meta.uid()), Some(meta.gid()));
+            }
         }
     }
     eprintln!("Done. Use the new password to unlock #Encrypted blocks (reload the page first).");
@@ -155,11 +183,23 @@ mod tests {
         let enc = Encryption {
             version: 1, salt: B64.encode(salt), iterations: 1000, pw_iv, pw_data,
             rk_salt: B64.encode(rk_salt), rk_iterations: 1000, rk_iv, rk_data, check: key_check(&key),
+            proof_hash: None,
         };
         assert!(reset_with_recovery(&enc, "wrong key", "x").is_err());
         let new = reset_with_recovery(&enc, "abcd efgh ijkl mnop qrst uvwx yz23 4567", "new password 1").unwrap();
         let kek = derive("new password 1", &B64.decode(&new.salt).unwrap(), new.iterations);
         assert_eq!(unwrap_key(&kek, &new.pw_iv, &new.pw_data).unwrap(), key);
         assert_eq!(new.rk_data, enc.rk_data); // recovery key still works
+        assert_eq!(new.proof_hash.as_deref(), Some(proof_hash(&key_proof(&key))).as_deref());
+    }
+
+    #[test]
+    fn proof_matches_the_browser_format() {
+        // Same values web/js/crypto.js produces for this key (checked with
+        // Python's hashlib); keeps the two implementations in step.
+        let key = [7u8; 32];
+        assert_eq!(key_proof(&key), "D5phvSi/oT+5Figy4kmGgo9VFDAG/2rVHN6vDfjR/hM=");
+        assert_eq!(proof_hash(&key_proof(&key)), "NwmlNiAxlX0ZFK+RZXbvaxZNJHp2xx2auN0eR1JP6IY=");
+        assert!(same_secret("abc", "abc") && !same_secret("abc", "abd") && !same_secret("abc", "ab"));
     }
 }

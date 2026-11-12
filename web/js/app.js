@@ -999,8 +999,9 @@ async function renderTasks() {
     row.querySelector('.status-badge').addEventListener('click', (e) => {
       e.stopPropagation();
       showStatusPicker(e.clientX, e.clientY, t.st.word, async (word) => {
-        const r = await api.putBlock(t.id, withStatus(t.content, word));
-        if (!r.ok) toast(r.data?.error || 'Could not change the status');
+        const r = await api.putBlock(t.id, withStatus(t.content, word), t.content);
+        if (r.status === 409) toast('That task was changed elsewhere; the list is refreshed, try again');
+        else if (!r.ok) toast(r.data?.error || 'Could not change the status');
         renderTasks();
       });
     });

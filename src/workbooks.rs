@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
@@ -73,7 +73,7 @@ impl Workbook {
 
     /// Rewrites every Markdown mirror file from the database.
     pub fn rebuild_mirror(&self) -> Result<usize> {
-        let conn = self.db.lock().unwrap();
+        let conn = self.db.lock();
         let pages = db::list_pages(&conn)?;
         for summary in &pages {
             if let Some(page) = db::get_page(&conn, &summary.name)? {
@@ -187,10 +187,10 @@ impl Registry {
         if from != to && dst.exists() {
             bail!("a workbook called {to} already exists");
         }
-        let mut open = self.open.lock().unwrap();
+        let mut open = self.open.lock();
         let wb = open.remove(from);
         let result = {
-            let guard = wb.as_ref().map(|w| w.db.lock().unwrap());
+            let guard = wb.as_ref().map(|w| w.db.lock());
             if let Some(conn) = &guard {
                 let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
             }
@@ -245,7 +245,7 @@ impl Registry {
     /// Returns an open workbook, opening (and if needed importing) it first.
     /// Blocking: call from spawn_blocking.
     pub fn get(&self, id: &str, task_words: &[String]) -> Result<Option<std::sync::Arc<Workbook>>> {
-        let mut open = self.open.lock().unwrap();
+        let mut open = self.open.lock();
         if let Some(wb) = open.get(id) {
             return Ok(Some(wb.clone()));
         }
@@ -273,7 +273,7 @@ impl Registry {
 
     /// Workbooks that are currently open (for settings changes).
     pub fn open_workbooks(&self) -> Vec<std::sync::Arc<Workbook>> {
-        self.open.lock().unwrap().values().cloned().collect()
+        self.open.lock().values().cloned().collect()
     }
 }
 
@@ -300,7 +300,7 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
         copy_files(&wb.dir.join("journals"), &backup.join("journals"))?;
         copy_files(&wb.dir.join("logseq"), &backup.join("logseq"))?;
     }
-    let mut conn = wb.db.lock().unwrap();
+    let conn = wb.db.lock();
     let (mut pages, mut skipped) = (0, 0);
     let mut seen_ids: HashSet<String> = HashSet::new();
     for folder in ["pages", "journals"] {
@@ -340,7 +340,7 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
                 }
             }
             let version = db::get_page(&conn, &name)?.map(|p| p.version).unwrap_or(0);
-            db::save_page(&mut conn, &name, version, &blocks, task_words)
+            db::save_page(&conn, &name, version, &blocks, task_words)
                 .with_context(|| format!("importing {}", path.display()))?;
             pages += 1;
         }

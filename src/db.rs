@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -153,6 +153,9 @@ pub enum SaveOutcome {
     Saved(PageMeta),
     /// The page changed since the client loaded it. Holds the current state.
     Conflict(PageMeta, Vec<Block>),
+    /// Some block ids already belong to other pages (e.g. a pasted copy).
+    /// Nothing was saved; the client gives those blocks new ids.
+    ForeignIds(Vec<String>),
 }
 
 pub fn now_ms() -> i64 {
@@ -247,7 +250,15 @@ pub struct RenameOutcome {
 /// Renames a page (or tag) and rewrites every link and tag to it. If another
 /// page already has the new name, the two are merged: this page's blocks are
 /// added after that page's blocks.
-pub fn rename_page(conn: &mut Connection, from: &str, to: &str, task_words: &[String]) -> Result<RenameOutcome> {
+pub fn rename_page(conn: &Connection, from: &str, to: &str, task_words: &[String]) -> Result<RenameOutcome> {
+    // All or nothing: a failure part-way leaves every page as it was.
+    let sp = Savepoint::begin(conn, "rename_page")?;
+    let out = rename_page_inner(conn, from, to, task_words)?;
+    sp.commit()?;
+    Ok(out)
+}
+
+fn rename_page_inner(conn: &Connection, from: &str, to: &str, task_words: &[String]) -> Result<RenameOutcome> {
     let to = to.trim();
     if to.is_empty() || to.contains('\n') || to.contains("[[") || to.contains("]]") || to.starts_with('#') {
         bail!("names can't be empty, start with # or contain [[ ]]");
@@ -270,9 +281,9 @@ pub fn rename_page(conn: &mut Connection, from: &str, to: &str, task_words: &[St
             // Merge: move this page's blocks to the end of the other page.
             let mut blocks = get_blocks(conn, &target.id)?;
             blocks.extend(get_blocks(conn, &old.id)?);
-            let saved = match save_page(conn, &target.name, target.version, &blocks, task_words)? {
+            let saved = match save_page_inner(conn, &target.name, target.version, &blocks, task_words, true)? {
                 SaveOutcome::Saved(p) => p,
-                SaveOutcome::Conflict(..) => bail!("{} changed during the rename", target.name),
+                _ => bail!("{} changed during the rename", target.name),
             };
             if old.favorite {
                 set_favorite(conn, &target.name, true)?;
@@ -287,7 +298,7 @@ pub fn rename_page(conn: &mut Connection, from: &str, to: &str, task_words: &[St
                 "UPDATE pages SET name = ?1, name_lower = ?2, version = version + 1, updated_at = ?3 WHERE id = ?4",
                 params![to, to.to_lowercase(), now, old.id],
             )?;
-            get_page(conn, to)?.expect("renamed page")
+            get_page(conn, to)?.context("the renamed page disappeared")?
         }
     };
     // Rewrite links and tags everywhere they appear.
@@ -310,10 +321,11 @@ pub fn rename_page(conn: &mut Connection, from: &str, to: &str, task_words: &[St
             }
         }
         if any {
-            if let SaveOutcome::Saved(saved) = save_page(conn, &p.name, p.version, &blocks, task_words)? {
-                changed.retain(|(c, _)| c.id != saved.id);
-                changed.push((saved, blocks));
-            }
+            let SaveOutcome::Saved(saved) = save_page(conn, &p.name, p.version, &blocks, task_words)? else {
+                bail!("{} couldn't be updated; nothing was renamed", p.name);
+            };
+            changed.retain(|(c, _)| c.id != saved.id);
+            changed.push((saved, blocks));
         }
     }
     let page = get_page(conn, &page.name)?.unwrap_or(page);
@@ -380,21 +392,34 @@ pub fn tasks(conn: &Connection) -> Result<Vec<TaskHit>> {
 /// Changes one block's text (used by the task list). Saves the whole page so
 /// versions, refs and timestamps stay consistent. Returns the saved page and
 /// its blocks, or None if the block doesn't exist.
+pub enum UpdateOutcome {
+    Missing,
+    /// The block's text isn't what the caller expected (changed elsewhere).
+    Changed(String),
+    Saved(PageMeta, Vec<Block>),
+}
+
+/// Changes one block's text. With `expected`, only if the block still has
+/// that text, so an old view (e.g. the task list) can't undo newer edits.
 pub fn update_block(
-    conn: &mut Connection,
+    conn: &Connection,
     id: &str,
     content: &str,
+    expected: Option<&str>,
     task_words: &[String],
-) -> Result<Option<(PageMeta, Vec<Block>)>> {
-    let page_name: Option<String> = conn
+) -> Result<UpdateOutcome> {
+    let found: Option<(String, String)> = conn
         .query_row(
-            "SELECT p.name FROM blocks b JOIN pages p ON p.id = b.page_id WHERE b.id = ?1",
+            "SELECT p.name, b.content FROM blocks b JOIN pages p ON p.id = b.page_id WHERE b.id = ?1",
             [id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let Some(name) = page_name else { return Ok(None) };
-    let page = get_page(conn, &name)?.expect("page of an existing block");
+    let Some((name, current)) = found else { return Ok(UpdateOutcome::Missing) };
+    if expected.is_some_and(|e| e != current) {
+        return Ok(UpdateOutcome::Changed(current));
+    }
+    let page = get_page(conn, &name)?.context("the block's page disappeared")?;
     let mut blocks = get_blocks(conn, &page.id)?;
     for b in &mut blocks {
         if b.id == id {
@@ -402,8 +427,8 @@ pub fn update_block(
         }
     }
     match save_page(conn, &name, page.version, &blocks, task_words)? {
-        SaveOutcome::Saved(meta) => Ok(Some((meta, blocks))),
-        SaveOutcome::Conflict(..) => bail!("page changed while updating"),
+        SaveOutcome::Saved(meta) => Ok(UpdateOutcome::Saved(meta, blocks)),
+        _ => bail!("page changed while updating"),
     }
 }
 
@@ -509,20 +534,66 @@ pub fn validate_blocks(blocks: &[Block]) -> Result<()> {
     Ok(())
 }
 
+/// A SAVEPOINT that rolls back unless committed, also on an early return,
+/// an error or a panic, so a half-done change can never stay behind (or
+/// leave the connection stuck inside an open transaction). Savepoints nest,
+/// so a rename can wrap several page saves in one all-or-nothing change.
+struct Savepoint<'a> {
+    conn: &'a Connection,
+    name: &'static str,
+    open: bool,
+}
+
+impl<'a> Savepoint<'a> {
+    fn begin(conn: &'a Connection, name: &'static str) -> Result<Self> {
+        conn.execute_batch(&format!("SAVEPOINT {name}"))?;
+        Ok(Savepoint { conn, name, open: true })
+    }
+
+    fn commit(mut self) -> Result<()> {
+        self.conn.execute_batch(&format!("RELEASE {}", self.name))?;
+        self.open = false;
+        Ok(())
+    }
+}
+
+impl Drop for Savepoint<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = self.conn.execute_batch(&format!("ROLLBACK TO {0}; RELEASE {0}", self.name));
+        }
+    }
+}
+
 /// Replaces a page's blocks, creating the page if needed.
 pub fn save_page(
-    conn: &mut Connection,
+    conn: &Connection,
     name: &str,
     base_version: i64,
     blocks: &[Block],
     task_words: &[String],
+) -> Result<SaveOutcome> {
+    save_page_inner(conn, name, base_version, blocks, task_words, false)
+}
+
+/// `allow_moves`: block ids that belong to another page are moved here
+/// (used when merging pages). Otherwise such ids are refused, so pasting a
+/// copy can never take blocks away from the page they came from.
+fn save_page_inner(
+    conn: &Connection,
+    name: &str,
+    base_version: i64,
+    blocks: &[Block],
+    task_words: &[String],
+    allow_moves: bool,
 ) -> Result<SaveOutcome> {
     validate_blocks(blocks)?;
     let name = name.trim();
     if name.is_empty() {
         bail!("page name is empty");
     }
-    let tx = conn.transaction()?;
+    let sp = Savepoint::begin(conn, "save_page")?;
+    let tx = conn;
     let now = now_ms();
 
     let page = match get_page(&tx, name)? {
@@ -551,6 +622,19 @@ pub fn save_page(
             p
         }
     };
+
+    if !allow_moves {
+        let mut elsewhere = tx.prepare("SELECT 1 FROM blocks WHERE id = ?1 AND page_id <> ?2")?;
+        let mut foreign = Vec::new();
+        for b in blocks {
+            if elsewhere.exists(params![b.id, page.id])? {
+                foreign.push(b.id.clone());
+            }
+        }
+        if !foreign.is_empty() {
+            return Ok(SaveOutcome::ForeignIds(foreign)); // rolls back
+        }
+    }
 
     // Keep timestamps of blocks whose text did not change.
     let mut old: HashMap<String, (String, i64, i64)> = HashMap::new();
@@ -615,7 +699,7 @@ pub fn save_page(
         "UPDATE pages SET version = ?1, updated_at = ?2 WHERE id = ?3",
         params![version, now, page.id],
     )?;
-    tx.commit()?;
+    sp.commit()?;
     Ok(SaveOutcome::Saved(PageMeta {
         version,
         updated_at: now,
@@ -889,7 +973,7 @@ mod tests {
                 assert_eq!(p.version, 1);
                 assert_eq!(current, blocks);
             }
-            SaveOutcome::Saved(_) => panic!("expected conflict"),
+            _ => panic!("expected conflict"),
         }
 
         assert_eq!(all_names(&c).unwrap(), vec!["Test".to_string(), "World".to_string()]);
@@ -913,6 +997,51 @@ mod tests {
         delete_page(&c, "test").unwrap();
         assert!(get_page(&c, "Test").unwrap().is_none());
         assert!(backlinks(&c, "world").unwrap().is_empty());
+    }
+
+    #[test]
+    fn blocks_of_another_page_are_not_taken() {
+        let c = mem();
+        let a = vec![block("x", None, "parent block"), block("y", Some("x"), "child")];
+        save_page(&c, "A", 0, &a, &[]).unwrap();
+        // A pasted copy reusing "x" on another page is refused, and nothing
+        // of that save is kept (not even the new page).
+        match save_page(&c, "B", 0, &[block("x", None, "pasted copy")], &[]).unwrap() {
+            SaveOutcome::ForeignIds(ids) => assert_eq!(ids, vec!["x".to_string()]),
+            _ => panic!("expected foreign ids"),
+        }
+        assert!(get_page(&c, "B").unwrap().is_none());
+        let page_a = get_page(&c, "A").unwrap().unwrap();
+        assert_eq!(get_blocks(&c, &page_a.id).unwrap(), a);
+        // With new ids it saves.
+        assert!(matches!(save_page(&c, "B", 0, &[block("x2", None, "pasted copy")], &[]).unwrap(), SaveOutcome::Saved(_)));
+    }
+
+    #[test]
+    fn block_update_checks_the_text_it_expects() {
+        let c = mem();
+        save_page(&c, "A", 0, &[block("t", None, "TODO buy milk")], &[]).unwrap();
+        assert!(matches!(update_block(&c, "t", "DONE buy bread", Some("TODO buy bread"), &[]).unwrap(), UpdateOutcome::Changed(cur) if cur == "TODO buy milk"));
+        assert!(matches!(update_block(&c, "t", "DONE buy milk", Some("TODO buy milk"), &[]).unwrap(), UpdateOutcome::Saved(..)));
+        assert!(matches!(update_block(&c, "nope", "x", None, &[]).unwrap(), UpdateOutcome::Missing));
+    }
+
+    #[test]
+    fn a_failed_save_inside_a_rename_rolls_everything_back() {
+        let c = mem();
+        save_page(&c, "Old", 0, &[block("o", None, "old page")], &[]).unwrap();
+        save_page(&c, "Linker", 0, &[block("l", None, "see [[Old]]")], &[]).unwrap();
+        // Simulate a failure after the rename started: a trigger rejects the
+        // rewrite of Linker.
+        c.execute_batch("CREATE TRIGGER no_linker BEFORE INSERT ON blocks WHEN NEW.id = 'l' BEGIN SELECT RAISE(ABORT, 'disk trouble'); END;").unwrap();
+        assert!(rename_page(&c, "Old", "New", &[]).is_err());
+        assert!(get_page(&c, "Old").unwrap().is_some());
+        assert!(get_page(&c, "New").unwrap().is_none());
+        let linker = get_page(&c, "Linker").unwrap().unwrap();
+        assert_eq!(get_blocks(&c, &linker.id).unwrap()[0].content, "see [[Old]]");
+        // The connection is usable afterwards (no transaction left open).
+        c.execute_batch("DROP TRIGGER no_linker").unwrap();
+        assert!(rename_page(&c, "Old", "New", &[]).is_ok());
     }
 
     #[test]

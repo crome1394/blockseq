@@ -59,7 +59,8 @@ export const api = {
     const r = await request('GET', `/api/block?id=${enc(id)}`);
     return r.ok ? r.data : null;
   },
-  putBlock: (id, content) => request('PUT', `/api/block?id=${enc(id)}`, { content }),
+  // `expected`: the text this view last saw; the server refuses (409) if it changed.
+  putBlock: (id, content, expected) => request('PUT', `/api/block?id=${enc(id)}`, { content, expected }),
   tasks: () => getJson('/api/tasks'),
   encryptionPending: () => getJson('/api/encryption/pending'),
   sealedPages: () => getJson('/api/encryption/sealed'),

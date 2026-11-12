@@ -144,7 +144,8 @@ pub fn write_zip(workbook: &str, dir: &Path, db_copy: &Path, config: &Path, out:
     zip.write_all(README.as_bytes())?;
     // Re-serialised so only known settings go in (and it is valid JSON).
     zip.start_file("config.json", text)?;
-    zip.write_all(serde_json::to_string_pretty(&Config::load(config))?.as_bytes())?;
+    // Never back up defaults in place of a damaged file: that would drop the key.
+    zip.write_all(serde_json::to_string_pretty(&Config::load(config)?)?.as_bytes())?;
     // A restored workbook whose key was never merged keeps carrying it.
     let imported = dir.join(IMPORTED_KEY);
     if imported.is_file() {

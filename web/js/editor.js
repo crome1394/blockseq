@@ -1961,12 +1961,24 @@ export class PageEditor {
       await this.sealSecrets();
       const r = await api.savePage(this.name, this.version, this.flatten({ forSave: true }), opts);
       if (r.status === 200) {
+        this.idWaits = 0;
         this.version = r.data.page.version;
         this.offline = false;
         if (this.changeSeq === seq) this.dirty = false;
         if (wasNew) invalidatePageNames();
         noteSaved(r.data.page.updated_at || Date.now());
         this.opts.onSaved?.(this);
+      } else if (r.status === 409 && r.data?.foreign_ids) {
+        // Pasted blocks reuse ids that belong to another page. A cut and
+        // paste in this tab may simply not have saved the old page yet:
+        // wait for it a few times. Otherwise they are copies: new ids.
+        const busy = [...editors].some((ed) => ed !== this && !ed.disposed && (ed.dirty || ed.saving));
+        this.idWaits = (this.idWaits || 0) + 1;
+        if (!busy || this.idWaits > 3) {
+          this.renewIds(r.data.foreign_ids);
+          this.idWaits = 0;
+          this.saveAgain = true;
+        }
       } else if (r.status === 409) {
         this.conflict = r.data.page;
         this.conflictData = { name: r.data.page.name, page: r.data.page, blocks: r.data.blocks };
@@ -1990,6 +2002,19 @@ export class PageEditor {
       if (!this.dirty && this.disposed) editors.delete(this);
       updateStatus();
     }
+  }
+
+  // Gives blocks new ids (they turned out to belong to another page).
+  renewIds(ids) {
+    const renew = new Set(ids);
+    const walk = (n) => n.children.forEach((c) => {
+      if (renew.has(c.id)) {
+        c.id = uuid();
+        if (c.el) c.el.dataset.id = c.id;
+      }
+      walk(c);
+    });
+    walk(this.root);
   }
 
   // Called when another device saved this page.

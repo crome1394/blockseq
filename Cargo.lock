@@ -165,6 +165,7 @@ dependencies = [
  "base64",
  "chrono",
  "mime_guess",
+ "parking_lot",
  "pbkdf2",
  "rusqlite",
  "rust-embed",

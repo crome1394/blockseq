@@ -18,7 +18,9 @@ mod md;
 mod workbooks;
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -57,7 +59,17 @@ impl AppState {
     }
 
     pub fn task_words(&self) -> Vec<String> {
-        self.config.read().unwrap().task_words()
+        self.config.read().task_words()
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.root.join("config.json")
+    }
+
+    /// The shared settings as they are on disk (the terminal password reset
+    /// may have changed them). Errors if config.json is damaged.
+    pub fn read_config(&self) -> Result<config::Config> {
+        config::Config::load(&self.config_path())
     }
 }
 
@@ -166,7 +178,7 @@ async fn main() -> Result<()> {
 
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating {}", data_dir.display()))?;
-    let config = config::Config::load(&data_dir.join("config.json"));
+    let config = config::Config::load(&data_dir.join("config.json")).context("reading the shared settings")?;
     let state = Arc::new(AppState {
         root: data_dir.clone(),
         workbooks: workbooks::Registry::new(data_dir.clone()),

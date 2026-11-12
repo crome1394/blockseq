@@ -48,6 +48,17 @@ async function checkOf(raw) {
   return b64(await crypto.subtle.digest('SHA-256', buf));
 }
 
+// Proof of holding the key, and what the server stores of it. Must match
+// key_proof / proof_hash in src/crypto.rs.
+async function proofOf(raw) {
+  const prefix = enc.encode('blockseq-key-proof:');
+  const buf = new Uint8Array(prefix.length + raw.length);
+  buf.set(prefix);
+  buf.set(raw, prefix.length);
+  return b64(await crypto.subtle.digest('SHA-256', buf));
+}
+const hashOfProof = async (proof) => b64(await crypto.subtle.digest('SHA-256', enc.encode(proof)));
+
 async function wrap(kek, raw) {
   const iv = rand(12);
   return { iv: b64(iv), data: b64(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, raw)) };
@@ -79,11 +90,12 @@ async function fetchConfig() {
   return (await r.json()).encryption;
 }
 
-async function saveConfig(encryption, check) {
+// `auth` is { proof } (or { check } to add a proof to an older setup).
+async function saveConfig(encryption, auth = {}) {
   const r = await fetch('/api/encryption', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ encryption, check }),
+    body: JSON.stringify({ encryption, ...auth }),
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
 }
@@ -106,7 +118,8 @@ export async function setUp(password) {
   await saveConfig({
     version: 1, salt: b64(salt), iterations: PW_ROUNDS, pw_iv: pw.iv, pw_data: pw.data,
     rk_salt: b64(rkSalt), rk_iterations: RK_ROUNDS, rk_iv: rk.iv, rk_data: rk.data, check: await checkOf(raw),
-  }, null);
+    proof_hash: await hashOfProof(await proofOf(raw)),
+  });
   key = await importKey(raw);
   touch();
   announce('blockseq:unlocked');
@@ -132,9 +145,14 @@ async function rawFromRecovery(cfg, recovery) {
 export async function unlock(password) {
   const cfg = await fetchConfig();
   if (!cfg) throw new Error('No encryption password is set yet (Settings → Security)');
-  key = await importKey(await rawFromPassword(cfg, password));
+  const raw = await rawFromPassword(cfg, password);
+  key = await importKey(raw);
   touch();
   announce('blockseq:unlocked');
+  // Setups from before the key proof existed get one now (quietly).
+  if (!cfg.proof_hash) {
+    saveConfig({ ...cfg, proof_hash: await hashOfProof(await proofOf(raw)) }, { check: cfg.check }).catch(() => {});
+  }
 }
 
 // New password, proving the old one (or the recovery key) first.
@@ -144,7 +162,9 @@ export async function changePassword({ current, recovery }, password) {
   const raw = recovery ? await rawFromRecovery(cfg, recovery) : await rawFromPassword(cfg, current);
   const salt = rand(16);
   const pw = await wrap(await derive(password, salt, PW_ROUNDS), raw);
-  await saveConfig({ ...cfg, salt: b64(salt), iterations: PW_ROUNDS, pw_iv: pw.iv, pw_data: pw.data }, cfg.check);
+  const proof = await proofOf(raw);
+  const next = { ...cfg, salt: b64(salt), iterations: PW_ROUNDS, pw_iv: pw.iv, pw_data: pw.data, proof_hash: cfg.proof_hash || await hashOfProof(proof) };
+  await saveConfig(next, cfg.proof_hash ? { proof } : { check: cfg.check });
   key = await importKey(raw);
   touch();
   announce('blockseq:unlocked');

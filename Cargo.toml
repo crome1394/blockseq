@@ -11,6 +11,7 @@ axum = "0.8.9"
 base64 = "0.23.1"
 chrono = "0.4.45"
 mime_guess = "2.0.5"
+parking_lot = "0.12"
 pbkdf2 = { version = "0.12", features = ["hmac"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 rust-embed = "8.13.0"
