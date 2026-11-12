@@ -2,7 +2,7 @@
 
 All notable changes to Blockseq are listed here. There are no release tags yet, so entries are grouped by theme. The newest group is first, and the newest change is first inside each section.
 
-Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `55341cd` (2026-11-12).
+Each entry ends with the short commit hash it comes from. The history runs from `64076f1` (2026-11-11) through `45d79b1` (2026-11-12).
 
 Opening an older database upgrades it in place. The current schema is **version 7**.
 
@@ -16,6 +16,25 @@ Opening an older database upgrades it in place. The current schema is **version 
 | 2 | Favourites on pages, and tag links marked apart from ordinary links. | `862359e` |
 
 On the move to version 6, history rows whose name matches a page that still exists are attached to that page. Rows left over from deleted pages are grouped one id per name. Copies that already shared a name cannot be split apart.
+
+## Hardening
+
+### Security
+
+- Backup zips are created readable by the owner only (0600), also when a same-day file is overwritten, and the temporary staging copy is 0700. They were 0644 and 0755, so on the command line (root, shared `/tmp`) any local user could read every note and the wrapped key. (`e008712`)
+- Listening beyond localhost without `BLOCKSEQ_PASSWORD` logs a warning: `BLOCKSEQ_HOSTS` stops DNS rebinding but not someone who reaches the port by IP address. (`bff0240`)
+
+### Fixed
+
+- Each tab keeps its own local draft, so two tabs of one page can no longer overwrite or delete each other's unsent copy. Opening a page offers the newest copy that never reached the server and skips copies whose tab is still open (Web Locks). A draft that cannot be stored (storage full or blocked) shows a warning instead of failing silently. (`691544f`)
+- Markdown files left under an older file name (`my_page.md`, now `my%5Fpage.md`) are moved to the workbook's hidden `.old-mirror-files/` folder after the startup rebuild, so a page has one file and backups do not carry stale text. Nothing is deleted. (`6ab2ebf`, `fa45039`)
+- A tab pushed off by the 32-stream live-update cap shows "live updates paused" and reconnects when it is shown again, instead of reconnecting at once and pushing another tab off. (`076052a`)
+- `install.sh` waits for `/api/health` after the restart and fails, naming the pre-upgrade backup, when the new version does not come up healthy. (`3b38123`)
+
+### Internal
+
+- Saving and sync moved out of `editor.js` into `sync.js` (autosave, conflicts, keepalive) and `drafts.js` (local drafts), unchanged. (`45d79b1`)
+- The `csp` browser test checks that a real PDF renders in the sandboxed preview (checked by hand in Chrome and Firefox). New browser tests: `draft-tabs`, `live-cap`. (`024bff6`, `691544f`, `076052a`)
 
 ## Performance and free space
 
