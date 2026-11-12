@@ -23,6 +23,7 @@ import { journalName } from './dates.js';
 import { toast, copyText, updateStatus, openModal, noteSaved } from './ui.js';
 import { decorateCode, highlightForEditor, CodeEditor } from './code.js';
 import { getSetting } from './settings.js';
+import { workbook } from './workbook.js';
 
 export const editors = new Set();
 
@@ -43,6 +44,47 @@ function mathSource(tex, display, old) {
 }
 
 const SAVE_DELAY = 600;
+
+// ---- local drafts ----------------------------------------------------------
+//
+// Every save attempt first keeps a copy of what is being sent in this
+// browser's storage, and removes it once the server has it. If the tab dies
+// while the server is unreachable (crash, killed tab, flat battery), the page
+// offers that copy the next time it opens. Copies are taken after #Encrypted
+// blocks are sealed, so they hold only ciphertext, like the server.
+const DRAFT_PREFIX = 'blockseq.draft:';
+const DRAFT_MAX_AGE = 30 * 24 * 3600 * 1000;
+const draftKey = (name) => `${DRAFT_PREFIX}${workbook()}:${name.toLowerCase()}`;
+
+function saveDraft(name, baseVersion, blocks) {
+  try {
+    localStorage.setItem(draftKey(name), JSON.stringify({ name, baseVersion, blocks, at: Date.now() }));
+  } catch { /* storage full or blocked: the server save still runs */ }
+}
+
+function readDraft(name) {
+  try {
+    const d = JSON.parse(localStorage.getItem(draftKey(name)) || 'null');
+    return d && Array.isArray(d.blocks) ? d : null;
+  } catch { return null; }
+}
+
+function dropDraft(name) {
+  try { localStorage.removeItem(draftKey(name)); } catch { /* blocked */ }
+}
+
+// Old drafts (the page was never opened again) are dropped after a month.
+try {
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (!k?.startsWith(DRAFT_PREFIX)) continue;
+    const at = JSON.parse(localStorage.getItem(k) || '{}').at || 0;
+    if (Date.now() - at > DRAFT_MAX_AGE) localStorage.removeItem(k);
+  }
+} catch { /* storage blocked */ }
+
+const sameBlocks = (a, b) => JSON.stringify(a.map((x) => [x.id, x.parent_id, x.content, !!x.collapsed]))
+  === JSON.stringify(b.map((x) => [x.id, x.parent_id, x.content, !!x.collapsed]));
 const HISTORY_LIMIT = 200;
 // A #quote tag on a block shows it and its children as a quotation.
 const QUOTE_TAG = /(^|\s)#quote(?=\s|$)/i;
@@ -265,8 +307,44 @@ export class PageEditor {
     this.undoStack = [];
     this.redoStack = [];
     this.burst = false;
+    this.draft = null;
+    const draft = readDraft(this.name);
+    const serverBlocks = data.blocks || [];
+    // Another tab may be saving this page right now: only older copies count.
+    if (draft && Date.now() - draft.at > 5000) {
+      if (sameBlocks(draft.blocks, serverBlocks)) dropDraft(this.name);
+      else this.draft = draft;
+    }
     this.render();
     this.openSecrets();
+  }
+
+  renderDraft() {
+    const bar = el('div', 'conflict draft-bar');
+    const when = new Date(this.draft.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' });
+    const newer = this.draft.baseVersion !== this.version;
+    bar.append(el('span', '', `This browser has changes to this page from ${when} that never reached the server${newer ? ' (the page has changed since)' : ''}.`));
+    const view = el('button', '', 'Discard them');
+    view.addEventListener('click', () => {
+      dropDraft(this.name);
+      this.draft = null;
+      this.render();
+    });
+    const restore = el('button', 'primary', 'Restore them');
+    restore.title = 'Replaces this page with the unsaved version';
+    restore.addEventListener('click', () => {
+      const blocks = this.draft.blocks;
+      this.draft = null;
+      this.beginOp();
+      this.root = buildTree(blocks);
+      if (!this.root.children.length) this.insertChild(this.root, makeNode(), 0);
+      this.render();
+      this.openSecrets();
+      this.markDirty();
+      toast('Unsaved changes restored');
+    });
+    bar.append(view, restore);
+    return bar;
   }
 
   // ---- #Encrypted blocks -----------------------------------------------------
@@ -522,6 +600,7 @@ export class PageEditor {
     this.codeEdit = null;
     const frag = document.createDocumentFragment();
     if (this.conflict) frag.append(this.renderConflict());
+    else if (this.draft) frag.append(this.renderDraft());
     this.appendNodes(frag, this.root.children);
     const tail = el('div', 'add-block');
     tail.title = 'Click to add a block';
@@ -649,6 +728,7 @@ export class PageEditor {
     theirs.addEventListener('click', () => {
       this.conflict = null;
       this.dirty = false;
+      dropDraft(this.name); // their version was chosen: the local copy goes too
       this.load(this.conflictData);
       updateStatus();
     });
@@ -1959,12 +2039,17 @@ export class PageEditor {
     const wasNew = this.version === 0;
     try {
       await this.sealSecrets();
-      const r = await api.savePage(this.name, this.version, this.flatten({ forSave: true }), opts);
+      const sending = this.flatten({ forSave: true });
+      saveDraft(this.name, this.version, sending);
+      const r = await api.savePage(this.name, this.version, sending, opts);
       if (r.status === 200) {
         this.idWaits = 0;
         this.version = r.data.page.version;
         this.offline = false;
-        if (this.changeSeq === seq) this.dirty = false;
+        if (this.changeSeq === seq) {
+          this.dirty = false;
+          dropDraft(this.name);
+        }
         if (wasNew) invalidatePageNames();
         noteSaved(r.data.page.updated_at || Date.now());
         this.opts.onSaved?.(this);
