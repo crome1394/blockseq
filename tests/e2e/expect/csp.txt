@@ -5,3 +5,4 @@ save from the app: "plain text block edited"
 cross-site POST: 403
 same-origin POST: 204
 CSP problems: none
+pdf preview rendered: true
