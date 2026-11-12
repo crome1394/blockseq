@@ -52,6 +52,7 @@ Settings are environment variables:
 | `BLOCKSEQ_DATA`     | `./data`       | Database, Markdown mirror and uploaded images   |
 | `BLOCKSEQ_PASSWORD` | unset          | If set, the browser asks for this password      |
 | `BLOCKSEQ_MAX_UPLOAD_MB` | `2048`     | Largest file you can upload, in MB              |
+| `BLOCKSEQ_TRUSTED_PROXIES` | unset   | Reverse proxy addresses (e.g. Caddy's), comma-separated; the wrong-password limit then uses the client address the proxy forwards |
 | `BLOCKSEQ_HOSTS`    | unset          | Host names to answer to, comma-separated (IP addresses and localhost always work). Blocks "DNS rebinding" by other websites; set it to your HTTPS name, e.g. `blockseq.example.com` |
 
 ## Deploy to a Proxmox LXC
@@ -153,7 +154,11 @@ port 3030 only from your router's IP (Proxmox firewall on the container), and/or
 set `BLOCKSEQ_PASSWORD`. If the HTTPS name can be reached from the internet,
 a password (or Caddy auth in front) is essential.
 
-**Built-in protections.** Blockseq refuses changes coming from other websites
+**Built-in protections.** With a password set, each client may try at most 10
+different wrong passwords per 15 minutes, then it is refused until that time
+is up (repeating the same typo counts once). Locked yourself out? Wait, or
+restart the service. Behind Caddy, set `BLOCKSEQ_TRUSTED_PROXIES` to Caddy's
+address so the limit applies per real client. Blockseq refuses changes coming from other websites
 (a page you visit can't edit your notes through your browser), sends a
 Content-Security-Policy and no-framing headers, and with `BLOCKSEQ_HOSTS` set
 only answers to the names you list. `GET /api/health` reports whether the

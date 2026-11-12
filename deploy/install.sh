@@ -38,6 +38,9 @@ BLOCKSEQ_ADDR=0.0.0.0:3030
 # Host names Blockseq answers to (IP addresses and localhost always work).
 # Blocks "DNS rebinding" tricks from other websites. Example:
 #BLOCKSEQ_HOSTS=blockseq.example.com
+# Reverse proxy (e.g. Caddy on your router) addresses: lets the wrong-password
+# limit see each real client instead of the proxy. Example:
+#BLOCKSEQ_TRUSTED_PROXIES=10.0.0.1
 #BLOCKSEQ_MAX_UPLOAD_MB=2048
 EOF
   chmod 640 /etc/blockseq.env

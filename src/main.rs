@@ -7,11 +7,14 @@
 //!                      other workbooks in workbooks/<name>/, and config.json
 //!   BLOCKSEQ_PASSWORD  require this password via HTTP basic auth (optional)
 //!   BLOCKSEQ_MAX_UPLOAD_MB  largest file upload in MB (default 2048)
+//!   BLOCKSEQ_TRUSTED_PROXIES  reverse proxy addresses whose X-Forwarded-For
+//!                      is used for the wrong-password limit (optional)
 //!   BLOCKSEQ_HOSTS     host names to serve, comma-separated (optional; IP
 //!                      addresses and localhost always work). Protects
 //!                      against DNS rebinding when no password is set.
 
 mod api;
+mod auth;
 mod assets;
 mod backup;
 mod config;
@@ -28,12 +31,10 @@ use parking_lot::RwLock;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Request, State};
 use axum::http::{StatusCode, Uri, header};
-use axum::middleware::{self, Next};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use base64::Engine;
 use tokio::sync::broadcast;
 
 #[derive(rust_embed::Embed)]
@@ -50,6 +51,10 @@ pub struct AppState {
     pub max_upload: u64,
     /// Host names served (BLOCKSEQ_HOSTS); empty = any.
     pub allowed_hosts: Vec<String>,
+    /// Reverse proxies whose X-Forwarded-For is believed (BLOCKSEQ_TRUSTED_PROXIES).
+    pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Wrong-password limit per client.
+    pub limiter: auth::Limiter,
 }
 
 impl AppState {
@@ -77,41 +82,6 @@ impl AppState {
     pub fn read_config(&self) -> Result<config::Config> {
         config::Config::load(&self.config_path())
     }
-}
-
-async fn require_password(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
-    let Some(expected) = &s.password else {
-        return next.run(req).await;
-    };
-    // Monitoring can check health without the password (it shows no notes).
-    if req.uri().path() == "/api/health" {
-        return next.run(req).await;
-    }
-    let ok = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic "))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|raw| String::from_utf8(raw).ok())
-        .is_some_and(|creds| {
-            let pass = creds.split_once(':').map(|(_, p)| p).unwrap_or("");
-            constant_time_eq(pass.as_bytes(), expected.as_bytes())
-        });
-    if ok {
-        next.run(req).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Basic realm=\"Blockseq\"")],
-            "Password required",
-        )
-            .into_response()
-    }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 async fn static_file(uri: Uri) -> Response {
@@ -219,6 +189,8 @@ async fn main() -> Result<()> {
         password,
         max_upload: max_upload_mb * 1024 * 1024,
         allowed_hosts: guard::parse_hosts(&std::env::var("BLOCKSEQ_HOSTS").unwrap_or_default()),
+        trusted_proxies: auth::parse_proxies(&std::env::var("BLOCKSEQ_TRUSTED_PROXIES").unwrap_or_default()),
+        limiter: auth::Limiter::default(),
     });
     // Open Main now, so a broken database is reported at startup.
     state
@@ -259,7 +231,7 @@ async fn main() -> Result<()> {
         .route("/assets/{name}", get(api::get_asset))
         .fallback(static_file)
         .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
-        .layer(middleware::from_fn_with_state(state.clone(), require_password))
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require_password))
         // Outermost: refuse cross-site writes and unknown host names first.
         .layer(middleware::from_fn_with_state(state.clone(), guard::check))
         .with_state(state.clone());
@@ -271,7 +243,7 @@ async fn main() -> Result<()> {
         "Blockseq listening on http://{addr}{}",
         if state.password.is_some() { " (password required)" } else { "" }
     );
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
     Ok(())
