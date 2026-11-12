@@ -149,6 +149,12 @@ async function pageView(name, seq, blockId) {
     star.title = fav ? 'Remove from favorites' : 'Add to favorites';
   };
   drawStar();
+  // The star in the sidebar's favourites (×) can change this page's star too.
+  const onFavorite = (e) => {
+    if (!star.isConnected) { document.removeEventListener('blockseq:favorite', onFavorite); return; }
+    if (e.detail.name.toLowerCase() === data.name.toLowerCase()) { fav = e.detail.on; drawStar(); }
+  };
+  document.addEventListener('blockseq:favorite', onFavorite);
   star.addEventListener('click', async () => {
     fav = !fav;
     drawStar();
@@ -287,10 +293,25 @@ function refreshFavorites(now = false) {
     try { favs = (await api.sidebar()).favorites; } catch { return; }
     const list = favBox.querySelector('.fav-list');
     list.replaceChildren(...favs.map((name) => {
+      const row = el('div', 'fav-row');
       const a = el('a', 'fav', name);
       a.href = pageHref(name);
       a.dataset.name = name.toLowerCase();
-      return a;
+      // Unstar without opening or deleting the page.
+      const x = el('button', 'fav-remove', '×');
+      x.type = 'button';
+      x.title = 'Remove from favorites (the page stays)';
+      x.setAttribute('aria-label', `Remove ${name} from favorites`);
+      x.addEventListener('click', async () => {
+        const r = await api.setFavorite(name, false);
+        if (!r.ok) { toast('Could not update favorites'); return; }
+        document.dispatchEvent(new CustomEvent('blockseq:favorite', { detail: { name, on: false } }));
+        refreshFavorites(true);
+        if (location.hash === '#/all') refreshView();
+        toast(`Removed ${name} from favorites`);
+      });
+      row.append(a, x);
+      return row;
     }));
     if (!favs.length) list.append(el('div', 'muted small fav-empty', 'Star a page (☆ next to its title) to add it here.'));
     markActiveFavorite();

@@ -354,8 +354,13 @@ html.wide main { max-width: none; }
 
 .side-heading { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 0 8px 4px; }
 .favorites .fav-list { display: flex; flex-direction: column; gap: 1px; }
-.favorites .fav { color: var(--text); padding: 3px 8px; border-radius: 6px; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.favorites .fav:hover { background: var(--border); }
+.fav-row { display: flex; align-items: center; border-radius: 6px; }
+.fav-row:hover { background: var(--border); }
+.favorites .fav { flex: 1; min-width: 0; color: var(--text); padding: 3px 8px; border-radius: 6px; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fav-remove { flex: none; width: 20px; height: 20px; margin-right: 3px; padding: 0; border: none; border-radius: 4px; background: none; color: var(--muted); font-size: 15px; line-height: 1; opacity: 0; }
+.fav-row:hover .fav-remove, .fav-remove:focus-visible { opacity: 1; }
+.fav-remove:hover { color: var(--danger); background: var(--bg); }
+@media (hover: none) { .fav-remove { opacity: 0.7; } }
 .favorites .fav.active { background: var(--accent-soft); color: var(--accent); }
 .fav-empty { padding: 0 8px; }
 
