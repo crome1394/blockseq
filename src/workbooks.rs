@@ -183,28 +183,38 @@ impl Workbook {
             }
         }
         if !self.is_retired() {
-            let removed = remove_stale_mirror_files(&self.dir, &names);
-            if removed > 0 {
-                tracing::info!("removed {removed} Markdown file(s) left under an older file name");
+            // Under the lock, with the names as they are now, so a rename
+            // cannot write a file between the listing and the check.
+            let conn = self.db.lock();
+            let names: Vec<String> = db::list_pages(&conn)?.into_iter().map(|p| p.name).collect();
+            let moved = set_aside_stale_mirror_files(&self.dir, &names);
+            if moved > 0 {
+                tracing::info!("moved {moved} Markdown file(s) left under an older file name to {STALE_MIRROR}/");
             }
         }
         Ok(n)
     }
 }
 
-/// Deletes files in `pages/` that hold a page under a file name this version
-/// no longer uses, so a page never has two Markdown files. Older versions kept
-/// `_` and `%` as they are and dropped control characters; `my_page.md` is now
-/// `my%5Fpage.md`. Only a file whose name decodes to an existing page, and is
-/// not that page's current file, is removed. Anything else in the folder is
-/// left alone. Returns how many files were removed.
-fn remove_stale_mirror_files(dir: &Path, names: &[String]) -> usize {
+/// Hidden folder in the workbook for Markdown files set aside by
+/// [`set_aside_stale_mirror_files`]. Backups and Logseq skip it.
+pub const STALE_MIRROR: &str = ".old-mirror-files";
+
+/// Moves files in `pages/` that hold a page under a file name this version no
+/// longer uses into [`STALE_MIRROR`], so a page never has two Markdown files.
+/// Older versions kept `_` and `%` as they are and dropped control
+/// characters; `my_page.md` is now `my%5Fpage.md`. Only a file whose name
+/// decodes to an existing page, and is not that page's current file, is
+/// moved; anything else in the folder is left alone. Nothing is deleted: the
+/// database holds the page, and the old file stays there to look at.
+/// Returns how many files were moved.
+fn set_aside_stale_mirror_files(dir: &Path, names: &[String]) -> usize {
     let current: HashMap<String, String> = names
         .iter()
         .map(|n| (n.to_lowercase(), md::mirror_path(n, None)))
         .collect();
     let Ok(entries) = std::fs::read_dir(dir.join("pages")) else { return 0 };
-    let mut removed = 0;
+    let mut moved = 0;
     for entry in entries.flatten() {
         let file = entry.file_name();
         let Some(file) = file.to_str() else { continue };
@@ -214,11 +224,26 @@ fn remove_stale_mirror_files(dir: &Path, names: &[String]) -> usize {
         }
         let Some(name) = md::page_name_from_file("pages", stem) else { continue };
         let Some(expected) = current.get(&name.to_lowercase()) else { continue };
-        if *expected != format!("pages/{file}") && std::fs::remove_file(entry.path()).is_ok() {
-            removed += 1;
+        if *expected == format!("pages/{file}") {
+            continue;
+        }
+        let aside = dir.join(STALE_MIRROR);
+        if std::fs::create_dir_all(&aside).is_err() {
+            return moved;
+        }
+        // Never replace a file set aside earlier.
+        let mut to = aside.join(file);
+        for i in 1.. {
+            if !to.exists() {
+                break;
+            }
+            to = aside.join(format!("{stem}.{i}.md"));
+        }
+        if std::fs::rename(entry.path(), &to).is_ok() {
+            moved += 1;
         }
     }
-    removed
+    moved
 }
 
 /// Temp file, then rename. Not fsynced, unlike `config.json`. A crash can
@@ -773,7 +798,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mirror_files_under_an_old_name_are_removed() {
+    fn mirror_files_under_an_old_name_are_set_aside() {
         let dir = std::env::temp_dir().join(format!("bq-stale-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("pages")).unwrap();
         for f in ["my_page.md", "my%5Fpage.md", "notes.md", "Notes.md", "unrelated_file.md", "my_page.txt", ".my_page.md"] {
@@ -781,9 +806,15 @@ mod tests {
         }
         let names = vec!["my_page".to_string(), "Notes".to_string()];
         // notes.md is left from before the page was renamed to Notes.
-        assert_eq!(remove_stale_mirror_files(&dir, &names), 2);
+        assert_eq!(set_aside_stale_mirror_files(&dir, &names), 2);
         assert!(!dir.join("pages/my_page.md").exists());
         assert!(!dir.join("pages/notes.md").exists());
+        assert!(dir.join(STALE_MIRROR).join("my_page.md").exists());
+        assert!(dir.join(STALE_MIRROR).join("notes.md").exists());
+        // A second stale copy of the same name does not replace the first.
+        std::fs::write(dir.join("pages/my_page.md"), "- again\n").unwrap();
+        assert_eq!(set_aside_stale_mirror_files(&dir, &names), 1);
+        assert!(dir.join(STALE_MIRROR).join("my_page.1.md").exists());
         for kept in ["my%5Fpage.md", "Notes.md", "unrelated_file.md", "my_page.txt", ".my_page.md"] {
             assert!(dir.join("pages").join(kept).exists(), "{kept}");
         }
