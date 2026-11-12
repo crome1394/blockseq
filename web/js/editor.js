@@ -49,6 +49,7 @@ const QUOTE_TAG = /(^|\s)#quote(?=\s|$)/i;
 const NUMBERED = 'logseq.order-list-type';
 const COLOR = 'background-color';
 const HEADING = 'heading';
+const ALIGN = 'text-align';
 const COLORS = ['yellow', 'red', 'pink', 'green', 'blue', 'purple', 'gray'];
 
 // The editor the user touched last; keyboard undo outside a block goes here.
@@ -676,6 +677,8 @@ export class PageEditor {
   styleContent(node, content) {
     const color = node.props[COLOR];
     if (color) content.dataset.color = color; else delete content.dataset.color;
+    const align = node.props[ALIGN];
+    if (align === 'center' || align === 'right') content.dataset.align = align; else delete content.dataset.align;
     content.className = content.className.replace(/\bah\d\b/g, '').trim();
     if (node.props[HEADING] === 'true') {
       let depth = 0;
@@ -990,6 +993,8 @@ export class PageEditor {
       return this.replaceText(node, ta, s, e, mark + sel + mark, m, m + sel.length);
     }
     const { start: ls, end: le, line } = lineAt(v, s);
+    const core = line.slice(ls === 0 ? statusPrefix(line).length : 0).replace(/^\s*(?:#{1,6} |> )?/, '');
+    if (!core.trim()) return this.replaceText(node, ta, s, s, mark + mark, m);
     const next = toggleLine(line, mark, ls === 0);
     const shift = (next.length - line.length) / 2;
     const caret = Math.max(0, Math.min(next.length, s - ls + shift));
@@ -1763,9 +1768,28 @@ export class PageEditor {
     headBtn('H', 'Remove heading', 0, false);
     heads.lastChild.classList.add('no-head');
 
+    // Text alignment: left is the default, so it clears the property.
+    const aligns = el('div', 'menu-headings menu-align');
+    const alignIcon = (lines) => `<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="${lines}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>`;
+    const ALIGN_ICONS = {
+      left: alignIcon('M3 5h14M3 10h9M3 15h12'),
+      center: alignIcon('M3 5h14M5.5 10h9M4 15h12'),
+      right: alignIcon('M3 5h14M8 10h9M5 15h12'),
+    };
+    const currentAlign = node.props[ALIGN] || 'left';
+    for (const a of ['left', 'center', 'right']) {
+      const b = el('button', 'head-btn' + (currentAlign === a ? ' active' : ''));
+      b.innerHTML = ALIGN_ICONS[a];
+      b.title = `Align ${a}`;
+      b.setAttribute('aria-label', `Align ${a}`);
+      b.addEventListener('click', () => { closeMenu(); this.setProp(node, ALIGN, a === 'left' ? null : a); });
+      aligns.append(b);
+    }
+
     const entries = [
       { element: colors },
       { element: heads },
+      { element: aligns },
       '-',
       { label: 'Add timestamp', fn: () => this.addTimestamp(node) },
       '-',

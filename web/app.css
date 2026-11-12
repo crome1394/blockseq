@@ -1564,3 +1564,12 @@ math.math merror { color: var(--danger); background: none; border: 0; }
 @media (max-width: 720px) {
   .mb-main { grid-template-columns: 1fr; }
 }
+
+/* Block text alignment (right-click menu; stored as text-align:: center/right). */
+.content[data-align="center"], .content[data-align="center"] textarea.editor { text-align: center; }
+.content[data-align="right"], .content[data-align="right"] textarea.editor { text-align: right; }
+.content[data-align] pre, .content[data-align] .code-editor, .content[data-align] .admonition { text-align: left; }
+.content[data-align="center"] .rendered .body table { margin-left: auto; margin-right: auto; }
+.content[data-align="right"] .rendered .body table { margin-left: auto; }
+.menu-align { justify-content: flex-start; gap: 6px; }
+.menu-align .head-btn { display: inline-flex; padding: 3px 6px; }

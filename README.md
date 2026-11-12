@@ -274,7 +274,8 @@ Inside a table, Enter adds a row; Enter on an empty row ends the table.
 Enter on an empty numbered item ends the list.
 
 Click or right-click a bullet for the block menu: colours, headings (H1–H6, or
-auto-sized by depth), add timestamp (`[[Nov 11th, 2026]] 14:32`, at the cursor
+auto-sized by depth), text alignment (left / centre / right, stored as a
+`text-align:: center` property, which Logseq shows as a plain property), add timestamp (`[[Nov 11th, 2026]] 14:32`, at the cursor
 while editing, otherwise at the end of the first line before any tags; also
 `/timestamp`, and `/time` for just the time), copy block ref, copy block URL (opens the page scrolled to
 that block), copy/export as Markdown or plain text, cut, delete, number list,
@@ -374,7 +375,8 @@ button next to it.
 
 **Bold and italic:** **Ctrl+B** / **Ctrl+I** wrap the selected text, or the whole
 line when nothing is selected (status words and trailing tags stay outside).
-Press again to undo it.
+On a line with no text yet they insert `****` (or `**`) with the cursor in the
+middle, so you can type bold straight away. Press again to undo it.
 
 **Encrypted blocks:** type `/encrypted` (or tag a block `#Encrypted`) and everything nested under it
 is encrypted in your browser (AES-256-GCM) before it is saved. The tagged block's
