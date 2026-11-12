@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS blocks (
     content    TEXT NOT NULL,
     collapsed  INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    search_id  INTEGER  -- rowid of this block's row in blocks_fts
 );
 CREATE INDEX IF NOT EXISTS blocks_page ON blocks(page_id, position);
 
@@ -70,6 +71,8 @@ CREATE INDEX IF NOT EXISTS page_history_page ON page_history(name_lower, saved_a
 
 -- Block text for search. unicode61 folds case and accents, so a query for
 -- "e" matches "É" without scanning every block on each keystroke.
+-- block_id cannot be indexed in FTS5, so each block stores the rowid of its
+-- search row (blocks.search_id) and rows are deleted by that rowid.
 CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
     block_id UNINDEXED,
     content,
@@ -78,7 +81,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
 "#;
 
 /// Current schema version, stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Block {
@@ -280,7 +283,34 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 6 {
         migrate_v6(conn)?;
     }
+    if version < 7 {
+        migrate_v7(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    Ok(())
+}
+
+/// v7: each block remembers the rowid of its search row, so a save deletes
+/// search rows directly instead of scanning the whole index. The index is
+/// rebuilt once to fill the new column.
+fn migrate_v7(conn: &Connection) -> Result<()> {
+    let sp = Savepoint::begin(conn, "migrate_v7")?;
+    if !has_column(conn, "blocks", "search_id")? {
+        conn.execute_batch("ALTER TABLE blocks ADD COLUMN search_id INTEGER")?;
+    }
+    conn.execute_batch("DELETE FROM blocks_fts")?;
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT id, content FROM blocks")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut ins = conn.prepare("INSERT INTO blocks_fts(block_id, content) VALUES (?1, ?2)")?;
+    let mut set = conn.prepare("UPDATE blocks SET search_id = ?1 WHERE id = ?2")?;
+    for (id, content) in &rows {
+        ins.execute(params![id, content])?;
+        set.execute(params![conn.last_insert_rowid(), id])?;
+    }
+    drop((ins, set));
+    sp.commit()?;
     Ok(())
 }
 
@@ -909,24 +939,28 @@ fn save_page_inner(
         }
     }
 
-    tx.execute("DELETE FROM blocks WHERE page_id = ?1", [&page.id])?;
     // Drop search rows for the blocks this save replaces, including ones that
-    // moved here from another page (their id is reused).
+    // move here from another page (their id is reused). Each is found by the
+    // rowid its block stores, so the index is never scanned.
+    tx.execute(
+        "DELETE FROM blocks_fts WHERE rowid IN (SELECT search_id FROM blocks WHERE page_id = ?1)",
+        [&page.id],
+    )?;
     {
-        let mut del_fts = tx.prepare("DELETE FROM blocks_fts WHERE block_id = ?1")?;
-        for id in old.keys() {
-            del_fts.execute([id])?;
-        }
+        let mut del_moved = tx.prepare(
+            "DELETE FROM blocks_fts WHERE rowid = (SELECT search_id FROM blocks WHERE id = ?1 AND page_id <> ?2)",
+        )?;
         for b in blocks {
-            del_fts.execute([&b.id])?;
+            del_moved.execute(params![b.id, page.id])?;
         }
     }
+    tx.execute("DELETE FROM blocks WHERE page_id = ?1", [&page.id])?;
     let mut linked: HashMap<String, String> = HashMap::new();
     {
         let mut insert = tx.prepare(
             "INSERT OR REPLACE INTO blocks
-               (id, page_id, parent_id, position, content, collapsed, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+               (id, page_id, parent_id, position, content, collapsed, created_at, updated_at, search_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
         let mut clear_refs = tx.prepare("DELETE FROM refs WHERE block_id = ?1")?;
         let mut insert_ref = tx.prepare(
@@ -942,8 +976,10 @@ fn save_page_inner(
             };
             // A block id may have lived on another page before (moved text).
             clear_refs.execute([&b.id])?;
+            insert_fts.execute(params![b.id, b.content])?;
+            let search_id = tx.last_insert_rowid();
             insert.execute(params![
-                b.id, page.id, b.parent_id, pos, b.content, b.collapsed, created, updated
+                b.id, page.id, b.parent_id, pos, b.content, b.collapsed, created, updated, search_id
             ])?;
             let tags = md::extract_tags(&b.content);
             let refs = md::extract_refs(&b.content);
@@ -957,7 +993,6 @@ fn save_page_inner(
                 insert_ref.execute(params![b.id, lower, name, tags.contains(&lower)])?;
                 linked.entry(lower).or_insert(name);
             }
-            insert_fts.execute(params![b.id, b.content])?;
         }
     }
 
@@ -988,7 +1023,7 @@ pub fn delete_page(conn: &Connection, name: &str) -> Result<Option<PageMeta>> {
     if let Some(p) = &page {
         snapshot(conn, p, &get_blocks(conn, &p.id)?, "before it was deleted", now_ms())?;
         conn.execute(
-            "DELETE FROM blocks_fts WHERE block_id IN (SELECT id FROM blocks WHERE page_id = ?1)",
+            "DELETE FROM blocks_fts WHERE rowid IN (SELECT search_id FROM blocks WHERE page_id = ?1)",
             [&p.id],
         )?;
         conn.execute("DELETE FROM pages WHERE id = ?1", [&p.id])?;
@@ -2005,5 +2040,71 @@ mod tests {
         assert_eq!(j.len(), 2);
         assert_eq!(j[0].page.journal_day, Some(20261111));
         assert_eq!(journals(&c, Some(20261111), 10).unwrap().len(), 1);
+    }
+
+    /// Every block has exactly one search row, found through its `search_id`.
+    fn assert_index_in_step(c: &Connection) {
+        let blocks: i64 = c.query_row("SELECT count(*) FROM blocks", [], |r| r.get(0)).unwrap();
+        let rows: i64 = c.query_row("SELECT count(*) FROM blocks_fts", [], |r| r.get(0)).unwrap();
+        let linked: i64 = c
+            .query_row(
+                "SELECT count(*) FROM blocks b JOIN blocks_fts f ON f.rowid = b.search_id AND f.block_id = b.id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((rows, linked), (blocks, blocks));
+    }
+
+    #[test]
+    fn search_rows_follow_saves_moves_and_deletes() {
+        let c = mem();
+        let saved = |name: &str, v: i64, blocks: &[Block]| match save_page(&c, name, v, blocks, &[]).unwrap() {
+            SaveOutcome::Saved(p) => p.version,
+            _ => panic!("not saved"),
+        };
+        let v = saved("A", 0, &[block("a1", None, "apple"), block("a2", None, "banana")]);
+        saved("B", 0, &[block("b1", None, "cherry")]);
+        assert_index_in_step(&c);
+        saved("A", v, &[block("a1", None, "apricot")]);
+        assert_index_in_step(&c);
+        assert!(search(&c, "banana", 10).unwrap().blocks.is_empty());
+        assert_eq!(search(&c, "apri", 10).unwrap().blocks.len(), 1);
+        // Merging moves B's block (same id) onto A.
+        rename_page(&c, "B", "A", &[]).unwrap();
+        assert_index_in_step(&c);
+        let hits = search(&c, "cherry", 10).unwrap().blocks;
+        assert_eq!(hits.iter().map(|h| h.page_name.as_str()).collect::<Vec<_>>(), ["A"]);
+        delete_page(&c, "A").unwrap();
+        assert_index_in_step(&c);
+        assert!(search(&c, "cherry", 10).unwrap().blocks.is_empty());
+    }
+
+    #[test]
+    fn upgrade_to_v7_links_existing_blocks_to_search_rows() {
+        let dir = std::env::temp_dir().join(format!("bq-open-v6-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blockseq.db");
+        {
+            let c = open(&path).unwrap();
+            save_page(&c, "Old", 0, &[block("o1", None, "legacy words"), block("o2", None, "more")], &[]).unwrap();
+            // Back to a v6 database: no search ids, rows keyed only by block_id.
+            c.execute_batch(
+                "UPDATE blocks SET search_id = NULL;
+                 DELETE FROM blocks_fts;
+                 INSERT INTO blocks_fts(block_id, content) SELECT id, content FROM blocks;
+                 PRAGMA user_version = 6;",
+            )
+            .unwrap();
+        }
+        let c = open(&path).unwrap();
+        assert_index_in_step(&c);
+        assert_eq!(search(&c, "legacy", 10).unwrap().blocks.len(), 1);
+        let v = get_page(&c, "Old").unwrap().unwrap().version;
+        save_page(&c, "Old", v, &[block("o1", None, "fresh")], &[]).unwrap();
+        assert_index_in_step(&c);
+        assert!(search(&c, "legacy", 10).unwrap().blocks.is_empty());
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
