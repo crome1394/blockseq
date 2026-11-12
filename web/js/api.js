@@ -67,7 +67,7 @@ export const api = {
   savePage: (name, baseVersion, blocks, opts, extra = {}) =>
     request('PUT', `/api/page?name=${enc(name)}`, { base_version: baseVersion, blocks, ...extra }, opts),
   deletePage: (name) => request('DELETE', `/api/page?name=${enc(name)}`),
-  history: (name) => getJson(`/api/history?name=${enc(name)}`),
+  history: (name, page) => getJson(`/api/history?name=${enc(name)}${page ? `&page=${enc(page)}` : ''}`),
   historyVersion: (id) => getJson(`/api/history/version?id=${enc(id)}`),
   deletedPages: () => getJson('/api/history/deleted'),
   restoreVersion: (id) => request('POST', `/api/history/restore?id=${enc(id)}`),

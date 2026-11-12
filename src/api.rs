@@ -594,9 +594,22 @@ pub struct HistoryId {
     id: i64,
 }
 
-/// Kept versions of a page, newest first.
-pub async fn history(Wb(wb): Wb, Query(q): Query<NameQuery>) -> ApiResult {
-    read_json(wb, move |c| db::history(c, &q.name)).await
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    name: String,
+    /// Page id. Set for a deleted page, so two of the same name stay apart.
+    #[serde(default)]
+    page: Option<String>,
+}
+
+/// Kept versions of a page, newest first. `page` selects one page id;
+/// without it, the live page of that name (or deleted pages of that name).
+pub async fn history(Wb(wb): Wb, Query(q): Query<HistoryQuery>) -> ApiResult {
+    read_json(wb, move |c| match q.page.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) => db::history_of(c, id),
+        None => db::history(c, &q.name),
+    })
+    .await
 }
 
 pub async fn history_version(Wb(wb): Wb, Query(q): Query<HistoryId>) -> ApiResult {

@@ -181,8 +181,10 @@ CRDTs (conflict-free merge structures):
   such ids unless called with `allow_moves` (only the page-merge in
   `rename_page` does), so a pasted copy can never take blocks from another
   page.
-- **Page history** (`db.rs` "page history", schema v3 `page_history`, keyed
-  by `name_lower` so deleted pages keep theirs; renames move it). Inside the
+- **Page history** (`db.rs` "page history", schema v6 `page_history`, keyed
+  by page id, which stays put when the page is renamed). A deleted page keeps
+  that id, so a later page that reuses the name does not inherit the history.
+  Inside the
   save's savepoint, `maybe_snapshot` keeps the replaced blocks (JSON, as
   stored: ciphertext for #Encrypted) if the newest kept version is >10 min
   old, the save removes 5+ blocks or >30%/200+ chars, or a reason is given

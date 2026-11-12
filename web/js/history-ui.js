@@ -14,9 +14,9 @@ const REASONS = {
 const reasonText = (r) => REASONS[r] || r.charAt(0).toUpperCase() + r.slice(1);
 
 // Shows a page's kept versions. `deleted`: the page doesn't exist now.
-export async function historyDialog(name, { deleted = false } = {}) {
+export async function historyDialog(name, { deleted = false, pageId = '' } = {}) {
   let entries;
-  try { entries = await api.history(name); } catch (e) { toast(`Could not load the history: ${e.message}`); return; }
+  try { entries = await api.history(name, pageId); } catch (e) { toast(`Could not load the history: ${e.message}`); return; }
   const body = el('div', 'history');
   if (!entries.length) {
     body.append(el('p', 'muted', 'No earlier versions of this page yet. While you edit, a version is kept every 10 minutes, and always before big changes, a "Keep mine", a restore or a deletion.'));
@@ -89,7 +89,7 @@ export async function deletedPagesDialog() {
       const row = el('button', 'pick-row');
       row.type = 'button';
       row.append(el('span', '', p.name), el('span', 'muted small', `deleted ${when(p.deleted_at)}`));
-      row.addEventListener('click', () => historyDialog(p.name, { deleted: true }));
+      row.addEventListener('click', () => historyDialog(p.name, { deleted: true, pageId: p.page_id }));
       list.append(row);
     }
     body.append(list);
