@@ -3,12 +3,12 @@
 import { editors } from './editor.js';
 
 let toastTimer = null;
-export function toast(msg) {
+export function toast(msg, ms = 2200) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.remove('hidden');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add('hidden'), 2200);
+  toastTimer = setTimeout(() => t.classList.add('hidden'), ms);
 }
 
 // navigator.clipboard needs HTTPS, so fall back to execCommand on plain HTTP.

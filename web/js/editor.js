@@ -4,7 +4,7 @@
 // versioning (the server answers 409 if another device saved first).
 
 import { el } from './dom.js';
-import { api, explain, uuid, getPageNames, invalidatePageNames } from './api.js';
+import { api, clientId, explain, uuid, getPageNames, invalidatePageNames } from './api.js';
 import {
   renderContent, parseOutline, esc, splitProps, joinProps, imageAlign, imageSize, pdfView, findFences, isPureCode,
   isVideoUrl, mathSpans, tweetId, renderOutline, pageLink,
@@ -55,25 +55,68 @@ const SAVE_DELAY = 600;
 // Copies are taken after #Encrypted blocks are sealed, so they hold only
 // ciphertext, like the server. A keepalive save on close is sent only when the
 // body fits in 64 KB; a larger page stays in this copy.
+//
+// Each tab keeps its own copy, so two tabs of one page cannot overwrite or
+// delete each other's: `<prefix><workbook>:<page>\n<tab id>`. Page names
+// cannot contain a newline. A key with no tab id comes from an older version.
 const DRAFT_PREFIX = 'blockseq.draft:';
 const DRAFT_MAX_AGE = 30 * 24 * 3600 * 1000;
-const draftKey = (name) => `${DRAFT_PREFIX}${workbook()}:${name.toLowerCase()}`;
+const draftBase = (name) => `${DRAFT_PREFIX}${workbook()}:${name.toLowerCase()}`;
+const draftKey = (name) => `${draftBase(name)}\n${clientId}`;
 
+// Every tab holds a Web Lock named after its id until it closes or crashes.
+// Another tab can then tell a copy whose tab is still open (and probably
+// still sending it) from one that was left behind. Web Locks need https or
+// localhost; without them every other tab's copy counts as left behind.
+const TAB_LOCK = 'blockseq.tab:';
+try { navigator.locks?.request(TAB_LOCK + clientId, () => new Promise(() => {})); } catch { /* unsupported */ }
+async function openTabs() {
+  try {
+    const { held = [] } = await navigator.locks.query();
+    return new Set(held.map((l) => l.name || '').filter((n) => n.startsWith(TAB_LOCK)).map((n) => n.slice(TAB_LOCK.length)));
+  } catch { return new Set(); }
+}
+
+// Warned once until a copy can be stored again.
+let draftWarned = false;
 function saveDraft(name, baseVersion, blocks) {
   try {
     localStorage.setItem(draftKey(name), JSON.stringify({ name, baseVersion, blocks, at: Date.now() }));
-  } catch { /* storage full or blocked: the server save still runs */ }
+    draftWarned = false;
+  } catch {
+    // Storage full or blocked. The server save still runs, but nothing would
+    // survive the tab closing before it arrives, so say so.
+    if (!draftWarned) {
+      draftWarned = true;
+      toast('This browser could not keep a local copy of your edits (its storage is full or blocked). They are still sent to the server, but would be lost if this tab closed before they arrive.', 10000);
+    }
+  }
 }
 
-function readDraft(name) {
+// Every copy of this page, from any tab, newest first.
+function readDrafts(name) {
+  const base = draftBase(name);
+  const out = [];
   try {
-    const d = JSON.parse(localStorage.getItem(draftKey(name)) || 'null');
-    return d && Array.isArray(d.blocks) ? d : null;
-  } catch { return null; }
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key !== base && !key?.startsWith(`${base}\n`)) continue;
+      try {
+        const d = JSON.parse(localStorage.getItem(key) || 'null');
+        if (d && Array.isArray(d.blocks)) out.push({ ...d, key, owner: key.split('\n')[1] || '' });
+      } catch { /* damaged copy: skipped */ }
+    }
+  } catch { /* storage blocked */ }
+  return out.sort((a, b) => (b.at || 0) - (a.at || 0));
 }
 
+function removeDraft(key) {
+  try { localStorage.removeItem(key); } catch { /* blocked */ }
+}
+
+// This tab's copy of the page.
 function dropDraft(name) {
-  try { localStorage.removeItem(draftKey(name)); } catch { /* blocked */ }
+  removeDraft(draftKey(name));
 }
 
 // Old drafts (the page was never opened again) are dropped after a month.
@@ -310,15 +353,34 @@ export class PageEditor {
     this.redoStack = [];
     this.burst = false;
     this.draft = null;
-    const draft = readDraft(this.name);
+    this.draftToken = null; // an offer still waiting from an earlier load is void
     const serverBlocks = data.blocks || [];
-    // Any copy that differs from the server never arrived, however recent.
-    if (draft) {
-      if (sameBlocks(draft.blocks, serverBlocks)) dropDraft(this.name);
-      else this.draft = draft;
+    const pending = [];
+    for (const d of readDrafts(this.name)) {
+      // A copy the server already has is done with, whichever tab kept it.
+      if (sameBlocks(d.blocks, serverBlocks)) removeDraft(d.key);
+      else pending.push(d);
     }
     this.render();
     this.openSecrets();
+    if (pending.length) this.offerDraft(pending);
+  }
+
+  // Shows the newest copy that never reached the server, however recent,
+  // unless the tab that kept it is still open and may be sending it now.
+  async offerDraft(pending) {
+    const token = {};
+    this.draftToken = token;
+    const live = await openTabs();
+    if (this.draftToken !== token || this.disposed || this.draft) return;
+    const sendingHere = [...editors].some((ed) => ed !== this && ed.name === this.name && (ed.dirty || ed.saving));
+    const draft = pending.find((d) => (d.owner === clientId ? !sendingHere : !live.has(d.owner)));
+    if (!draft) return;
+    this.draft = draft;
+    const caret = this.ta?.selectionStart;
+    const editing = this.editing;
+    this.render();
+    if (editing) this.edit(editing, caret);
   }
 
   renderDraft() {
@@ -328,7 +390,7 @@ export class PageEditor {
     bar.append(el('span', '', `This browser has changes to this page from ${when} that never reached the server${newer ? ' (the page has changed since)' : ''}.`));
     const view = el('button', '', 'Discard them');
     view.addEventListener('click', () => {
-      dropDraft(this.name);
+      removeDraft(this.draft.key);
       this.draft = null;
       this.render();
     });
@@ -336,6 +398,8 @@ export class PageEditor {
     restore.title = 'Replaces this page with the unsaved version';
     restore.addEventListener('click', () => {
       const blocks = this.draft.blocks;
+      // From here this tab's own copy holds them, until the server has them.
+      removeDraft(this.draft.key);
       this.draft = null;
       this.beginOp();
       this.root = buildTree(blocks);

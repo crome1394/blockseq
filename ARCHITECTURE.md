@@ -203,9 +203,15 @@ CRDTs (conflict-free merge structures):
   the replaced one) after giving blocks whose ids now live elsewhere new ids.
 - **Local drafts.** Each attempt first stores the payload (`flatten({forSave})`,
   after `sealSecrets`, so ciphertext only) in `localStorage` under
-  `blockseq.draft:<wb>:<page>`, removed once saved. `load()` offers a draft
-  whose blocks differ from the server copy (*Restore them* replaces the
-  page and saves). Drafts expire after 30 days.
+  `blockseq.draft:<wb>:<page>\n<tab id>`, removed once saved. Each tab has its
+  own key, so two tabs of one page cannot overwrite or delete each other's
+  copy. `load()` drops copies the server already has and offers the newest
+  one that differs (*Restore them* replaces the page and saves), skipping a
+  copy whose tab is still open: every tab holds a Web Lock named after its id
+  until it closes or crashes (`navigator.locks.query`; without Web Locks,
+  i.e. plain HTTP on a LAN address, every other tab's copy is offered). A
+  failed `localStorage` write shows a warning once until a write succeeds
+  again. Drafts expire after 30 days.
 - On unload with unsaved changes, the latest text is written to that draft,
   including when a save is already in flight. A final `fetch` with `keepalive`
   is sent only when the body is within 64 KB (browsers drop a larger one).

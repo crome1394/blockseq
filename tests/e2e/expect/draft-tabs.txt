@@ -1,0 +1,7 @@
+copies kept: 2
+server has neither: true
+new tab offers a copy: true
+restored the closed tab's copy, not the open tab's: true
+the open tab's copy is kept: true
+storage warning: true
+still saved to the server: true
