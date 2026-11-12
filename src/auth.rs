@@ -77,9 +77,23 @@ impl Limiter {
     }
 }
 
-/// IP addresses from `BLOCKSEQ_TRUSTED_PROXIES` ("10.0.0.1, `::1`").
+/// IP addresses from `BLOCKSEQ_TRUSTED_PROXIES` (`10.0.0.1, ::1`). A port
+/// (`10.0.0.1:24223`, as `ss` shows connections) is ignored; anything else
+/// that isn't an address is skipped with a warning.
 pub fn parse_proxies(value: &str) -> Vec<IpAddr> {
-    value.split([',', ' ']).filter_map(|p| p.trim().parse().ok()).collect()
+    let mut out = Vec::new();
+    for item in value.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()) {
+        let parsed = item
+            .parse::<IpAddr>()
+            .ok()
+            .or_else(|| item.parse::<SocketAddr>().ok().map(|s| s.ip()));
+        if let Some(ip) = parsed {
+            out.push(ip);
+        } else {
+            tracing::warn!("BLOCKSEQ_TRUSTED_PROXIES: {item:?} isn't an IP address; ignored");
+        }
+    }
+    out
 }
 
 /// The client's address: the peer, or the address a trusted proxy forwarded
@@ -169,6 +183,12 @@ mod tests {
         assert!(l.locked_for(other, t0).is_none());
         // After the window it may try again.
         assert!(l.locked_for(ip, t0 + WINDOW + Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    fn proxy_list_accepts_addresses_with_ports() {
+        let ips = parse_proxies("10.0.0.1:24223, ::1, [fe80::1]:443, nonsense");
+        assert_eq!(ips, vec!["10.0.0.1".parse::<IpAddr>().unwrap(), "::1".parse().unwrap(), "fe80::1".parse().unwrap()]);
     }
 
     #[test]

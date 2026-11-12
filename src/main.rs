@@ -266,6 +266,14 @@ async fn main() -> Result<()> {
         "Blockseq listening on http://{addr}{}",
         if state.password.is_some() { " (password required)" } else { "" }
     );
+    // What the optional settings were read as, so a typo shows in the log.
+    let list = |v: Vec<String>, empty: &str| if v.is_empty() { empty.to_string() } else { v.join(", ") };
+    tracing::info!(
+        "password: {} · host names: {} · trusted proxies: {}",
+        if state.password.is_some() { "on" } else { "off" },
+        list(state.allowed_hosts.clone(), "any"),
+        list(state.trusted_proxies.iter().map(ToString::to_string).collect(), "none"),
+    );
     axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
