@@ -435,6 +435,54 @@ fn import_logseq(wb: &Workbook, task_words: &[String]) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn block(id: &str, content: &str) -> db::Block {
+        db::Block { id: id.into(), parent_id: None, content: content.into(), collapsed: false }
+    }
+
+    #[test]
+    fn workbooks_are_separate() {
+        let root = std::env::temp_dir().join(format!("bq-iso-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let reg = Registry::new(root.clone());
+        reg.create("Other").unwrap();
+        let main = reg.get(MAIN, &[]).unwrap().unwrap();
+        let other = reg.get("Other", &[]).unwrap().unwrap();
+        let save = |wb: &Workbook, name: &str, b: db::Block| {
+            let blocks = vec![b];
+            let conn = wb.db.lock();
+            let db::SaveOutcome::Saved(page) = db::save_page(&conn, name, 0, &blocks, &[]).unwrap() else { panic!("not saved") };
+            wb.write_mirror(&page, &blocks);
+        };
+        save(&main, "Main page", block("m1", "only in main"));
+        save(&other, "Other page", block("o1", "only in other"));
+        // The same block id may exist in both: separate databases.
+        save(&other, "Copy", block("m1", "copied from main"));
+        std::fs::create_dir_all(other.assets_dir()).unwrap();
+        std::fs::write(other.assets_dir().join("pic.png"), "x").unwrap();
+
+        let names = |wb: &Workbook| db::list_pages(&wb.db.lock()).unwrap().into_iter().map(|p| p.name).collect::<Vec<_>>();
+        assert_eq!(names(&main), vec!["Main page"]);
+        let mut o = names(&other);
+        o.sort();
+        assert_eq!(o, vec!["Copy", "Other page"]);
+        assert!(db::search(&main.db.lock(), "only in other", 10).unwrap().blocks.is_empty());
+        assert!(other.dir.starts_with(root.join("workbooks")));
+        assert!(!main.assets_dir().join("pic.png").exists());
+        assert!(!root.join("pages").join("Other page.md").exists());
+
+        // Main's backup leaves the other workbooks out.
+        let snap = root.join("snap.db");
+        crate::backup::snapshot(&main.db.lock(), &snap).unwrap();
+        let zip_path = root.join("main.zip");
+        crate::backup::write_zip(MAIN, &main.dir, &snap, &root.join("config.json"), &zip_path).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let entries: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().unwrap().to_string()).collect();
+        assert!(entries.iter().any(|n| n == "pages/Main page.md"));
+        assert!(!entries.iter().any(|n| n.contains("workbooks/") || n.contains("Other page") || n.contains("pic.png")), "{entries:?}");
+        drop((main, other, reg));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn leftover_temp_files_are_removed_and_nothing_else() {
         let root = std::env::temp_dir().join(format!("bq-clean-{}", uuid::Uuid::new_v4()));
