@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -43,6 +43,8 @@ pub struct Devices {
     file: PathBuf,
     /// Hex hash of (password, token) → device.
     map: Mutex<HashMap<String, Device>>,
+    /// Held for a whole save (see `save`).
+    saving: Mutex<()>,
 }
 
 fn hash(password: &str, token: &str) -> String {
@@ -76,7 +78,7 @@ impl Devices {
     pub fn load(data_dir: &Path) -> Self {
         let file = data_dir.join("devices.json");
         let map = std::fs::read_to_string(&file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        Devices { file, map: Mutex::new(map) }
+        Devices { file, map: Mutex::new(map), saving: Mutex::new(()) }
     }
 
     /// Pairs a new device; returns its id and token (shown to the device once).
@@ -121,22 +123,13 @@ impl Devices {
     }
 
     /// Writes the devices to disk: temp file (owner-only), fsync, rename.
+    /// Saves run one at a time, so a snapshot taken before a revoke can't be
+    /// renamed over the one taken after it (which would pair the device again
+    /// on the next start), and two saves never share the temp file.
     pub fn save(&self) -> Result<()> {
+        let _one_at_a_time = self.saving.lock();
         let json = serde_json::to_string(&*self.map.lock())?;
-        let tmp = self.file.with_extension("json.tmp");
-        {
-            use std::io::Write;
-            let mut f = std::os::unix::fs::OpenOptionsExt::mode(
-                std::fs::OpenOptions::new().write(true).create(true).truncate(true),
-                0o600,
-            )
-            .open(&tmp)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-            f.write_all(json.as_bytes())?;
-            f.sync_all()?;
-        }
-        std::fs::rename(&tmp, &self.file).with_context(|| format!("replacing {}", self.file.display()))?;
-        Ok(())
+        crate::session::write_private(&self.file, &json)
     }
 }
 
@@ -183,7 +176,7 @@ mod tests {
     #[test]
     fn pairing_is_capped_and_bearer_is_parsed() {
         let dir = std::env::temp_dir();
-        let d = Devices { file: dir.join("unused-devices.json"), map: Mutex::new(HashMap::new()) };
+        let d = Devices { file: dir.join("unused-devices.json"), map: Mutex::new(HashMap::new()), saving: Mutex::new(()) };
         for i in 0..MAX_DEVICES {
             d.pair("pw", &format!("d{i}"), 0).unwrap();
         }

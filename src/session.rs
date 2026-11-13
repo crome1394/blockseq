@@ -115,21 +115,27 @@ impl Sessions {
     /// Writes the sessions to disk: temp file (owner-only), fsync, rename.
     pub fn save(&self) -> Result<()> {
         let json = serde_json::to_string(&*self.map.lock())?;
-        let tmp = self.file.with_extension("json.tmp");
-        {
-            use std::io::Write;
-            let mut f = std::os::unix::fs::OpenOptionsExt::mode(
-                std::fs::OpenOptions::new().write(true).create(true).truncate(true),
-                0o600,
-            )
-            .open(&tmp)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-            f.write_all(json.as_bytes())?;
-            f.sync_all()?;
-        }
-        std::fs::rename(&tmp, &self.file).with_context(|| format!("replacing {}", self.file.display()))?;
-        Ok(())
+        write_private(&self.file, &json)
     }
+}
+
+/// Writes an owner-only file: temp file (0600), fsync, rename. Also used for
+/// `devices.json`.
+pub fn write_private(file: &Path, contents: &str) -> Result<()> {
+    let tmp = file.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut f = std::os::unix::fs::OpenOptionsExt::mode(
+            std::fs::OpenOptions::new().write(true).create(true).truncate(true),
+            0o600,
+        )
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(contents.as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, file).with_context(|| format!("replacing {}", file.display()))?;
+    Ok(())
 }
 
 /// The session token from a Cookie header, if any.
