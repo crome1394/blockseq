@@ -23,6 +23,7 @@ export const SLASH_COMMANDS = [
   { id: 'h2', label: 'Heading 2', hint: '##' },
   { id: 'h3', label: 'Heading 3', hint: '###' },
   { id: 'quote', label: 'Quote line', hint: '>' },
+  { id: 'hr', label: 'Horizontal line', hint: '---' },
   { id: 'quoteblock', label: 'Quote block', hint: '#quote (block and children)' },
   { id: 'encrypted', label: 'Encrypted block', hint: '#Encrypted (children are encrypted)' },
   { id: 'tip', label: 'Tip', hint: 'admonition' },
@@ -138,6 +139,13 @@ export function runSlash(editor, node, ta, cmd, at) {
     case 'quote': {
       const { start } = lineAt(ta.value, at);
       return editor.replaceText(node, ta, start, start, '> ', ta.selectionStart - start + 2);
+    }
+    case 'hr': {
+      // On a line of its own: here if the line is empty, otherwise after it.
+      const { start, end } = lineAt(ta.value, at);
+      if (!ta.value.slice(start, end).trim()) return editor.replaceText(node, ta, start, end, '---');
+      const last = start + ta.value.slice(start, end).trimEnd().length;
+      return editor.replaceText(node, ta, last, end, '\n---');
     }
     case 'image':
       return pickImages().then((files) => { if (files.length) editor.insertImages(node, files, at); });

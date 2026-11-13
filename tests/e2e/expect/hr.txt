@@ -1,0 +1,3 @@
+rendered hr: 1
+slash: "first line\n---"
+hr after: 2

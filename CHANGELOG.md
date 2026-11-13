@@ -7,6 +7,7 @@ All notable changes to Blockseq are listed here, newest first. Each entry ends w
 ### Added
 
 - **Paired devices.** An app (such as the Android app) pairs once with the password and then uses a token of its own, so the password is not stored on the device. Settings → Security lists paired devices with Revoke. Changing `BLOCKSEQ_PASSWORD` unpairs every device.
+- **Horizontal line.** A line of `---` (or `***`, `___`) in a block draws a horizontal line. Insert one with `/hr` or the format bar's Insert menu.
 - **Strikethrough.** Ctrl+Shift+X strikes through the selection, or the whole first line (status and tags stay outside). The block menu has a Strikethrough item too.
 
 ## 0.1.0 (2026-11-12)

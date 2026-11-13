@@ -45,7 +45,7 @@ const BAR_BUTTONS = [
 
 // Menu groups: slash command ids, '-' for a divider.
 const BAR_MENUS = {
-  blocks: ['code', 'table', 'numbered', 'quote', 'quoteblock', 'encrypted', '-', 'tip', 'note', 'important', 'caution', 'warning', 'pinned'],
+  blocks: ['code', 'table', 'numbered', 'quote', 'hr', 'quoteblock', 'encrypted', '-', 'tip', 'note', 'important', 'caution', 'warning', 'pinned'],
   media: ['image', 'pdf', 'file', 'video'],
   dates: ['today', 'tomorrow', 'yesterday', '-', 'time', 'timestamp'],
 };

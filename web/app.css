@@ -1698,3 +1698,6 @@ span.diff-del, span.diff-add { background: none; }
 /* Settings → Security: paired devices. */
 .device-list { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 4px; }
 .device-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; }
+
+/* --- in a block: a horizontal line */
+.md-hr { border: none; border-top: 1px solid var(--border, #8884); margin: 0.6em 0; }
