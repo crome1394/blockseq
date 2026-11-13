@@ -179,7 +179,7 @@ async function signInSection(wrap) {
   const all = el('button', '', 'Sign out everywhere…');
   all.type = 'button';
   all.addEventListener('click', () => {
-    if (confirm('Sign out every browser and device, including this one? Each one signs in again with the password.')) signOut(true);
+    if (confirm('Sign out every browser, including this one? Each one signs in again with the password. Paired devices stay paired; revoke them below.')) signOut(true);
   });
   actions.append(here, all);
   wrap.append(
