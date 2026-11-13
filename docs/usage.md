@@ -14,6 +14,7 @@ Keys, formatting, files, tasks, maths, encrypted blocks and workbooks.
 | Ctrl+Up / Ctrl+Down  | Collapse / expand the block and everything under it |
 | Up / Down            | Move between blocks                        |
 | Ctrl+Enter           | Next task status (Backlog → … → none)      |
+| Ctrl+Shift+X         | Strikethrough (selection, or the whole line) |
 | Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) | Undo / redo                   |
 | Esc                  | Stop editing (or close the side pane)      |
 | ?                    | Shortcut help (when not editing)           |

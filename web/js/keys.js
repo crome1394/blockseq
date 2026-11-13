@@ -18,6 +18,7 @@ export const ACTIONS = [
   ['toggleLock', 'Lock / unlock encrypted blocks (like the padlock)', 'g l', 'Encryption', true],
   ['bold', 'Bold (selection, or the whole line)', 'Ctrl+B', 'Formatting', false],
   ['italic', 'Italic (selection, or the whole line)', 'Ctrl+I', 'Formatting', false],
+  ['strike', 'Strikethrough (selection, or the whole line)', 'Ctrl+Shift+X', 'Formatting', false],
   ['cycleStatus', 'Next task status', 'Ctrl+Enter', 'Tasks', false],
   ['statusPicker', 'Choose task status', 'Ctrl+Shift+Enter', 'Tasks', false],
 ];

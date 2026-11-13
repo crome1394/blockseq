@@ -85,7 +85,7 @@ function toggleMark(core, mark) {
   return core ? mark + core + mark : core;
 }
 
-function toggleLine(line, mark, isFirst) {
+export function toggleLine(line, mark, isFirst) {
   if (/^\s*(```|#\+|\|)/.test(line) || /^[\w.-]+:: /.test(line)) return line;
   let pre = isFirst ? statusPrefix(line) : '';
   let rest = line.slice(pre.length);
@@ -770,9 +770,9 @@ export class PageEditor {
       const vis = this.visible();
       const other = vis[vis.indexOf(node) + (k === 'ArrowUp' ? -1 : 1)] || node;
       this.selectBlocks(node, other);
-    } else if (matches(e, 'bold') || matches(e, 'italic')) {
+    } else if (matches(e, 'bold') || matches(e, 'italic') || matches(e, 'strike')) {
       e.preventDefault();
-      this.formatText(node, ta, matches(e, 'bold') ? '**' : '_');
+      this.formatText(node, ta, matches(e, 'bold') ? '**' : matches(e, 'strike') ? '~~' : '_');
     } else if (k === 'Escape') {
       e.preventDefault();
       // A menu from the format bar closes first; editing carries on.
@@ -903,9 +903,9 @@ export class PageEditor {
       this.beginOp();
       roots.forEach((n) => this.setMarker(n, word));
       this.paintSelection();
-    } else if (matches(e, 'bold') || matches(e, 'italic')) {
+    } else if (matches(e, 'bold') || matches(e, 'italic') || matches(e, 'strike')) {
       e.preventDefault();
-      const mark = matches(e, 'bold') ? '**' : '_';
+      const mark = matches(e, 'bold') ? '**' : matches(e, 'strike') ? '~~' : '_';
       this.beginOp();
       roots.forEach((n) => {
         const nl = n.content.indexOf('\n');
