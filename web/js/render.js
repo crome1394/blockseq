@@ -399,7 +399,7 @@ function renderLine(line, pre) {
     return `${pre ? `<div>${pre}</div>` : ''}<div class="media-row">${inline(line)}</div>`;
   }
   // A line of three or more - * or _ is a horizontal line (Markdown's thematic break).
-  if (/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) return `${pre ? `<div>${pre}</div>` : ''}<hr class="md-hr">`;
+  if (/^(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) return `${pre ? `<div>${pre}</div>` : ''}<hr class="md-hr">`;
   const q = /^> ?(.*)$/.exec(line);
   if (q) return `<blockquote class="md-quote">${pre}${inline(q[1])}</blockquote>`;
   return `<div>${pre}${inline(line) || (pre ? '' : '<br>')}</div>`;
