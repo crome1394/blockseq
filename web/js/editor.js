@@ -71,7 +71,7 @@ const isField = (t) => !!t?.closest?.('input, textarea, select, [contenteditable
 // Toggles **bold** or _italic_ around one line's text, leaving a status word,
 // heading marker and trailing #tags outside the marks.
 const TRAILING_TAG_RUN = /(?:\s+(?:#\[\[[^\]\n]+\]\]|#[^\s#,.!?;:()[\]"'`+][^\s#,.!?;:()[\]"'`]*))+\s*$/;
-const MARKS = ['**', '_'];
+const MARKS = ['**', '~~', '_'];
 
 function toggleMark(core, mark) {
   const m = mark.length;
@@ -85,7 +85,7 @@ function toggleMark(core, mark) {
   return core ? mark + core + mark : core;
 }
 
-export function toggleLine(line, mark, isFirst) {
+function toggleLine(line, mark, isFirst) {
   if (/^\s*(```|#\+|\|)/.test(line) || /^[\w.-]+:: /.test(line)) return line;
   let pre = isFirst ? statusPrefix(line) : '';
   let rest = line.slice(pre.length);
@@ -98,6 +98,12 @@ export function toggleLine(line, mark, isFirst) {
   const ws = /\s*$/.exec(rest)[0];
   if (ws) { tail = ws + tail; rest = rest.slice(0, rest.length - ws.length); }
   return pre + toggleMark(rest, mark) + tail;
+}
+
+// A block's text with its first line marked (or unmarked); the rest is kept.
+export function toggleFirstLine(content, mark) {
+  const nl = content.indexOf('\n');
+  return nl === -1 ? toggleLine(content, mark, true) : toggleLine(content.slice(0, nl), mark, true) + content.slice(nl);
 }
 
 // ---- block selection: page-wide events ----------------------------------------
@@ -907,11 +913,7 @@ export class PageEditor {
       e.preventDefault();
       const mark = matches(e, 'bold') ? '**' : matches(e, 'strike') ? '~~' : '_';
       this.beginOp();
-      roots.forEach((n) => {
-        const nl = n.content.indexOf('\n');
-        const first = nl === -1 ? n.content : n.content.slice(0, nl);
-        this.applyValue(n, toggleLine(first, mark, true) + (nl === -1 ? '' : n.content.slice(nl)));
-      });
+      roots.forEach((n) => this.applyValue(n, toggleFirstLine(n.content, mark)));
       this.paintSelection();
     } else if (k === 'Tab' && !mod) {
       e.preventDefault(); // keep focus from jumping to the sidebar

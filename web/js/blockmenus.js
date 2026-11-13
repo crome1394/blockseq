@@ -1,8 +1,9 @@
 // The block, image, file and PDF menus (right-click and ⋮ buttons).
 
 import { el } from './dom.js';
-import { ALIGN, COLOR, COLORS, HEADING, noteActive, NUMBERED, toggleLine } from './editor.js';
+import { ALIGN, COLOR, COLORS, HEADING, noteActive, NUMBERED, toggleFirstLine } from './editor.js';
 import { copyImage, downloadImage, imageAt, withAlign, withMeta, withoutFileLink, withoutImage } from './images.js';
+import { keyFor, prettyKey } from './keys.js';
 import { closeMenu, showMenu } from './menus.js';
 import { openFilePane, openPdfPane } from './pdfview.js';
 import { imageAlign, imageSize, pdfView } from './render.js';
@@ -135,7 +136,7 @@ class BlockMenusMethods {
       { element: aligns },
       '-',
       { label: 'Add timestamp', fn: () => this.addTimestamp(node) },
-      { label: 'Strikethrough', shortcut: 'Ctrl ⇧ X', fn: () => this.strikeBlock(node) },
+      { label: 'Strikethrough', shortcut: prettyKey(keyFor('strike')), fn: () => this.strikeBlock(node) },
       '-',
       { label: 'Copy block ref', fn: () => { copyText(`((${node.id}))`); toast('Block ref copied'); } },
       { label: 'Copy block URL', fn: () => { copyText(this.blockUrl(node)); toast('Block URL copied'); } },
@@ -156,10 +157,7 @@ class BlockMenusMethods {
   // Strikes the block's first line through (or clears it): ~~text~~, with the
   // task status and trailing tags left outside the marks.
   strikeBlock(node) {
-    this.beginOp();
-    const nl = node.content.indexOf('\n');
-    const first = nl === -1 ? node.content : node.content.slice(0, nl);
-    this.applyValue(node, toggleLine(first, '~~', true) + (nl === -1 ? '' : node.content.slice(nl)));
+    this.changeText(node, toggleFirstLine(node.content, '~~'));
   }
 }
 
