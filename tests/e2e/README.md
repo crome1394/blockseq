@@ -32,7 +32,7 @@ at the end.
 | csp | Security headers; images, PDFs, embeds, maths and code still work under the Content-Security-Policy; cross-site POST refused |
 | math-builder | Palette, slots, problems and fixes, hover mapping, editing formulas in place |
 | maths-render | LaTeX rendering, calendar week start, timestamps |
-| format-bar | Floating bar above/below the block, actions keep the cursor, menus, attached placement, dragging and parking |
+| format-bar | Floating bar above/below the block, actions keep the cursor, menus, inline placement, dragging and parking the movable bar |
 | slash-menu | Short `/` menu with groups, keyboard and mouse |
 | align | Text alignment, Ctrl+B on an empty line |
 | sidebar | Favourites, calendar dots and last-saved time from `/api/sidebar` |

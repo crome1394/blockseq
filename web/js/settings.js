@@ -10,8 +10,8 @@ const DEFAULTS = {
   threadAlways: false, // show lines from every block to its parent all the time
   linksNewTab: true, // open web links in a new browser tab
   formatBar: true, // floating formatting bar while editing a block
-  formatBarPlace: 'float', // 'float' over the rows above, or 'attached' (in the page, pushes rows down)
-  formatBarPos: null, // {left, top} once the bar has been dragged somewhere; null = follow the block
+  formatBarPlace: 'float', // 'float': movable, hovers over the rows above; 'inline': between the rows, pushes the block down
+  formatBarPos: null, // movable bar: {left, top} once dragged somewhere; null = follow the block
   lockMinutes: 15, // lock encrypted blocks after this many idle minutes (0 = never)
   liveCode: true, // syntax colours while editing code blocks
   codeWrap: false, // wrap long lines in code blocks instead of scrolling sideways
@@ -74,8 +74,8 @@ export const CATEGORIES = [
     ['tagColors', 'Colour tags', 'Give each tag at the end of a block its own colour.'],
   ] },
   { id: 'editor', label: 'Editor', options: [
-    ['formatBar', 'Formatting bar while editing', 'Show a small bar of formatting buttons (bold, heading, alignment, colour, status, maths…) above the block you are editing, or below it near the top of the window. Drag it by its ⠿ handle to park it anywhere; double-click the handle to send it back.'],
-    ['formatBarPlace', 'Formatting bar placement', 'Floating: the bar hovers over the rows above the block. Attached: the bar sits in the page just above the block and pushes it down, so it never covers other rows.', [['float', 'Floating over the rows above'], ['attached', 'Attached to the block (covers nothing)']]],
+    ['formatBar', 'Formatting bar while editing', 'Show a small bar of formatting buttons (bold, heading, alignment, colour, status, maths…) while you edit a block.'],
+    ['formatBarPlace', 'Formatting bar placement', 'Movable: the bar floats just above the block (over the row above it); drag its ⠿ handle to park it anywhere, double-click the handle to bring it back. Inline: the bar is inserted between the block you edit and the row above it, so it never covers anything.', [['float', 'Movable'], ['inline', 'Inline (between the rows)']]],
     ['linksNewTab', 'Open links in a new tab', 'Web links (including ones made with /link) open in a new browser tab. When off, they open in this tab.'],
     ['threading', 'Bullet threading', 'Highlight the line from the block you are editing up through its parents.'],
     ['threadAlways', 'Always show bullet threading', 'Show the lines connecting every block to its parent all the time, not only while editing.'],

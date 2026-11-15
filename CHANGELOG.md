@@ -6,7 +6,7 @@ All notable changes to Blockseq are listed here, newest first. Each entry ends w
 
 ### Added
 
-- **Movable format bar.** Drag the format bar by its ⠿ handle to park it anywhere; double-click the handle to bring it back. Settings → Editor → Formatting bar placement → Attached puts the bar in the page above the block instead, so it never covers other rows.
+- **Format bar placement.** Settings → Editor → Formatting bar placement: **Movable** (drag the bar by its ⠿ handle to park it anywhere; double-click the handle to bring it back) or **Inline** (the bar is inserted between the edited block and the row above, so it covers nothing).
 - **Paired devices.** An app (such as the Android app) pairs once with the password and then uses a token of its own, so the password is not stored on the device. Settings → Security lists paired devices with Revoke. Changing `BLOCKSEQ_PASSWORD` unpairs every device.
 - **Horizontal line.** A line of `---` (or `***`, `___`) in a block draws a horizontal line. Insert one with `/hr` or the format bar's Insert menu.
 - **Strikethrough.** Ctrl+Shift+X strikes through the selection, or the whole first line (status and tags stay outside). The block menu has a Strikethrough item too.

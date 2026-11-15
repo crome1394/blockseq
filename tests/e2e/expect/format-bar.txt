@@ -2,11 +2,11 @@ middle block: above
 still editing: TEXTAREA
 top block after scrolling it to the top: below
 after Esc: hidden
-attached: above
-in the page: true
+inline: above
+between the rows: true
 covers the row above: false
+handle shown: false
 dragged, still editing: TEXTAREA
-floating: true
+moved: true
 parked bar stays put: true
 after double-click: above
-attached again: true

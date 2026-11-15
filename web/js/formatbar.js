@@ -1,8 +1,9 @@
 // The format bar: one for the page, following the block being edited.
-// Floating (default) it hovers above or below the block depending on the
-// scroll position; attached it sits in the page just above the block and
-// pushes it down. Dragged by its handle it stays parked where it was dropped
-// (per device) until the handle is double-clicked.
+// Movable (default) it floats above or below the block depending on the
+// scroll position, and dragged by its handle it stays parked where it was
+// dropped (per device) until the handle is double-clicked. Inline it is
+// inserted in the page between the block and the row above, pushing the
+// block down, and has no handle.
 
 import { runSlash, SLASH_COMMANDS } from './autocomplete.js';
 import { el } from './dom.js';
@@ -96,13 +97,6 @@ function makeGrip(root) {
     const r = root.getBoundingClientRect();
     const dx = e.clientX - r.left;
     const dy = e.clientY - r.top;
-    if (root.classList.contains('attached')) {
-      // Lift it out of the page so it can float where it is dropped.
-      root.classList.remove('attached');
-      root.style.marginLeft = '';
-      document.body.append(root);
-      place(r.left, r.top);
-    }
     root.classList.add('dragging');
     grip.setPointerCapture(e.pointerId);
     const move = (ev) => place(ev.clientX - dx, ev.clientY - dy);
@@ -148,7 +142,7 @@ export function hideBar() {
 export function positionBar() {
   if (!bar?.node?.contentEl || !bar.el.isConnected) return;
   if (bar.el.classList.contains('dragging')) return;
-  if (bar.el.classList.contains('attached')) {
+  if (bar.el.classList.contains('inline')) {
     // Line it up with the text, not the bullet.
     const wrap = bar.node.el.getBoundingClientRect();
     const indent = bar.node.contentEl.getBoundingClientRect().left - wrap.left;
@@ -157,7 +151,7 @@ export function positionBar() {
     return;
   }
   const pos = parked();
-  if (pos) {
+  if (pos) { // only reached when movable: inline returned above
     bar.el.style.maxWidth = '';
     bar.el.classList.remove('below');
     return place(pos.left, pos.top);
@@ -211,9 +205,9 @@ class FormatBarMethods {
       const h = /^(#{1,6}) /.exec(stripStatus(node.content))?.[1].length;
       return h ? `H${h}` : node.props[HEADING] === 'true' ? 'HA' : 'H';
     })();
-    // Attached: in the page, between the block's row and whatever is above.
-    const attach = getSetting('formatBarPlace') === 'attached' && !parked() && node.el;
-    bar.el.classList.toggle('attached', !!attach);
+    // Inline: in the page, between the block's row and whatever is above.
+    const attach = getSetting('formatBarPlace') === 'inline' && node.el;
+    bar.el.classList.toggle('inline', !!attach);
     bar.el.style.marginLeft = '';
     if (attach) {
       bar.el.style.top = '';

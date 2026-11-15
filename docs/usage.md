@@ -46,11 +46,14 @@ alignment, colour and the block menu. Its menus show each item's / command.
 The bar never takes the cursor away; Esc closes an open menu first. Turn it
 off in *Settings → Editor → Formatting bar while editing*.
 
-If the bar is in the way, drag it by the ⠿ handle at its left end. It stays
-where you drop it, for every block, until you double-click the handle. Or set
-*Settings → Editor → Formatting bar placement* to **Attached**: the bar then
-sits in the page just above the block you edit and pushes that block down, so
-it never covers other rows. Both are kept per device.
+*Settings → Editor → Formatting bar placement* picks how it behaves (per
+device):
+
+- **Movable** (default): the bar floats just above the block, over the row
+  above it. If it is in the way, drag it by the ⠿ handle at its left end; it
+  stays where you drop it, for every block, until you double-click the handle.
+- **Inline**: the bar is inserted between the block you edit and the row above
+  it, pushing the block down a little, so it never covers anything.
 
 **Code blocks:** type ```` ``` ```` (optionally with a language, e.g. ```` ```bash ````) and
 press Tab or Enter, or use `/code`. The code editor opens with the cursor inside.
