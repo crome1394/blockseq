@@ -61,7 +61,37 @@ await p.screenshot({ path: S + "/bar-below.png", clip: { x: 230, y: 0, width: 87
 // Bar goes away when editing stops
 await p.keyboard.press("Escape"); await sleep(100);
 console.log("after Esc:", await p.$(".format-bar") ? "still shown" : "hidden");
+// 3. Attached: the bar sits in the page above the block and covers nothing
 await sleep(1200);
+await p.evaluate(() => localStorage.setItem("blockseq.settings", JSON.stringify({ formatBarPlace: "attached" })));
+await p.reload({ waitUntil: "load" });
+await p.waitForSelector(".outline .content"); await sleep(400);
+const rows3 = await p.$$(".outline > .block > .block-row .content");
+await rows3[10].click(); await sleep(150);
+console.log("attached:", await where(), "| in the page:", await p.evaluate(() => !!document.querySelector(".block.editing > .format-bar.attached")));
+console.log("covers the row above:", await p.evaluate(() => {
+  const bar = document.querySelector(".format-bar")!.getBoundingClientRect();
+  const prev = document.querySelectorAll(".outline > .block > .block-row")[9].getBoundingClientRect();
+  return bar.top < prev.bottom;
+}));
+const ay = await p.$eval(".format-bar", (e: any) => e.getBoundingClientRect().top);
+await p.screenshot({ path: S + "/bar-attached.png", clip: { x: 230, y: Math.max(0, ay - 120), width: 870, height: 260 } });
+// 4. Drag it by the handle: it stays parked there, for other blocks too
+const g = await p.$eval(".format-bar .bar-grip", (e: any) => { const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+await p.mouse.move(g.x, g.y); await p.mouse.down();
+await p.mouse.move(g.x + 200, g.y + 250, { steps: 8 }); await p.mouse.up(); await sleep(100);
+const parkedAt = () => p.$eval(".format-bar", (e: any) => { const r = e.getBoundingClientRect(); return `${Math.round(r.left)},${Math.round(r.top)}`; });
+const at1 = await parkedAt();
+console.log("dragged, still editing:", await p.evaluate(() => document.activeElement?.tagName), "| floating:", await p.evaluate(() => !document.querySelector(".format-bar")!.classList.contains("attached")));
+await p.keyboard.press("Escape"); await sleep(100);
+const rows4 = await p.$$(".outline > .block > .block-row .content");
+await rows4[3].click(); await sleep(150);
+console.log("parked bar stays put:", (await parkedAt()) === at1);
+await p.screenshot({ path: S + "/bar-parked.png" });
+// Double-click the handle: back to following the block
+await p.click(".format-bar .bar-grip", { count: 2 }); await sleep(150);
+console.log("after double-click:", await where(), "| attached again:", await p.evaluate(() => !!document.querySelector(".block.editing > .format-bar.attached")));
+await p.keyboard.press("Escape");
 const b = await server();
 console.log("saved:", JSON.stringify(b[6].content));
 await browser.close();

@@ -1614,6 +1614,12 @@ html.wide .embed-wrap.embed-tweet { width: 550px; }
 .bar-btn[data-color="purple"] .bar-swatch { background: #8e4ec6; border-color: #8e4ec6; }
 .bar-btn[data-color="gray"] .bar-swatch { background: #8b8d98; border-color: #8b8d98; }
 @media print { .format-bar { display: none; } }
+.format-bar.attached { position: static; width: max-content; margin: 2px 0 4px; box-shadow: none; }
+.format-bar.dragging { box-shadow: var(--shadow), 0 0 0 2px var(--accent-soft); }
+.bar-grip { flex: none; align-self: stretch; display: inline-flex; align-items: center; padding: 0 3px 0 2px; color: var(--muted);
+  font-size: 14px; cursor: grab; touch-action: none; user-select: none; border-radius: 5px; }
+.bar-grip:hover { color: var(--accent); background: var(--accent-soft); }
+.format-bar.dragging .bar-grip { cursor: grabbing; }
 .bar-text { font-family: var(--mono); font-size: 11.5px; letter-spacing: -0.5px; }
 .bar-caret { font-size: 9px; margin-left: 1px; color: var(--muted); }
 

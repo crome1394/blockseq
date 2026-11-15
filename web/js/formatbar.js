@@ -1,12 +1,15 @@
-// The floating format bar: one for the page, following the block being
-// edited, above or below it depending on the scroll position.
+// The format bar: one for the page, following the block being edited.
+// Floating (default) it hovers above or below the block depending on the
+// scroll position; attached it sits in the page just above the block and
+// pushes it down. Dragged by its handle it stays parked where it was dropped
+// (per device) until the handle is double-clicked.
 
 import { runSlash, SLASH_COMMANDS } from './autocomplete.js';
 import { el } from './dom.js';
 import { ALIGN, COLOR, COLORS, HEADING } from './editor.js';
 import { closeMenu, showMenu, showStatusPicker } from './menus.js';
 import { mathSpans } from './render.js';
-import { getSetting } from './settings.js';
+import { getSetting, setSetting } from './settings.js';
 import { statusOf, stripStatus } from './tasks.js';
 
 // ---- format bar (one for the whole page; follows the block being edited) ----
@@ -55,6 +58,7 @@ function makeBar() {
   root.setAttribute('role', 'toolbar');
   root.setAttribute('aria-label', 'Formatting');
   const b = { el: root, editor: null, node: null };
+  root.append(makeGrip(root));
   for (const def of BAR_BUTTONS) {
     if (def === '|') { root.append(el('span', 'bar-sep')); continue; }
     const [action, label, title, group] = def;
@@ -74,6 +78,64 @@ function makeBar() {
   return b;
 }
 
+// The ⠿ handle: drag to park the bar anywhere in the window, double-click
+// to let it follow the block again. It never takes focus, so the cursor stays.
+function makeGrip(root) {
+  const grip = el('div', 'bar-grip');
+  grip.textContent = '⠿';
+  grip.title = 'Drag to move the bar out of the way. Double-click to put it back next to the block.';
+  grip.setAttribute('aria-hidden', 'true');
+  grip.addEventListener('mousedown', (e) => e.preventDefault());
+  grip.addEventListener('dblclick', () => {
+    setSetting('formatBarPos', null);
+    if (bar?.node) bar.editor?.showBar(bar.node);
+  });
+  grip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const r = root.getBoundingClientRect();
+    const dx = e.clientX - r.left;
+    const dy = e.clientY - r.top;
+    if (root.classList.contains('attached')) {
+      // Lift it out of the page so it can float where it is dropped.
+      root.classList.remove('attached');
+      root.style.marginLeft = '';
+      document.body.append(root);
+      place(r.left, r.top);
+    }
+    root.classList.add('dragging');
+    grip.setPointerCapture(e.pointerId);
+    const move = (ev) => place(ev.clientX - dx, ev.clientY - dy);
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+      root.classList.remove('dragging');
+      const now = root.getBoundingClientRect();
+      setSetting('formatBarPos', { left: Math.round(now.left), top: Math.round(now.top) });
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+  });
+  return grip;
+}
+
+// Puts the floating bar at (left, top), kept inside the window.
+function place(left, top) {
+  const e = bar.el;
+  const x = Math.max(4, Math.min(left, window.innerWidth - e.offsetWidth - 4));
+  const y = Math.max(4, Math.min(top, window.innerHeight - e.offsetHeight - 4));
+  e.style.left = `${Math.round(x)}px`;
+  e.style.top = `${Math.round(y)}px`;
+  e.style.visibility = '';
+}
+
+const parked = () => {
+  const pos = getSetting('formatBarPos');
+  return pos && Number.isFinite(pos.left) && Number.isFinite(pos.top) ? pos : null;
+};
+
 export function hideBar() {
   if (!bar) return;
   bar.el.remove();
@@ -85,6 +147,21 @@ export function hideBar() {
 // a block taller than the window keeps the bar pinned at the bottom edge.
 export function positionBar() {
   if (!bar?.node?.contentEl || !bar.el.isConnected) return;
+  if (bar.el.classList.contains('dragging')) return;
+  if (bar.el.classList.contains('attached')) {
+    // Line it up with the text, not the bullet.
+    const wrap = bar.node.el.getBoundingClientRect();
+    const indent = bar.node.contentEl.getBoundingClientRect().left - wrap.left;
+    bar.el.style.marginLeft = `${Math.round(indent)}px`;
+    bar.el.style.maxWidth = `${Math.max(160, wrap.width - indent)}px`;
+    return;
+  }
+  const pos = parked();
+  if (pos) {
+    bar.el.style.maxWidth = '';
+    bar.el.classList.remove('below');
+    return place(pos.left, pos.top);
+  }
   const r = bar.node.contentEl.getBoundingClientRect();
   const h = bar.el.offsetHeight;
   const w = bar.el.offsetWidth;
@@ -134,7 +211,19 @@ class FormatBarMethods {
       const h = /^(#{1,6}) /.exec(stripStatus(node.content))?.[1].length;
       return h ? `H${h}` : node.props[HEADING] === 'true' ? 'HA' : 'H';
     })();
-    document.body.append(bar.el);
+    // Attached: in the page, between the block's row and whatever is above.
+    const attach = getSetting('formatBarPlace') === 'attached' && !parked() && node.el;
+    bar.el.classList.toggle('attached', !!attach);
+    bar.el.style.marginLeft = '';
+    if (attach) {
+      bar.el.style.top = '';
+      bar.el.style.left = '';
+      bar.el.style.visibility = '';
+      bar.el.classList.remove('below');
+      node.el.prepend(bar.el);
+    } else {
+      document.body.append(bar.el);
+    }
     positionBar();
   }
 
