@@ -1406,8 +1406,10 @@ export class PageEditor {
 
   //
   // While a block is edited, a small bar floats just above it (or below it
-  // when there is no room above, e.g. near the top of the window). Its
-  // buttons never take focus, so the cursor and selection stay put.
+  // when there is no room above, e.g. near the top of the window), parked
+  // wherever it was dragged, or inline between the block and the row above
+  // (Settings → Formatting bar placement); see formatbar.js. Its buttons
+  // never take focus, so the cursor and selection stay put.
 
   // ---- saving and sync ---------------------------------------------------
 

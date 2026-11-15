@@ -51,7 +51,7 @@ in sync through autosave, versioned page saves and a live event stream.
 | `web/js/secrets.js` | `#Encrypted` blocks in the editor (sealing, opening, locked display), installed on `PageEditor` |
 | `web/js/codeblocks.js` | Editing a code block in place, installed on `PageEditor` |
 | `web/js/blockmenus.js` | Block, image, file and PDF menus, installed on `PageEditor` |
-| `web/js/formatbar.js` | The floating format bar, installed on `PageEditor` |
+| `web/js/formatbar.js` | The format bar, installed on `PageEditor`: movable (floats by the block, can be dragged and parked) or inline (inserted above the edited block's row) |
 | `web/js/autocomplete.js` | Slash menu and `[[`/`((`/`/` suggestions |
 | `web/js/refs.js` | Block references and embeds: loading and caching |
 | `web/js/menus.js` | Popup menu and task status picker |
